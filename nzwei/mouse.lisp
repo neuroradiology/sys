@@ -289,7 +289,7 @@ affecting point (or mark)." (KM)
 	     (SETQ OL LINE OCP CHAR-POS)
 	     (MOVE-BP POINT LINE CHAR-POS)
 	     (FUNCALL (SELECTQ *MAJOR-MODE*
-                        (LISP-MODE 'LISP-MARK-THING)
+                        ((LISP-MODE ZTOP-MODE) 'LISP-MARK-THING)
                         ((TEXT-MODE FUNDAMENTAL-MODE BOLIO-MODE) 'TEXT-MARK-THING)
                         (OTHERWISE 'DEFAULT-MARK-THING))
                       POINT MARK CHAR LINE CHAR-POS)

@@ -35,7 +35,7 @@
 	(T
 	 (TYPEIN-LINE "Font ID: ")
 	 (DO ((CH)) (NIL)
-	     (SETQ CH (TYPEIN-LINE-ACTIVATE (FUNCALL *TYPEIN-WINDOW* ':MOUSE-OR-KBD-TYI)))
+	     (SETQ CH (TYPEIN-LINE-ACTIVATE (FUNCALL STANDARD-INPUT ':MOUSE-OR-KBD-TYI)))
 	     (COND ((OR (= CH #/G) (= CH #/g))
 		    (BARF))
 		   ((= CH #/)
@@ -380,4 +380,4 @@ With an argument, also lists the font files on the file computer." ()
     (PUTPROP (LOCF (LINE-PLIST LINE)) ACTOR ':DIAGRAM)
     (FUNCALL ACTOR ':ADD-LINE LINE)
     (INSERT-LINE-WITH-LEADER LINE AT-LINE)))
-               
+

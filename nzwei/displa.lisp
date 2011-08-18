@@ -212,7 +212,10 @@
 	   (TOP-LINE (BP-LINE START-BP))
 	   (TOP-INDEX (BP-INDEX START-BP))
 	   (LAST-BP (INTERVAL-LAST-BP INTERVAL))
-	   (INITIAL-DEGREE DEGREE))
+	   (INITIAL-DEGREE DEGREE)
+	   ;; Bind *INTERVAL* in case we decide to call any primitives, e.g. inside the
+	   ;; special-blinker which blinks matching parens.  This is an implicit argument.
+	   (*INTERVAL* INTERVAL))
       ;; :POINT recentering is a conditional sort of :ABSOLUTE recentering.
       ;; So decide here whether :ABSOLUTE recentering should be done.
       (AND (EQ RECENTER-TYPE ':POINT)

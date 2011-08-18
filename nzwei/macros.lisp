@@ -308,7 +308,7 @@
 ;;; Defines a command.  Form is:
 ;;; (DEFCOM COM-foo "Documentation." OPTIONS-LIST . BODY)
 ;;; Note: unlike EINE, there is no lambda-list.
-;;; Options are:  (M) -- This command always preserves MARK.
+;;; Options are:  (KM) -- This command always preserves MARK.
 
 (DEFMACRO DEFCOM (FN DOC OPTIONS . DEF)
   `(PROGN 'COMPILE
@@ -361,7 +361,7 @@
   (SETQ COMMAND (STRING COMMAND))
   (LET ((CLEN (STRING-LENGTH COMMAND)))
     (LET ((STR (SUBSTRING COMMAND
-			  (COND ((STRING-EQUAL "COM-MOUSE-" 0 0 12 12) 12)
+			  (COND ((STRING-EQUAL "COM-MOUSE-" COMMAND 0 0 12 12) 12)
 				((STRING-EQUAL "COM-" COMMAND 0 0 4 4) 4)
 				((STRING-EQUAL "*" COMMAND 0 0 1 1) 1)
 				(T 0))

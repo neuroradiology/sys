@@ -173,7 +173,8 @@ For documentation on the Dired commands, enter Dired and type question-mark." ()
 			    (ASET #/D LINE 0))))
 
 (DEFCOM COM-DIRED-UNDELETE "Un-mark file(s) for deletion" ()
-  (DIRED-MAP-OVER-LINES (IF (AND (NOT *NUMERIC-ARG-P*) (NEQ (BP-CHAR (POINT)) #/D))
+  (DIRED-MAP-OVER-LINES (IF (AND (NOT *NUMERIC-ARG-P*)
+				 (NOT (MEMQ (BP-CHAR (POINT)) '(#/D #/P))))
 			    -1
 			    *NUMERIC-ARG*)
 			#'(LAMBDA (LINE)
