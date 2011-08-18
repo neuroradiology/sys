@@ -59,8 +59,8 @@
         FINGER-ALIST '((414 . "936 Lisp Machine Factory x6703")		;LM17
 		       (415 . "936 Lisp Machine Factory x6703")		;LM16
 		       (416 . "936 Lisp Machine Factory x6703")		;LM15
-		       (417 . "936 Lisp Machine Factory x6703")		;LM14
-		       (421 . "936 Lisp Machine Factory x6703")		;LM13
+		       (417 . "38-301 EE-CS Machine Room x5624")	;LM14
+		       (421 . "38-301 EE-CS Machine Room x5624")	;LM13
 		       (422 . "36-626 Speech Lab x4672")        	;LM12
 		       (423 . "38-350 EE-CS Terminal Room x4650")	;LM11
 		       (424 . "38-301 EE-CS Machine Room x5624")	;LM10
@@ -80,8 +80,8 @@
 	CONSOLE-LOCATION-ALIST '((414 MIT-NE43 9)	;LM17
 				 (415 MIT-NE43 9)	;LM16
 				 (416 MIT-NE43 9)	;LM15
-				 (417 MIT-NE43 9)	;LM14
-				 (421 MIT-NE43 9)	;LM13
+				 (417 MIT-38 3)		;LM14
+				 (421 MIT-38 3)		;LM13
 				 (422 MIT-36 6)	        ;LM12
 				 (423 MIT-38 3)		;LM11
 				 (424 MIT-38 3)		;LM10

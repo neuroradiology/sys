@@ -154,20 +154,18 @@
 				   (LOCATE-IN-CLOSURE SELF 'CONN)))
 	    (COND ((NOT (STRINGP CONN))		;Connection Succeeded.
 		   ;The main loop, read, echo, and send characters.
-		   (DO ((CHAR 0.)(QUITTING-A-CONNECTION NIL))
-		       (QUITTING-A-CONNECTION)
-		     (SETQ CHAR (COM-LINK-READ LOCAL-STREAM 'LOCAL-STREAM SELF CONN))
-		     (COND ((EQ CHAR #\BREAK)
-			    (SETQ QUITTING-A-CONNECTION
-				  (COM-LINK-HANDLE-BREAK-OR-HELP
-				   'BREAK LOCAL-STREAM REMOTE-HOST-STREAM SELF CONN)))
-			   ((EQ CHAR #\HELP)
-			    (SETQ QUITTING-A-CONNECTION
-				  (COM-LINK-HANDLE-BREAK-OR-HELP
-				   'HELP LOCAL-STREAM REMOTE-HOST-STREAM SELF CONN)))
-			   (T (COM-LINK-PROCESS-CHAR LOCAL-STREAM CHAR)
-			      (FUNCALL REMOTE-HOST-STREAM ':TYO CHAR)
-			      (FUNCALL REMOTE-HOST-STREAM ':FORCE-OUTPUT)))))
+		   (DO ((CHAR (COM-LINK-READ LOCAL-STREAM 'LOCAL-STREAM SELF CONN)
+			      (COM-LINK-READ LOCAL-STREAM 'LOCAL-STREAM SELF CONN)))
+		       (NIL)
+		     (IF (MEMQ CHAR '(#\BREAK #\HELP))
+			 (IF (COM-LINK-HANDLE-BREAK-OR-HELP
+			       (IF (EQ CHAR #\BREAK) 'BREAK 'HELP)
+			       LOCAL-STREAM REMOTE-HOST-STREAM SELF CONN)
+			     NIL
+			     (RETURN NIL))
+			 (PROGN (COM-LINK-PROCESS-CHAR LOCAL-STREAM CHAR)
+				(FUNCALL REMOTE-HOST-STREAM ':TYO CHAR)
+				(FUNCALL REMOTE-HOST-STREAM ':FORCE-OUTPUT)))))
 		  ;Openning of connection failed...
 		  (T
 		    (FORMAT LOCAL-STREAM "~%Can't open Chaos connection:~%~A~%" CONN)
@@ -177,6 +175,15 @@
 			   (COND ((COM-LINK-TRY-HARDER HOST LOCAL-STREAM)
 				  (<- SELF ':MAKE-CONNECTION))
 				 (T (*THROW 'NUKE-THE-WORLD NIL))))
+			  ((Y-OR-N-P "Connect to another CADR? " LOCAL-STREAM)
+			   (LET ((NEW-CADR (<- CADR-MENU ':CHOOSE)))
+			     ; Sometimes using the menu changes the selected window....
+			     ; (shouldn't be this way)
+			     (IF (NEQ SELF SELECTED-WINDOW) (WINDOW-SELECT SELF))
+			     (COND (NEW-CADR	   
+				     (FUNCALL SELF ':MAKE-CONNECTION NEW-CADR)
+				     (<- (FUNCALL SELF ':REMOTE-LISTEN-PROCESS) ':RESET))
+				   ((*THROW 'NUKE-THE-WORLD NIL)))))
 			  (T (*THROW 'NUKE-THE-WORLD NIL)))))))
   (<- SELF ':DEACTIVATE))			;If you gotta go, you gotta go...
 
@@ -235,9 +242,11 @@
 	(FORMAT LOCAL-STREAM "~%Disconnecting from ~A~%" (<- WINDOW ':HOST))
 	(CHAOS:CLOSE CONN)
 	(LET ((NEW-CADR (<- CADR-MENU ':CHOOSE)))
+	  ; Sometimes using the menu changes the selected window.... (shouldn't be this way)
+	  (IF (NEQ WINDOW SELECTED-WINDOW) (WINDOW-SELECT WINDOW))
 	  (COND (NEW-CADR	   
-		  (AND (NOT (STRINGP (<- WINDOW ':MAKE-CONNECTION NEW-CADR)))
-		       (<- (<- WINDOW ':REMOTE-LISTEN-PROCESS) ':RESET))
+		  (<- WINDOW ':MAKE-CONNECTION NEW-CADR)
+		  (<- (<- WINDOW ':REMOTE-LISTEN-PROCESS) ':RESET)
 		  (RETURN NIL))
 		((*THROW 'NUKE-THE-WORLD NIL)))))
        (:OTHERWISE (RETURN T)))))				;Ignore otherwise.

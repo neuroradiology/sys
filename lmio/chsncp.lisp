@@ -637,7 +637,7 @@
 
   ;; This process runs all Time response actions such as PROBEs and Retransmission.
 	BACKGROUND  (PROCESS-CREATE "Chaos Background")
-	RECEIVER (PROCESS-CREATE "Chaos Reciever" ':SIMPLE-P T)
+	RECEIVER (PROCESS-CREATE "Chaos Receiver" ':SIMPLE-P T)
 
         )
   ;; Make 10 connections now so they're all on the same page.
@@ -1624,6 +1624,10 @@ CONN ~S, (PKT-SOURCE-CONN PKT) ~S" PKT CONN (PKT-SOURCE-CONN PKT))))
 	   (RECEIVE-INT-PKT INT-PKT)))  ;WITHOUT-INTERRUPTS not necc since from scheduler.
     (COND (RESERVED-INT-PKT
 	    (FERROR NIL "Int PKT about to be lost!"))) ;Hopefully this will get printed
+    (SI:SET-PROCESS-WAIT CURRENT-PROCESS #'(LAMBDA () (NOT (OR (NULL ENABLE)
+							       (NULL (INT-RECEIVE-LIST)))))
+			 NIL)
+    (SETF (SI:PROCESS-WHOSTATE CURRENT-PROCESS) "Chaos Packet")
     ))
 
 ;;; Returns NIL if there was a CRC error, INT-PKT if win.

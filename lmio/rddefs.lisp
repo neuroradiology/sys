@@ -4,12 +4,13 @@
 ;;; LMIO;RTCMAC > as well. Not only might you have to recompile READ and PRINT,
 ;;; but you may have to recompile LMIO;RTC > as well (using QC and QCMP), and you may have
 ;;; to recompile LMIO;RDTBL > (using RTC).
+;;; Sorry, Alan, this defstruct needs colons which means it probably won't work in Maclisp
 
-(DEFSTRUCT (RDTBL ARRAY-LEADER
-                  (CONSTRUCTOR MAKE-RDTBL)
+(DEFSTRUCT (RDTBL :ARRAY-LEADER
+                  (:CONSTRUCTOR MAKE-RDTBL)
 		  (MAKE-ARRAY (NIL 'ART-16B (RDTBL-ARRAY-DIMS)))
-		  (DEFAULT-POINTER RDTBL)
-		  (SIZE-MACRO RDTBL-SIZE))
+		  (:DEFAULT-POINTER RDTBL)
+		  (:SIZE-MACRO RDTBL-SIZE))
 	   RDTBL-FSM					;sacred
 	   RDTBL-NAMED-STRUCTURE-SYMBOL
 	   RDTBL-N-STATES

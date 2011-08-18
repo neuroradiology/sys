@@ -332,11 +332,12 @@
 ;;; inside out.
 
 (DEFUN GRIND-FORM (EXP LOC &AUX TEM)
-  (COND ((NLISTP EXP)					;Atoms print very simply
+  (COND ((ATOM EXP)					;Atoms print very simply
 	 (GRIND-PRIN1 EXP GRIND-IO LOC))
 	((EQ (CAR EXP) GRIND-DISPLACED)
 	 (GRIND-FORM (CADR EXP) (LOCF (CADR EXP))))
 	((AND (SYMBOLP (CAR EXP))			;Check for GRIND-MACRO
+	      (OR (NULL (CDR EXP)) (NOT (ATOM (CDR EXP)))) ; but try not to get faked out
 	      (SETQ TEM (GET (CAR EXP) 'GRIND-MACRO)))
 	 (AND (*CATCH 'GRIND-MACRO-FAILED
 		      (PROGN (FUNCALL TEM EXP LOC) NIL))

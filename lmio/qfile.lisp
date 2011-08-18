@@ -1015,10 +1015,15 @@
 (DEFUN (:FILE-ERROR EH:PROCEED) (IGNORE IGNORE)
   (FORMAT T "~&Retrying file operation.~%"))
 
-(DEFUN FORCE-USER-TO-LOGIN ()
+(DEFUN FORCE-USER-TO-LOGIN (&OPTIONAL (HOST USER-LOGIN-MACHINE))
   (COND ((OR (NULL USER-ID) (STRING-EQUAL USER-ID ""))
-	 (FORMAT QUERY-IO "~&Login name: ")
-	 (LOGIN (READLINE QUERY-IO)))))
+	 (FORMAT QUERY-IO "~&Host is ~A, login name or host:? " HOST)
+	 (LET ((INPUT (READLINE QUERY-IO)))
+	   (COND ((= (AREF INPUT (1- (ARRAY-ACTIVE-LENGTH INPUT))) #/:)
+		  (SETQ HOST (SUBSTRING INPUT 0 (- (ARRAY-ACTIVE-LENGTH INPUT) 2)))
+		  (FORMAT QUERY-IO "~&Login name? ")
+		  (SETQ INPUT (READLINE QUERY-IO))))
+	   (LOGIN INPUT HOST)))))
 
 ;;; Connection management
 (DEFVAR FILE-DEFAULT-HOST "AI")
@@ -1131,8 +1136,22 @@
       ((NULL UNIT))
     (LEXPR-FUNCALL FUNCTION UNIT ARGS)))
 
+;;; Setup a user-id for the specified host.  Knows about ITS specially, as they
+;;; are one big happy family...
+(DEFVAR USER-UNAMES NIL)
+(DEFUN FILE-HOST-USER-ID (USER-ID HOST)
+  (AND (EQ (CDR (ASSOC USER-ID HOST-FILENAME-FLAVOR-ALIST)) 'ITS-FILENAME)
+       ;; All ITS' are the same
+       (SETQ HOST 'ITS
+	     USER-ID (SUBSTRING USER-ID 0 6)))	 
+  (LET ((AE (ASSOC HOST USER-UNAMES)))
+       (IF AE
+	   (RPLACD AE USER-ID)
+	   (PUSH (CONS HOST USER-ID) USER-UNAMES))))
+
 ;Send a LOGIN command to all open host units.  Called every time a user logs in or out.
 (DEFUN FILE-LOGIN (USER-ID)
+  (OR USER-ID (SETQ USER-UNAMES NIL))
   (DOLIST (ALIST-ENTRY FILE-HOST-ALIST)
     (HOST-UNIT-MAP-FUNCTION (SI:INIT-FORM ALIST-ENTRY)
 			    #'(LAMBDA (U ID)
@@ -1189,6 +1208,13 @@
     (AND CONN (EQ (CHAOS:STATE CONN) 'CHAOS:OPEN-STATE)
 	 (LET ((PKT (CHAOS:GET-PKT))
 	       (ID (FILE-MAKE-TRANSACTION-ID)))
+	   (COND ((AND USER-ID
+		       ;; This is really a login
+		       (NULL (SETQ USER-ID (CDR (ASSOC 'ITS USER-UNAMES)))))
+		  ;; We don't know about USER-ID for this host, so must ask
+		  (FORMAT QUERY-IO "~&ITS uname? ")
+		  (SETQ USER-ID (READLINE))
+		  (FILE-HOST-USER-ID USER-ID (HOST-UNIT-HOST UNIT))))
 	   (CHAOS:SET-PKT-STRING PKT ID "  LOGIN " (IF USER-ID
 						       (STRING-UPCASE USER-ID)
 						       ""))
@@ -1289,7 +1315,8 @@
 		   (USER-ID USER-ID)
 		   (PASSWORD)
 		   (ID (FILE-MAKE-TRANSACTION-ID)))
-	       (MULTIPLE-VALUE (USER-ID PASSWORD) (FILE-GET-TOPS20-PASSWORD USER-ID))
+	       (MULTIPLE-VALUE (USER-ID PASSWORD)
+			       (FILE-GET-TOPS20-PASSWORD USER-ID (HOST-UNIT-HOST UNIT)))
 	       ;; LOGIN <UID> <PASS> <NULL ACCOUNT STRING>
 	       (CHAOS:SET-PKT-STRING PKT ID "  LOGIN " USER-ID " " PASSWORD "  ")
 	       (CHAOS:SEND-PKT CONN PKT)
@@ -1315,11 +1342,12 @@
 		   (SETF (HOST-UNIT-HOST UNIT) HOST-NAME)
 		   (SETF (HOST-UNIT-MAX-DATA-CONNECTIONS UNIT) 8.)) )
 
-(DEFUN FILE-GET-TOPS20-PASSWORD (UID)
+(DEFUN FILE-GET-TOPS20-PASSWORD (UID HOST)
   (DO-NAMED EXIT
 	    () (())
-    (FORMAT QUERY-IO "~&Current login name is ~A.
-Type either password or loginname<space>password: " UID)
+    (SETQ UID (OR (CDR (ASSOC HOST USER-UNAMES)) UID))
+    (FORMAT QUERY-IO "~&Current login name is ~A for host ~A.
+Type either password or loginname<space>password: " UID HOST)
     (DO ((LINE (MAKE-ARRAY NIL 'ART-STRING 30 NIL '(0)))
 	 (CHAR))
 	(())
@@ -1336,6 +1364,7 @@ Type either password or loginname<space>password: " UID)
 	     (FORMAT QUERY-IO "~A" UID)
 	     (SETQ CHAR (FUNCALL QUERY-IO ':TYI)))
 	    ((= CHAR #\CR)
+	     (FILE-HOST-USER-ID UID HOST)
 	     (RETURN-FROM EXIT UID LINE)))
       (ARRAY-PUSH-EXTEND LINE CHAR))))
 

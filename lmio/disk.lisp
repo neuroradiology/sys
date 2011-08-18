@@ -951,9 +951,9 @@
            (COND ((OR (NULL LH) (NULL RH))
 		  (UPDATE-PARTITION-COMMENT
 		       PART
-		       (LET ((PATHNAME (FILE-SPREAD-PATHNAME (FUNCALL FILE ':NAME))))
-			 (FORMAT NIL "~A ~D" (THIRD PATHNAME)
-				 (FUNCALL FILE ':GET ':VERSION)))
+		       (LET ((FILE-NAME (FUNCALL FILE ':NAME)))
+			 (FORMAT NIL "~A ~D"
+				 (FUNCALL FILE-NAME ':NAME) (FUNCALL FILE ':GET ':VERSION)))
 		       UNIT)
                   (CLOSE FILE)
                   (*THROW 'DONE NIL)))

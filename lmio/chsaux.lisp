@@ -646,7 +646,7 @@
          (SETQ PERSON (STRING-UPCASE (NSUBSTRING DESTINATION 0 HOST))
                HOST (NSUBSTRING DESTINATION (1+ HOST) (STRING-LENGTH DESTINATION))))
         (T (SETQ PERSON "anyone"  HOST DESTINATION)))
-  (SI:FORCE-USER-TO-LOGIN)
+  (FS:FORCE-USER-TO-LOGIN)
   (COND ((NULL MSG)
 	 (FORMAT T "~%Message: (terminate with End)~%")
 	 (SETQ MSG (SEND-MSG-GET-MESSAGE))))
@@ -700,8 +700,8 @@
                           (ZEROP (// IDLE 60.))
                           (// IDLE 60.)
                           (\ IDLE 60.)
-			  SI:USER-PERSONAL-NAME-FIRST-NAME-FIRST
-			  SI:USER-GROUP-AFFILIATION))))
+			  FS:USER-PERSONAL-NAME-FIRST-NAME-FIRST
+			  FS:USER-GROUP-AFFILIATION))))
   (FAST-ANSWER-STRING "FINGER" GIVE-FINGER-SAVED-STRING))
 
 ;; This can't run in the background process, since it uses a full byte-stream
@@ -716,8 +716,8 @@
 	   CONN
 	   "~6A ~C ~22A ~6A ~:[    ~3*~;~:[~D:~2,48D~;  ~*~D~]~]     ~A"
 	   USER-ID
-	   SI:USER-GROUP-AFFILIATION
-	   SI:USER-PERSONAL-NAME-FIRST-NAME-FIRST
+	   FS:USER-GROUP-AFFILIATION
+	   FS:USER-PERSONAL-NAME-FIRST-NAME-FIRST
 	   MY-NAME-STRING
 	   (NOT (ZEROP IDLE))
 	   (ZEROP (// IDLE 60.))

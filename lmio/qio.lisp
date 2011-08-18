@@ -261,7 +261,7 @@
 			 (ADJUST-ARRAY-SIZE BUF (ARRAY-ACTIVE-LENGTH BUF))
 			 (NULL TEM))
 		      (ARRAY-PUSH-EXTEND BUF TEM)))))
-	(:TRIGGER-MORE NIL)
+;	(:HANDLE-EXCEPTIONS NIL)
 	(OTHERWISE
 	 (RETURN (FERROR NIL "The stream operation ~S is not supported by ~S"
 			 OP FCTN))))))

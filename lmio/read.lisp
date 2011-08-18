@@ -262,14 +262,14 @@
     (TYI STREAM)))			;Echo and eat this character
 
 ;This is like READ, but ignores extra closeparens and eofs.
-(DEFUN READ-FOR-TOP-LEVEL (&AUX CH W-O)
+(DEFUN READ-FOR-TOP-LEVEL (&AUX W-O)
   (COND ((MEMQ ':READ (SETQ W-O (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS)))
 	 (FUNCALL STANDARD-INPUT ':READ))
 	((AND (NOT RUBOUT-HANDLER) (MEMQ ':RUBOUT-HANDLER W-O))
 	 ;;We must get inside the rubout handler's top-level CATCH
 	 (FUNCALL STANDARD-INPUT ':RUBOUT-HANDLER '() #'READ-FOR-TOP-LEVEL))
 	((PROG (THING TYPE SPLICEP XR-SHARP-ARGUMENT)
-	   A (MULTIPLE-VALUE (THING TYPE) (XR-READ-THING STANDARD-INPUT))
+	    A (MULTIPLE-VALUE (THING TYPE) (XR-READ-THING STANDARD-INPUT))
 	      (COND ((EQ TYPE 'READER-MACRO)
 		     (MULTIPLE-VALUE (THING TYPE SPLICEP)
 		       (FUNCALL THING ':TOPLEVEL STANDARD-INPUT))
@@ -280,7 +280,7 @@
 			   (T
 			    (FERROR NIL 
 				    "The special token ~S was read in at top level" THING)))))
-	       (RETURN THING TYPE)))))
+	      (RETURN THING TYPE)))))
 
 ;READ is almost like XR-READ-THING except READER-MACROs are invoked and SPECIAL-TOKENS
 ;are barfed at. Also this is the function to be called by the general public.

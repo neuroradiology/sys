@@ -257,5 +257,95 @@
 	 (SET-FILE-LOADED-ID FILE-SYMBOL MINI-FILE-ID PACKAGE)
 	 ))))
 
+;;; Filename-parsing utilities which need to be in the cold load.
+
+;; Given a file name, return two symbols, first for the specific file
+;; and second for the group of files with that FN1, (FN2 will be ">")
+;; Must work both before and after packages exist.
+;; Must work if STRING or flavors not loaded, we use some kludges.
+(DEFUN GET-FILE-SYMBOLS (FILE-NAME)
+  (AND (STRINGP FILE-NAME)
+       (SETQ FILE-NAME (FILE-PARSE-NAME FILE-NAME)))
+  (FUNCALL FILE-NAME ':FILE-SYMBOLS))
+
+;Convert a pathname string into a path list: (dev dir fn1 fn2).
+;The elements of a path list are strings, or NIL for an
+;unspecified position.
+;Slash and control-Q () are quoting characters.  Colon, semicolon, space
+;and tab separate filename components.
+(DEFUN FILE-SPREAD-ITS-PATHNAME (PATHNAME &AUX DEV DEV-A DIR FN1 FN2)
+  (COND ((SYMBOLP PATHNAME)
+	 (SETQ PATHNAME (GET-PNAME PATHNAME))))
+  (PROG ()
+    (COND ((STRINGP PATHNAME)
+	   (DO ((I 0) (CH) (TEM) (NEXT) (LEN (STRING-LENGTH PATHNAME)) (J 0 (1+ J)))
+	       ((> J LEN))
+	     (SETQ CH (COND ((= J LEN) #\SP)
+			    (T (AR-1 PATHNAME J))))
+	     (COND ((STRING-SEARCH-CHAR CH "//")
+		    (SETQ J (1+ J)))
+		   ;; Last two characters of the string are space and tab.
+		   ((SETQ TEM (STRING-SEARCH-CHAR CH ":; 	"))
+		    (SETQ NEXT (STRING-UPCASE (SUBSTRING PATHNAME I J)))
+		    (COND ((NOT (ZEROP (STRING-LENGTH NEXT)))
+			   (SELECTQ TEM
+			     (0 (AND DEV (SETQ DEV-A DEV))
+				(SETQ DEV NEXT))
+			     (1 (SETQ DIR NEXT))
+			     ((2 3) (COND (FN2)
+					  (FN1 (SETQ FN2 NEXT))
+					  (T (SETQ FN1 NEXT)))))))
+		    (SETQ I (1+ J)))))
+	   (RETURN (LIST DEV DIR FN1 FN2) (OR DEV-A DEV)))
+	  ((LISTP PATHNAME)			;MACLISP FILE-LISTS
+	   (RETURN
+	     (MAPCAR #'(LAMBDA (X) (AND X (STRING X))) ;LEAVE NILS FOR UNSPECIFIED COMPONENTS
+		     (COND ((LISTP (CAR PATHNAME))
+			    (COND ((CDAR PATHNAME)
+				   (LIST (CAAR PATHNAME) (CADAR PATHNAME)  ;BOTH DEV AND DIR
+					 (CADR PATHNAME) (CADDR PATHNAME)))
+				  (T (LIST NIL (CAAR PATHNAME)	;JUST DIR
+					   (CADR PATHNAME) (CADDR PATHNAME)))))
+			   (T (LIST (CADDR PATHNAME) (CADDDR PATHNAME)     ;N1 N2 DEV DIR
+				    (CAR PATHNAME) (CADR PATHNAME)))))
+	     NIL))
+	  (T (FERROR NIL "~S is not an acceptable pathname" PATHNAME)))))
+
+;;; Temporary definition, only work for ITS, no defaulting, etc.
+(LOCAL-DECLARE ((SPECIAL THE-FILE-NAME))
+(DEFUN FILE-PARSE-NAME (THE-FILE-NAME &REST IGNORE)
+  (IF (NOT (STRINGP THE-FILE-NAME)) THE-FILE-NAME
+      (CLOSURE '(THE-FILE-NAME) 'COLD-PARSE-FILE-NAME-INTERNAL)))
+
+(DEFUN COLD-PARSE-FILE-NAME-INTERNAL (OP &REST REST)
+  (SELECTQ OP
+    (:TYPE (FOURTH (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME)))
+    ((:STRING-FOR-PRINTING :STRING-FOR-HOST :STRING-FOR-WHOLINE) THE-FILE-NAME)
+    (:OPEN 
+     (LEXPR-FUNCALL #'FS:OPEN-CHAOS (FIRST (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME))
+		    'COLD-PARSE-FILE-NAME-INTERNAL REST))
+    (:FILE-SYMBOLS
+     (PROG (FILE-SYMBOL FILE-GROUP-SYMBOL)
+       (SETQ FILE-GROUP-SYMBOL (COND ((FBOUNDP 'NSUBSTRING)
+				      (LET ((PATH (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME)))
+					(STRING-APPEND (FIRST PATH) ": "
+						       (SECOND PATH) "; "
+						       (THIRD PATH) " >")))
+				     ((STRING-EQUAL THE-FILE-NAME "AI: LISPM; QFCTNS QFASL")
+				      "AI: LISPM; QFCTNS >")
+				     ((STRING-EQUAL THE-FILE-NAME "AI: LISPM2; STRING QFASL")
+				      "AI: LISPM2; STRING >")
+				     (T (FERROR NIL "File not known" THE-FILE-NAME))))
+       (COND ((FBOUNDP 'INTERN-LOCAL)
+	      (SETQ FILE-SYMBOL (INTERN-LOCAL THE-FILE-NAME PKG-FILE-PACKAGE))
+	      (SETQ FILE-GROUP-SYMBOL (INTERN-LOCAL FILE-GROUP-SYMBOL PKG-FILE-PACKAGE)))
+	     (T
+	      (SETQ FILE-SYMBOL (INTERN THE-FILE-NAME))
+	      (SETQ FILE-GROUP-SYMBOL (INTERN FILE-GROUP-SYMBOL))
+	      (RPLACA (PACKAGE-CELL-LOCATION FILE-SYMBOL) 'FILES)
+	      (RPLACA (PACKAGE-CELL-LOCATION FILE-GROUP-SYMBOL) 'FILES)))
+       (RETURN FILE-SYMBOL FILE-GROUP-SYMBOL)))))
+);LOCAL-DECLARE
+
  ;Note that SETQ may not be used in the below
 (ADD-INITIALIZATION "MINI" '(SET' MINI-OPEN-P NIL) '(WARM FIRST))

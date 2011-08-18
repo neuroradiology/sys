@@ -340,7 +340,7 @@
     (AND TEM (LE-INITIALIZE-LABEL LE-RQB TEM)))
   (LE-DISPLAY-LABEL LE-RQB LE-UNIT))
 
-(DEFUN LE-COM-CONTROL-D ()	;Delete this partition
+(DEFUN LE-COM-CONTROL-K ()	;Delete this partition
   (LET ((PLOC (LE-CURRENT-PARTITION)))
     (FORMAT T "~&Delete the ~S partition? " (GET-DISK-STRING LE-RQB PLOC 4))
     (COND ((Y-OR-N-P)
@@ -437,5 +437,5 @@
 B back, F forward, P up, N down
 R read label from disk, W write label to disk, I initialize the label
 E edit selected item
-O add partition, D delete partition, S sort partitions
+O add partition, K delete partition, S sort partitions
 <END> exit"))

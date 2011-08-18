@@ -517,13 +517,13 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 			(AND (= CHAR (AREF SI:KBD-TRANSLATE-TABLE 2 I))
 			     (RETURN (AREF SI:KBD-TRANSLATE-TABLE 1 I))))))
 	((SETQ CHNAME (DOTIMES (I 200)
-			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 3 I))
+			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 2 I))
 			     (RETURN (AREF SI:KBD-NEW-TABLE 1 I)))))
 	 (SETQ NAME " (Top-"))
 	((SETQ CHNAME (DOTIMES (I 200)
-			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 4 I))
+			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 3 I))
 			     (RETURN (AREF SI:KBD-NEW-TABLE 0 I)))
-			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 5 I))
+			(AND (= CHAR (AREF SI:KBD-NEW-TABLE 4 I))
 			     (RETURN (AREF SI:KBD-NEW-TABLE 1 I)))))
 	 (SETQ NAME (IF (OR (AND ( CHNAME #/A) ( CHNAME #/Z))
 			    (AND ( CHNAME #/a) ( CHNAME #/z)))
