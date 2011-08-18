@@ -2,6 +2,10 @@
 
 ;;; Process system and scheduler
 
+; A process is an instance which embodies one or several stack groups as well as
+; appropriate variables to determine the stack-group's status and runnability.
+; See PRODEF
+
 ;;; ACTIVE-PROCESSES	An alist of all processes that are runnable.
 ;;;			A process is runnable if it has at least one run
 ;;;			reason, and no arrest reasons.  This list is maintained

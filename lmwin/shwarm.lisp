@@ -333,7 +333,7 @@ to the left and top margins.  Cursorpos is `clipped' to stay inside the sheet-in
   (SETQ LEN (IF (NUMBERP STRING)
 		(SHEET-CHARACTER-WIDTH SHEET STRING (SHEET-CURRENT-FONT SHEET))
 		(SHEET-STRING-LENGTH SHEET STRING START END)))
-  (SHEET-DELETE-CHAR LEN ':PIXEL))
+  (SHEET-DELETE-CHAR SHEET LEN ':PIXEL))
 
 (DEFUN SHEET-TYO (SHEET CHAR)
   "Draw a printing character in a sheet, or execute a special function"

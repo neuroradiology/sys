@@ -667,10 +667,22 @@ I    -- Toggle imlac simulation.
 (DEFVAR GT40-DISPLAY-LIST (MAKE-ARRAY NIL 'ART-Q-LIST 10.))
 (DEFVAR GT40-BLINKER NIL)
 (DEFVAR GT40-CURRENT-ITEM-NUMBER)
+(DEFVAR SUDS-KBD-NEW-TABLE			;allows thumb keys to be used
+  (LET ((TBL (SI:KBD-MAKE-NEW-TABLE)))
+    (DOLIST (L '((176 #// #/ #// #/) (106 #/\ #/| #/\ #/|)
+		 (117 #/[ #/{ #/[ #/{) (17 #/] #/} #/] #/})))
+      (LET ((NCH (FIRST L)) (LCH (REST1 L)))
+	(DOTIMES (I 5)
+	  (ASET (CAR LCH) TBL I NCH)
+	  (IF (REST1 LCH) (SETQ LCH (REST1 LCH))))))
+    TBL))
 
 ;; %TDMTN is a crock for simulating GT-40's, used by DECUUO on ITS for Imlacs...
 
 (DEFUN SUPDUP-GT40 (SHEET &AUX (BYTE (- (NVT-NETI) 100)))
+  (IF ( (AREF SUDS-KBD-NEW-TABLE 0 176)	;crock for thumb keys, only when
+	 (AREF SI:KBD-NEW-TABLE 0 176))		;doing GT40 simulation
+      (SETQ SI:KBD-NEW-TABLE SUDS-KBD-NEW-TABLE))
   (OR (< BYTE 0)
       (FUNCALL (AREF GT40-DISPATCH (LOGAND 17 BYTE)) SHEET)))
 
@@ -1043,18 +1055,25 @@ I    -- Toggle imlac simulation.
 	   (FUNCALL STREAM ':TYO 377)))))	;IAC's must be quoted
 
 (DEFMETHOD (BASIC-TELNET :BUFFERED-TYO) (CH)
-  (COND ((= CH NVT-IAC)
-	 (FUNCALL-SELF ':HANDLE-IAC))			;Perform new telnet negotiations.
-	(( CH 200))					;Ignore otelnet negotiations
-	((= CH 7) (TV:BEEP))				;^G rings the bell.
-	((= CH 12))					;Ignore linefeeds
-	((AND (= CH 177) SIMULATE-IMLAC-FLAG)		;Escape character
-	 (FUNCALL-SELF ':HANDLE-IMLAC-ESCAPE))
-	(T
-	 (AND ( CH 10) ( CH 15) ( CH 13)	;Convert formatting controls
-	      (SETQ CH (+ CH 200)))		;to Lisp machine char set.
-	 (DO () ((ARRAY-PUSH OUTPUT-BUFFER CH))
-	   (FUNCALL SELF ':FORCE-OUTPUT)))))
+  (MULTIPLE-VALUE-BIND (IGNORE Y) (FUNCALL-SELF ':READ-CURSORPOS)
+    (COND ((= CH NVT-IAC)
+	   (FUNCALL-SELF ':HANDLE-IAC))		;Perform new telnet negotiations.
+	  (( CH 200))				;Ignore otelnet negotiations
+	  ((= CH 7) (TV:BEEP))			;^G rings the bell.
+	  ((= CH 15)
+	   (FUNCALL-SELF ':FORCE-OUTPUT)
+	   (FUNCALL-SELF ':SET-CURSORPOS 0 Y))
+	  ((= CH 12)
+	   (FUNCALL-SELF ':FORCE-OUTPUT)
+	   (FUNCALL-SELF ':INCREMENT-CURSORPOS 0 1 ':CHARACTER)
+	   (FUNCALL-SELF ':CLEAR-EOL))
+	  ((AND (= CH 177) SIMULATE-IMLAC-FLAG)	;Escape character
+	   (FUNCALL-SELF ':HANDLE-IMLAC-ESCAPE))
+	  (T
+	   (AND ( CH 10) ( CH 15) ( CH 13)	;Convert formatting controls
+		(SETQ CH (+ CH 200)))		;to Lisp machine char set.
+	   (DO () ((ARRAY-PUSH OUTPUT-BUFFER CH))
+	     (FUNCALL-SELF ':FORCE-OUTPUT))))))
 
 ;;;New telnet protocol IAC handler
 (DEFMETHOD (BASIC-TELNET :HANDLE-IAC) (&AUX COMMAND OPTION)

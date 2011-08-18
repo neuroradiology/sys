@@ -944,9 +944,9 @@ modified.  Causes the menu's item list to be updated at appropriate times."))
 ;;; In this case, if the caddr of the item is also non-nil,
 ;;; no windows will be re-exposed before the cadr is called.
 (DEFFLAVOR MOMENTARY-MENU ((LABEL NIL)) (BASIC-MOMENTARY-MENU TEMPORARY-WINDOW-MIXIN
-					 TOP-LABEL-MIXIN BORDERS-MIXIN
+					 BORDERS-MIXIN TOP-BOX-LABEL-MIXIN
 					 MINIMUM-WINDOW)
-  (:DOCUMENTATION :COMBINATION "Temporary menu that goes away after item it chosen"))
+  (:DOCUMENTATION :COMBINATION "Temporary menu that goes away after item is chosen"))
 
 
 (DEFFLAVOR MOMENTARY-WINDOW-HACKING-MENU () (WINDOW-HACKING-MENU-MIXIN MOMENTARY-MENU)
