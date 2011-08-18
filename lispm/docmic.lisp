@@ -14,7 +14,9 @@ No complaint about loading//clobbering the sign bit" :DOCUMENTATION)
 
 (DEFPROP ROT "24-bit logical rotate for fixnums" :DOCUMENTATION)
 
-(DEFPROP MAKE-LIST "Construct a cdr-coded list of NILs of the specified length" :DOCUMENTATION)
+(DEFPROP %OLD-MAKE-LIST "Construct a cdr-coded list of NILs of the specified length" :DOCUMENTATION)
+
+(DEFPROP %MAKE-LIST "Construct a cdr-coded list of objects of the specified length" :DOCUMENTATION)
 
 (DEFPROP BIND "Bind any location to a specified value.
 Adds the binding to the current stack-frame.  Only works in compiled code.
@@ -76,3 +78,26 @@ of giving the array." :DOCUMENTATION)
 (DEFPROP %STRUCTURE-BOXED-SIZE "Returns the number of normal Lisp pointers in an object."
 	 :DOCUMENTATION)
 
+(DEFPROP STACK-GROUP-RETURN
+	"Resumes the current stack group's resumer, transmitting the value X.
+The resumer's own resumer is not affected."
+	:DOCUMENTATION)
+
+(DEFPROP STACK-GROUP-RESUME
+	"Resumes SG, transmitting the value X.  SG's resumer is not affected."
+	:DOCUMENTATION)
+
+(DEFPROP BIGNUM-TO-ARRAY
+	 "Converts a bignum into an array.
+The first argument is a bignum, the second is a fixnum.  The bignum is
+expressed in the base of the fixnum and stuffed into an appropriate art-q
+array.  The sign of the bignum is ignored."
+	 :DOCUMENTATION)
+
+(DEFPROP ARRAY-TO-BIGNUM
+	"Converts an array into a bignum.
+The first argument is an art-q array, the second is a fixnum and the
+third is the sign bit (0 or 1).  The art-q array is interpreted as a bignum
+expressed in the base of the fixnum and converted into that bignum.  It is
+given the third argument as its sign.  This is the inverse of BIGNUM-TO-ARRAY."
+	 :DOCUMENTATION)

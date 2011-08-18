@@ -1,44 +1,15 @@
-;This file contains pass 1 and the top level of the Lisp machine Lisp compiler  -*-LISP-*-
+;  -*-Package:COMPILER; Mode:LISP-*-
+;This file contains pass 1 and the top level of the Lisp machine Lisp compiler
 
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;;     "This is insane.  What we clearly want to do is not completely
 ;;      clear, and is rooted in NCOMPLR."   -- BSG/Dissociated Press.
 
-(DECLARE (COND ((STATUS FEATURE LISPM))
-	       ((NULL (MEMQ 'NEWIO (STATUS FEATURES)))
-		(BREAK 'YOU-HAVE-TO-COMPILE-THIS-WITH-QCOMPL T))
-	       ((NULL (GET 'IF-FOR-MACLISP 'MACRO))
-		(LOAD '(MACROS > DSK LISPM))
-		(LOAD '(DEFMAC FASL DSK LISPM2))
-		(LOAD '(LMMAC > DSK LISPM2))
-		(INCLUDE |LISPM;QCDEFS >|))))
-
-(DECLARE (SETQ OPEN-CODE-MAP-SWITCH T
-	       RUN-IN-MACLISP-SWITCH T))
-
 (DECLARE (SPECIAL MC-HOLDPROG ULAP-DEBUG LAP-DEBUG QC-PREVIOUS-CONS-AREA
 		  MS-HOLDPROG MSLAP-DEBUG FUNCTIONS-DEFINED
 		  TRACE-TABLE QC-TF-PROCESSING-MODE QC-TF-OUTPUT-MODE))
 
-;This function is used to dump out a compiler.  When restarted,
-; if JCL is given, that file will be read and executed.
-(IF-FOR-MACLISP
-(DEFUN PDUMP ()
- (PROG (JCL)
-   (SUSPEND '|:PDUMP LISPM1;TS QCMP|) ;user can hit carriage return or control-D
-   (COND ((SETQ JCL (STATUS JCL))
-	  (LOAD (MERGEF (NAMELIST (MAKNAM JCL)) `((DSK ,(STATUS UDIR)) * >))))
-	 (T (RETURN 'READY)))))
-)
-
-(IF-FOR-MACLISP
-(DEFUN CIRCULAR-LIST N
-   ((LAMBDA (TEM)
-	    (RPLACD (LAST TEM) TEM)
-	    TEM)
-    (APPEND (LISTIFY N) NIL)))
-)
 (DECLARE (*EXPR MEMQL BUTLAST ADRREFP LDIFF GETARGDESC P2 P2SBIND
 		OUTF BARF ULAP MICRO-COMPILE QLAPP))
 
@@ -47,38 +18,40 @@
 ;(logically, the cold load would contain SPECIAL properties for them,
 ;but this function is how they actually get put on).
 (DEFUN QC-PROCESS-INITIALIZE NIL 
-	(SETQ HOLDPROG T)
-	(SETQ MC-HOLDPROG T)
-	(SETQ ULAP-DEBUG NIL)
-	(SETQ LAP-DEBUG NIL)
-	(SETQ MS-HOLDPROG T)
-	(SETQ MSLAP-DEBUG NIL)
-	(SETQ FUNCTION-BEING-PROCESSED NIL)  ;FOR ERROR PRINTOUTS.  AVOID ANY UNBOUND PROBLEMS
-	(SETQ QCMP-OUTPUT NIL)
-	(SETQ MACROLIST NIL)
-	(SETQ RETAIN-VARIABLE-NAMES-SWITCH 'ARGS)
-	(SETQ OPEN-CODE-MAP-SWITCH T)
-	(SETQ ALLOW-VARIABLES-IN-FUNCTION-POSITION-SWITCH NIL)
-	(SETQ ALL-SPECIAL-SWITCH NIL)
-	(SETQ OBSOLETE-FUNCTION-WARNING-SWITCH T)
-	(SETQ RUN-IN-MACLISP-SWITCH NIL)
-	(SETQ INHIBIT-STYLE-WARNINGS-SWITCH NIL)
-	(OR (BOUNDP 'QCOMPILE-TEMPORARY-AREA)
-	    (SETQ QCOMPILE-TEMPORARY-AREA FASD-TEMPORARY-AREA))
-
-	(IF-FOR-LISPM
-	  (COND ((NULL (GET 'CDR-NIL 'SYSTEM-CONSTANT))
-		 (MAPC (FUNCTION (LAMBDA (Y) 
-			   (MAPC (FUNCTION (LAMBDA (X) 
-				     (PUTPROP X T 'SYSTEM-CONSTANT)))
-				 (SYMEVAL Y)) )) 
-		       SYSTEM-CONSTANT-LISTS)
-		 (MAPC (FUNCTION (LAMBDA (Y) 
-			   (MAPC (FUNCTION (LAMBDA (X) 
-				     (PUTPROP X T 'SPECIAL)))
-				 (SYMEVAL Y)) )) 
-		       SYSTEM-VARIABLE-LISTS))))
-)
+  (SETQ HOLDPROG T)
+  (SETQ MC-HOLDPROG T)
+  (SETQ ULAP-DEBUG NIL)
+  (SETQ LAP-DEBUG NIL)
+  (SETQ MS-HOLDPROG T)
+  (SETQ MSLAP-DEBUG NIL)
+  (SETQ FUNCTION-BEING-PROCESSED NIL)	;FOR ERROR PRINTOUTS.  AVOID ANY UNBOUND PROBLEMS
+  (SETQ MACROLIST NIL)
+  (SETQ OPEN-CODE-MAP-SWITCH T)
+  (SETQ ALLOW-VARIABLES-IN-FUNCTION-POSITION-SWITCH NIL)
+  (SETQ ALL-SPECIAL-SWITCH NIL)
+  (SETQ OBSOLETE-FUNCTION-WARNING-SWITCH T)
+  (SETQ RUN-IN-MACLISP-SWITCH NIL)
+  (SETQ INHIBIT-STYLE-WARNINGS-SWITCH NIL)
+  (OR (BOUNDP 'QCOMPILE-TEMPORARY-AREA)
+      (SETQ QCOMPILE-TEMPORARY-AREA FASD-TEMPORARY-AREA))
+  (OR (FBOUNDP 'QCMP-OUTPUT)
+      (FSET 'QCMP-OUTPUT
+	    (MAKE-ARRAY 2000 ':AREA WORKING-STORAGE-AREA
+			':TYPE 'ART-Q-LIST
+			':LEADER-LIST '(0))))
+  (IF-FOR-LISPM
+    (COND ((NULL (GET 'CDR-NIL 'SYSTEM-CONSTANT))
+	   (MAPC (FUNCTION (LAMBDA (Y) 
+			     (MAPC (FUNCTION (LAMBDA (X) 
+					       (PUTPROP X T 'SYSTEM-CONSTANT)))
+				   (SYMEVAL Y)) )) 
+		 SYSTEM-CONSTANT-LISTS)
+	   (MAPC (FUNCTION (LAMBDA (Y) 
+			     (MAPC (FUNCTION (LAMBDA (X) 
+					       (PUTPROP X T 'SPECIAL)))
+				   (SYMEVAL Y)) )) 
+		 SYSTEM-VARIABLE-LISTS))))
+  )
 
 ;; Compile a function which already has an interpreted definition,
 ;; or define it to a newly supplied definition's compilation.
@@ -86,22 +59,24 @@
 ;; be compiled, we just leave it unchanged.
 (IF-FOR-LISPM
 (DEFUN COMPILE (NAME &OPTIONAL LAMBDA-EXP)
-     (AND QC-FILE-IN-PROGRESS	;Check for condition likely to cause temporary area lossage
-	  (FORMAT ERROR-OUTPUT "~&COMPILE: Compiler recursively entered, you may lose.~%"))
-     (PROG (TEM LAST-ERROR-FUNCTION BARF-SPECIAL-LIST FUNCTIONS-REFERENCED FUNCTIONS-DEFINED)
-	(QC-PROCESS-INITIALIZE)
-	(RESET-TEMPORARY-AREA FASD-TEMPORARY-AREA)
-	(COND (LAMBDA-EXP)
-	      ((AND (FDEFINEDP NAME)
-		    (LISTP (FDEFINITION NAME)))
-		(SETQ LAMBDA-EXP (FDEFINITION NAME)))
-	      ((AND (SYMBOLP NAME)
-                    (SETQ TEM (GET NAME ':PREVIOUS-EXPR-DEFINITION)))
-	       (SETQ LAMBDA-EXP TEM))
-	      (T (FERROR NIL "Can't find LAMBDA expression for ~S" NAME)))
-	(COMPILE-1 NAME LAMBDA-EXP)
-	(RETURN NAME)))
- )
+  (AND QC-FILE-IN-PROGRESS	;Check for condition likely to cause temporary area lossage
+       (FORMAT ERROR-OUTPUT "~&COMPILE: Compiler recursively entered, you may lose.~%"))
+  (COMPILER-WARNINGS-CONTEXT-BIND
+    (PROG (TEM LAST-ERROR-FUNCTION COMPILING-WHOLE-FILE-P)
+      (QC-PROCESS-INITIALIZE)
+      (RESET-TEMPORARY-AREA FASD-TEMPORARY-AREA)
+      (SETQ COMPILING-WHOLE-FILE-P (ZWEI:SETUP-COMPILER-WARNINGS))
+      (COND (LAMBDA-EXP)
+	    ((AND (FDEFINEDP NAME)
+		  (LISTP (SETQ TEM (FDEFINITION (SI:UNENCAPSULATE-FUNCTION-SPEC NAME)))))
+	     (SETQ LAMBDA-EXP TEM))
+	    ((AND (SYMBOLP NAME)
+		  (SETQ TEM (GET NAME ':PREVIOUS-EXPR-DEFINITION)))
+	     (SETQ LAMBDA-EXP TEM))
+	    (T (FERROR NIL "Can't find LAMBDA expression for ~S" NAME)))
+      (COMPILE-1 NAME LAMBDA-EXP)
+      (RETURN NAME))))
+)
 
 (IF-FOR-LISPM		;Compile while already inside compiler environment
 (DEFUN COMPILE-1 (NAME LAMBDA-EXP &OPTIONAL (PROCESSING-MODE 'MACRO-COMPILE))
@@ -119,102 +94,149 @@
 ;; COMPILE was used.
 
 (IF-FOR-LISPM 
-(DEFUN UNCOMPILE (NAME)			;PUT INTERPRETED BACK ON FUNCTION CELL
-   (COND ((AND (BOUNDP 'TRACE-TABLE) (ASSQ NAME TRACE-TABLE))
-	  "Untrace it first")
-	 ((AND (GET NAME ':PREVIOUS-EXPR-DEFINITION)
-	       (NOT (AND (FBOUNDP NAME)
-			 (LISTP (FSYMEVAL NAME))
-			 (NOT (AND (EQ (CAR (FSYMEVAL NAME)) 'MACRO)
-				   (= (%DATA-TYPE (CDR (FSYMEVAL NAME))) DTP-FEF-POINTER))))))
-	  (FSET NAME (GET NAME ':PREVIOUS-EXPR-DEFINITION))
-	  T)
-	 (T "Not compiled"))) )
+(DEFUN UNCOMPILE (FUNCTION-SPEC &AUX OLD)
+  (COND ((AND (SETQ OLD (SI:FUNCTION-SPEC-GET FUNCTION-SPEC ':PREVIOUS-EXPR-DEFINITION))
+	      (NOT (AND (FDEFINEDP FUNCTION-SPEC)
+			(LISTP (FDEFINITION FUNCTION-SPEC))
+			(NOT (AND (EQ (CAR (FDEFINITION FUNCTION-SPEC)) 'MACRO)
+				  (TYPEP (CDR (FDEFINITION FUNCTION-SPEC))
+					 ':COMPILED-FUNCTION))))))
+	 (FDEFINE FUNCTION-SPEC OLD T T))
+	(T "Not compiled")))
+)
 
 ;; Compile one function.  All styles of the compiler come through here.
 ;; QC-TF-PROCESSING-MODE should be MACRO-COMPILE or MICRO-COMPILE.
 ;; QC-TF-OUTPUT-MODE is used by LAP to determine where to put the compiled code.
-;; It is COMPILE-TO-CORE for making an actual FEF, QFASL, or REL.
+;; It is COMPILE-TO-CORE for making an actual FEF, QFASL, REL, or
+;; QFASL-NO-FDEFINE to simply dump a FEF without trying to define a function
+;; (poor modularity).
 ;; EXP is the lambda-expression.
-
-(DEFUN QC-TRANSLATE-FUNCTION (FUNCTION-BEING-PROCESSED EXP
-			      QC-TF-PROCESSING-MODE QC-TF-OUTPUT-MODE)
-   (LET ((QCMP-OUTPUT)
-   	 (ERROR-MESSAGE-HOOK
-	   (IF-FOR-LISPM
-	    (CLOSURE '(FUNCTION-BEING-PROCESSED) ;Since called in other SG
-	             (FUNCTION (LAMBDA ()
-		         (AND FUNCTION-BEING-PROCESSED
+;; In MACRO-COMPILE mode, the return value is the value of QLAPP for the first
+;; function.
+(DEFUN QC-TRANSLATE-FUNCTION (FUNCTION EXP QC-TF-PROCESSING-MODE QC-TF-OUTPUT-MODE)
+  (LET ((ERROR-MESSAGE-HOOK
+	  (LET-CLOSED ((FUNCTION-BEING-PROCESSED FUNCTION))
+	    #'(LAMBDA () (AND FUNCTION-BEING-PROCESSED
 			      (FORMAT T "Error occurred while compiling ~S"
-				      FUNCTION-BEING-PROCESSED)))))))
-	 (QCOMPILE-POST-PROC (FUNCTION QC-TRANSLATE-FUNCTION-POST-PROC)))
-	(IF-FOR-LISPM
-	   (COND ((NOT (FBOUNDP 'QCMP-OUTPUT))
-		  (FSET 'QCMP-OUTPUT
-			(MAKE-ARRAY WORKING-STORAGE-AREA 'ART-Q-LIST 1000 NIL '(0))))
-		 (T (STORE-ARRAY-LEADER 0 (FUNCTION QCMP-OUTPUT) 0))))
-        (LET ((QC-PREVIOUS-CONS-AREA DEFAULT-CONS-AREA)
-	      #Q (DEFAULT-CONS-AREA QCOMPILE-TEMPORARY-AREA))
-	     (QCOMPILE0 EXP FUNCTION-BEING-PROCESSED
-			(EQ QC-TF-PROCESSING-MODE 'MICRO-COMPILE))
-	     (IF-FOR-LISPM
-	        (SETQ QCMP-OUTPUT (G-L-P (FUNCTION QCMP-OUTPUT))))
-             (AND PEEP-ENABLE (PEEP QCMP-OUTPUT))
-	     (QC-TRANSLATE-FUNCTION-POST-PROC))
-	T))
-
-(DEFUN QC-TRANSLATE-FUNCTION-POST-PROC ()
-  (LET ((DEFAULT-CONS-AREA QC-PREVIOUS-CONS-AREA))
-    (COND ((EQ QC-TF-PROCESSING-MODE 'MACRO-COMPILE)
-	   (QLAPP QCMP-OUTPUT QC-TF-OUTPUT-MODE))
-	  ((EQ QC-TF-PROCESSING-MODE 'MICRO-COMPILE)
-	   (MICRO-COMPILE QCMP-OUTPUT QC-TF-OUTPUT-MODE)
-	   ))))
+				      FUNCTION-BEING-PROCESSED)))))
+	(QC-FUNCTIONS-TO-BE-TRANSLATED (NCONS (LIST FUNCTION EXP LOCAL-DECLARATIONS)))
+	VAL
+	THIS-FUNCTION-BARF-SPECIAL-LIST
+	VARIABLES-LISTS)
+    (DO ((L QC-FUNCTIONS-TO-BE-TRANSLATED (CDR L))
+	 (QC-PREVIOUS-CONS-AREA DEFAULT-CONS-AREA)
+	 (DEFAULT-CONS-AREA QCOMPILE-TEMPORARY-AREA)
+	 (FUNCTION-BEING-PROCESSED)
+	 (COMPILER-LEXICAL-ENVIRONMENT)
+	 (EXP)
+	 (LOCAL-DECLARATIONS))
+	((NULL L))
+      (STORE-ARRAY-LEADER 0 (FUNCTION QCMP-OUTPUT) 0)
+      (SETF `(,FUNCTION-BEING-PROCESSED ,EXP ,LOCAL-DECLARATIONS ,COMPILER-LEXICAL-ENVIRONMENT) (CAR L))
+      (PUSH (QCOMPILE0 EXP FUNCTION-BEING-PROCESSED (EQ QC-TF-PROCESSING-MODE 'MICRO-COMPILE))
+	    VARIABLES-LISTS)
+      (SETQ QCMP-OUTPUT (G-L-P (FUNCTION QCMP-OUTPUT)))
+      (AND PEEP-ENABLE (PEEP QCMP-OUTPUT))
+      (LET ((DEFAULT-CONS-AREA QC-PREVIOUS-CONS-AREA))
+	(COND ((NULL HOLDPROG))
+	      ((EQ QC-TF-PROCESSING-MODE 'MACRO-COMPILE)
+	       (SETQ EXP (QLAPP QCMP-OUTPUT QC-TF-OUTPUT-MODE))
+	       (OR VAL (SETQ VAL EXP)))
+	      ((EQ QC-TF-PROCESSING-MODE 'MICRO-COMPILE)
+	       (MICRO-COMPILE QCMP-OUTPUT QC-TF-OUTPUT-MODE)))))
+    (LET ((FUNCTION-BEING-PROCESSED FUNCTION))	;FUNCTION or its internals
+      (DOLIST (VL VARIABLES-LISTS)
+	(DOLIST (V VL)
+	  (COND ((OR (STRING-EQUAL (VAR-NAME V) 'IGNORE)
+		     (STRING-EQUAL (VAR-NAME V) 'IGNORED))
+		 (OR (ZEROP (VAR-USE-COUNT V))
+		     (BARF (VAR-NAME V)
+			   "(the variable by that name) is bound but is not ignored"
+			   'WARN)))
+		((NOT (STRING-EQUAL (VAR-NAME V) 'OPERATION))
+		 (AND (ZEROP (VAR-USE-COUNT V))
+		      (EQ (VAR-TYPE V) 'FEF-LOCAL)
+		      (BARF (VAR-NAME V)
+			    "is bound but is never used" 'WARN)))))))
+    VAL))
 
 ;Compile an internal lambda which must be passed as an argument
-;into a separate function, which has its own name, a gensym
-;not known to the user.  That name is returned.
-(IF-FOR-MACLISP
- (DEFUN BREAKOFF (X)
-       (PROG (FNAME)
-	 (SETQ FNAME (IF (EQ (CAR X) 'NAMED-LAMBDA)
-			 (IF (ATOM (CADR X)) (CADR X) (CAADR X))
-			 (IMPLODE (NCONC (EXPLODEN FUNCTION-BEING-PROCESSED)
-					 (EXPLODEN '-INTERNAL-)
-					 (EXPLODEN (GENSYM))))))
-    	 (COND (QCMP-OUTPUT (BARF QCMP-OUTPUT
-				  'QCMP-OUTPUT-NON-NIL-AT-INTERNAL-RECURSION
-				  'WARN)))
-	 (QCOMPILE0 X FNAME GENERATING-MICRO-COMPILER-INPUT-P)
- 	 (FUNCALL QCOMPILE-POST-PROC)
-	 (SETQ QCMP-OUTPUT NIL)		;RESET OUTPUT
-	 (RETURN FNAME))))
+;into a separate function, which has its own name which is a list.
+;That name is returned.
 
-(IF-FOR-LISPM
-(DEFUN BREAKOFF (X)
-       (PROG (FNAME)
-	 (SETQ FNAME (IF (EQ (CAR X) 'NAMED-LAMBDA)
-			 (IF (ATOM (CADR X)) (CADR X) (CAADR X))
-			 (INTERN (FORMAT NIL "~S-INTERNAL-~S" ;Shouldn't really use GENSYM!
-					 FUNCTION-BEING-PROCESSED (GENSYM)))))
-    	 (COND ((NOT (ZEROP (ARRAY-LEADER (FUNCTION QCMP-OUTPUT) 0)))
-		(BARF NIL 'QCMP-OUTPUT-NON-EMPTY-AT-INTERNAL-RECURSION 'WARN)))
-	 (QCOMPILE0 X FNAME GENERATING-MICRO-COMPILER-INPUT-P)
-    	 (SETQ QCMP-OUTPUT (G-L-P (FUNCTION QCMP-OUTPUT)))
- 	 (FUNCALL QCOMPILE-POST-PROC)
-	 (STORE-ARRAY-LEADER 0 (FUNCTION QCMP-OUTPUT) 0)
-	 (RETURN FNAME))))
+(DEFUN BREAKOFF (X &OPTIONAL LEXICAL &AUX FNAME)
+  (SETQ FNAME (IF (EQ (CAR X) 'NAMED-LAMBDA)
+		  (IF (ATOM (CADR X)) (CADR X) (CAADR X))
+		  (PROG1 `(:INTERNAL ,FUNCTION-BEING-PROCESSED ,BREAKOFF-COUNT)
+			 (SETQ BREAKOFF-COUNT (1+ BREAKOFF-COUNT)))))
+  (SETQ QC-FUNCTIONS-TO-BE-TRANSLATED
+	(NCONC QC-FUNCTIONS-TO-BE-TRANSLATED
+	       (NCONS (LIST FNAME X LOCAL-DECLARATIONS 
+			    (AND LEXICAL (CONS VARS COMPILER-LEXICAL-ENVIRONMENT))))))
+  FNAME)
 
-;; Given a function, break it or parts of it off if appropriate
-;; and return the result.  If no part needs breaking off, return NIL.
-;; (OR (MAYBE-BREAKOFF X) X) returns X, broken off as appropriate.
-(DEFUN MAYBE-BREAKOFF (FUNCTION)
+;; Given a function, break it off if appropriate
+;; and return the result.
+;; This will be (FUNCTION symbol) or (BREAKOFF-FUNCTION list).
+;; If it doesn't need breaking off, return NIL.
+(DEFUN MAYBE-BREAKOFF (FUNCTION &OPTIONAL LEXICAL)
     (COND ((ATOM FUNCTION) NIL)
 	  ((MEMQ (CAR FUNCTION) '(LAMBDA NAMED-LAMBDA))
-	   (BREAKOFF FUNCTION))
-	  ((MEMQ (CAR FUNCTION) '(CURRY-BEFORE CURRY-AFTER))
-	   (LET ((TEM (MAYBE-BREAKOFF (CADR FUNCTION))))
-	       (AND TEM `(,(CAR FUNCTION) ,TEM . ,(CDDR FUNCTION)))))))
+	   (LET ((TEM (BREAKOFF FUNCTION LEXICAL)))
+	     (COND ((SYMBOLP TEM) (LIST 'FUNCTION TEM))
+		   (T (LIST 'BREAKOFF-FUNCTION TEM)))))))
+
+;; If FUNCTION needs to be broken off, make a lexical closure from it
+;; and return the way to pass that along to pass 2.
+;; Otherwise return nil.
+(DEFUN MAYBE-BREAKOFF-LEXICAL-CLOSURE (FUNCTION)
+  (LET ((TEM (MAYBE-BREAKOFF FUNCTION T)))
+    (AND TEM `(LEXICAL-CLOSURE ,(MAKE-LEXICAL-CLOSURE-HOMES TEM)))))
+
+;; Create the six local variables which will eventually be used as
+;; the space to hold the data of a lexical closure for a specified function.
+;; Returns a list (LEXICAL-CLOSURE var-home) containing the home
+;; for the first of those six.  This list is the expression passed to pass 2.
+;; FN-NAME should be (FUNCTION symbol) or (BREAKOFF-FUNCTION list).
+(DEFUN MAKE-LEXICAL-CLOSURE-HOMES (FN-NAME)
+  (LET* ((GEN (GENSYM))
+	 (MYVARS
+	   (LIST (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				`(FEF-INI-PNTR ,FN-NAME) 'FEF-QT-EVAL ())
+		 (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				'(FEF-INI-PNTR (LOCATIVE-TO-S-V-CELL LEXICAL-ENVIRONMENT))
+				'FEF-QT-EVAL ())
+		 (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				'(FEF-INI-NIL NIL) 'FEF-QT-EVAL ())
+		 (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				'(FEF-INI-NIL NIL) 'FEF-QT-EVAL ())
+		 (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				'(FEF-INI-NIL NIL) 'FEF-QT-EVAL ())
+		 (VAR-MAKE-HOME GEN 'FEF-LOCAL 'FEF-ARG-AUX
+				'(FEF-INI-C-PNTR (LOCATIVE-TO-S-V-CELL LEXICAL-ENVIRONMENT))
+				'FEF-QT-EVAL ()))))
+    (MAPC 'VAR-INCREMENT-USE-COUNT MYVARS)
+    (SETQ ALLVARS (NRECONC MYVARS ALLVARS))
+    (CAR MYVARS)))
+
+;Return the home, and the index (for use in %LOCATE-IN-HIGHER-CONTEXT),
+;of a variable from a higher context.
+(DEFUN FIND-LEXICAL-VAR (VAR &AUX HOME LAP-ADDR)
+  (DO ((I 0 (1+ I))
+       (E COMPILER-LEXICAL-ENVIRONMENT (CDR E)))
+      ((NULL E))
+    (AND (SETQ HOME (ASSQ VAR (CAR E)))
+	 (SETQ LAP-ADDR (VAR-LAP-ADDRESS HOME))
+	 (SELECTQ (CAR LAP-ADDR)
+	   (ARG (RETURN HOME (+ (CADR LAP-ADDR) (LSH I 12.))))
+	   (LOCBLOCK (RETURN HOME (+ (CADR LAP-ADDR) (LSH I 12.) (LSH 1 23.))))))))
+
+(DEFUN TRY-REF-LEXICAL-VAR (VAR)
+  (MULTIPLE-VALUE-BIND (HOME IDX)
+      (FIND-LEXICAL-VAR VAR)
+    (COND (HOME (VAR-INCREMENT-USE-COUNT HOME)
+		`(LEXICAL-REF ,IDX)))))
 
 ;QCOMPILE0 compiles one function, producing a list of lap code in QCMP-OUTPUT.
 ;The first argument is the lambda-expression which defines the function.
@@ -222,28 +244,25 @@
 ;The second argument is the name of the function.
 ;The third won't be useful till there's a microcompiler.
 
-;QCOMPILE-POST-PROC is a free variable which is used to process the results
-; of recursive calls on the compiler (to compile lambdas which must be made
-; into separate functions).
-
 ;We expect that DEFAULT-CONS-AREA has been bound to QCOMPILE-TEMPORARY-AREA.
 ;The compiler does ALL consing in that temporary area unless it specifies otherwise.
 
-(DEFUN QCOMPILE0 (EXP NAME GENERATING-MICRO-COMPILER-INPUT-P)  ;COME DIRECTLY
- (LET ((LOCAL-DECLARATIONS LOCAL-DECLARATIONS))
-  (PROG (VARS EXP1 ARGN LVCNT		  ;HERE ON INTERNAL RECURSION
+(DEFUN QCOMPILE0 (EXP NAME GENERATING-MICRO-COMPILER-INPUT-P)  
+  (PROG (VARS EXP1 ARGN LVCNT
 	 PDLLVL MAXPDLLVL CALL-BLOCK-PDL-LEVELS
 	 ALLGOTAGS GOTAGS TLEVEL P1VALUE BINDP
 	 DROPTHRU ALLVARS FREEVARS RETPROGDESC
 	 PROGDESCS LL TAGOUT TLFUNINIT SPECIALFLAG MACROFLAG
 	 LOCAL-MAP ARG-MAP DOCUMENTATION EXPR-DEBUG-INFO
-	 FAST-ARGS-POSSIBLE)
-       (SETQ PDLLVL 0)	;RUNTINE LOCAL PDLLVL
-       (SETQ DROPTHRU T)		;CAN DROP IN IF FALSE, FLUSH STUFF TILL TAG OR
-       (SETQ MAXPDLLVL 0)			;DEEPEST LVL REACHED BY LOCAL PDL
+	 FAST-ARGS-POSSIBLE BREAKOFF-COUNT
+	 CLOBBER-NONSPECIAL-VARS-LISTS)
+       (SETQ PDLLVL 0)		;RUNTINE LOCAL PDLLVL
+       (SETQ DROPTHRU T)	;CAN DROP IN IF FALSE, FLUSH STUFF TILL TAG OR
+       (SETQ MAXPDLLVL 0)	;DEEPEST LVL REACHED BY LOCAL PDL
        (SETQ TLEVEL T)
        (SETQ P1VALUE T)
        (SETQ FAST-ARGS-POSSIBLE T)
+       (SETQ BREAKOFF-COUNT 0)
        ;; If compiling a macro, compile its expansion function
        ;; and direct lap to construct a macro later.
        (COND ((EQ (CAR EXP) 'MACRO)
@@ -252,16 +271,13 @@
        (OR (EQ (CAR EXP) 'LAMBDA)
 	   (EQ (CAR EXP) 'NAMED-LAMBDA)
 	   (BARF EXP '|not a function| 'DATA))
-       (SETQ FUNCTIONS-DEFINED
-             (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-                (CONS NAME FUNCTIONS-DEFINED)))
+       (BEGIN-PROCESSING-FUNCTION NAME)
        (SETQ EXP1 EXP)
        ;; If a NAMED-LAMBDA, discard the name and save debug-info in special place.
        (AND (EQ (CAR EXP1) 'NAMED-LAMBDA)
 	    (SETQ EXPR-DEBUG-INFO
 		  (AND (NOT (ATOM (CADR EXP1)))
-		       (SUBSET #'(LAMBDA (X) (MEMQ (CAR X) '(ARGLIST RETURN-LIST)))
-			       (CDADR EXP1)))
+		       (CDADR EXP1))
 		  EXP1 (CDR EXP1)))
        (SETQ LL (CADR EXP1))	;lambda list.
        (SETQ EXP1 (CDDR EXP1))	;body
@@ -281,9 +297,13 @@
 	    (CDR EXP1)
 	    (STRINGP (CAR EXP1))
 	    (SETQ DOCUMENTATION (CAR EXP1) EXP1 (CDR EXP1)))
-       ;; Now put the remaining body together with the lambda list again, and
-       ;; turn any &AUX variables in the LAMBDA into a PROG in the body.
-       (SETQ EXP1 (P1AUX `(LAMBDA ,LL . ,EXP1)))
+       ;; Put arglist together with body again.
+       (SETQ EXP1 `(LAMBDA ,LL . ,EXP1))
+       ;; If there are keyword arguments, expand them.
+       (AND (MEMQ '&KEY LL)
+	    (SETQ EXP1 (EXPAND-KEYED-LAMBDA EXP1)))
+       ;; Now turn any &AUX variables in the LAMBDA into a PROG in the body.
+       (SETQ EXP1 (P1AUX EXP1))
        ;; Separate lambda list and body again.
        (SETQ LL (CADR EXP1) EXP1 (CDDR EXP1))
        ;; Now process the variables in the lambda list, after the local declarations.
@@ -293,17 +313,8 @@
 	     ((SETQ EXP1 (CAR EXP1))))
        (SETQ EXP1 (P1 EXP1))		;DO PASS 1 TO SINGLE-EXPRESSION BODY
        (ASSIGN-LAP-ADDRESSES)
-       (DO VARS1 ALLVARS (CDR VARS1) (NULL VARS1)
-	   (COND ((OR (SAMEPNAMEP (VAR-NAME (CAR VARS1)) 'IGNORE)
-		      (SAMEPNAMEP (VAR-NAME (CAR VARS1)) 'IGNORED))
-		  (OR (ZEROP (VAR-USE-COUNT (CAR VARS1)))
-		      (BARF (VAR-NAME (CAR VARS1)) '|bound but not ignored| 'WARN)))
-		 ((NOT (SAMEPNAMEP (VAR-NAME (CAR VARS1)) 'OPERATION))
-		  (AND (ZEROP (VAR-USE-COUNT (CAR VARS1)))
-		       (EQ (VAR-TYPE (CAR VARS1)) 'FEF-LOCAL)
-		       (BARF (VAR-NAME (CAR VARS1))
-			     '|bound but never used| 'WARN)))))
-       (OUTF (LIST 'MFEF NAME SPECIALFLAG (REVERSE ALLVARS) FREEVARS))
+       (OUTF (LIST 'MFEF NAME SPECIALFLAG (ELIMINATE-DUPLICATES-AND-REVERSE ALLVARS)
+		   FREEVARS))
        (AND MACROFLAG (OUTF '(CONSTRUCT-MACRO)))
        (OUTF '(QTAG S-V-BASE))
        (OUTF '(S-V-BLOCK))
@@ -312,29 +323,215 @@
        (OUTF (LIST 'PARAM 'LLOCBLOCK LVCNT))
        (OUTF '(QTAG QUOTE-BASE))
        (OUTF '(ENDLIST))			;LAP WILL INSERT QUOTE VECTOR HERE
-       ;; If there is a (LOCAL-DECLARE ((ARGLIST FOO &OPTIONAL BAR)) ...)
-       ;; around this defun, put (ARGLIST (FOO &OPTIONAL BAR)) in the DEBUG-INFO.
-       (LET ((ARGL (CDR (ASSQ 'ARGLIST LOCAL-DECLARATIONS)))
-	     (VALUE-NAME-LIST (CDR (ASSQ 'RETURN-LIST LOCAL-DECLARATIONS)))
-             (DEBUG-INFO))
-         (COND (ARGL (PUSH `(ARGLIST ,ARGL) DEBUG-INFO))
-	       ((SETQ ARGL (ASSQ 'ARGLIST EXPR-DEBUG-INFO))
-		(PUSH ARGL DEBUG-INFO)))
-	 (COND (VALUE-NAME-LIST (PUSH `(RETURN-LIST ,VALUE-NAME-LIST) DEBUG-INFO))
-	       ((SETQ VALUE-NAME-LIST (ASSQ 'RETURN-LIST EXPR-DEBUG-INFO))
-		(PUSH VALUE-NAME-LIST DEBUG-INFO)))
+       ;; Set up the debug info from the local declarations and other things
+       (LET ((DEBUG-INFO NIL) TEM)
 	 (AND DOCUMENTATION (PUSH `(:DOCUMENTATION ,DOCUMENTATION) DEBUG-INFO))
+	 (DOLIST (DCL *DEBUG-INFO-LOCAL-DECLARATION-TYPES*)
+	   (IF (SETQ TEM (ASSQ DCL LOCAL-DECLARATIONS))
+	       (PUSH TEM DEBUG-INFO)))
+	 (DOLIST (DCL EXPR-DEBUG-INFO)
+	   (OR (ASSQ (CAR DCL) DEBUG-INFO)
+	       (PUSH DCL DEBUG-INFO)))
+         (AND (PLUSP BREAKOFF-COUNT)
+	      (LET ((INTERNAL-OFFSETS (MAKE-LIST BREAKOFF-COUNT)))
+		(OUTF `(BREAKOFFS ,INTERNAL-OFFSETS))
+		(PUSH `(:INTERNAL-FEF-OFFSETS . ,INTERNAL-OFFSETS) DEBUG-INFO)))
          ;; Include the local and arg maps if we have them.
          ;; They were built by ASSIGN-LAP-ADDRESSES.
          (AND LOCAL-MAP (PUSH `(LOCAL-MAP ,LOCAL-MAP) DEBUG-INFO))
          (AND ARG-MAP (PUSH `(ARG-MAP ,ARG-MAP) DEBUG-INFO))
-         (AND DEBUG-INFO
+	 (AND DEBUG-INFO
               (OUTF `(DEBUG-INFO . ,DEBUG-INFO))))
        (OUTF 'PROGSA)
        (P2SBIND LL VARS NIL)			;CAN COMPILE INITIALIZING CODE
        (P2 EXP1 'D-RETURN)			;DO PASS 2
        (OUTF (LIST 'PARAM 'MXPDL (1+ MAXPDLLVL)))
-       (RETURN T))))
+       (RETURN ALLVARS)))
+
+;;; This should be called as each function is begun to be compiled
+(DEFUN BEGIN-PROCESSING-FUNCTION (NAME)
+  (OR COMPILING-WHOLE-FILE-P
+      (ZWEI:COMPILER-WARNINGS-SETUP-FOR-PROCESSING-FUNCTION NAME))
+  (SETQ FUNCTIONS-DEFINED
+	(LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
+	  (CONS NAME FUNCTIONS-DEFINED))))
+
+;There can be duplicates of local vars on allvars because of the variable overlaping hack.
+;Dont disturb special vars.
+(DEFUN ELIMINATE-DUPLICATES-AND-REVERSE (VAR-LIST)
+  (PROG (ANS)
+    L  (COND ((NULL VAR-LIST) (RETURN ANS))
+	     ((NULL (DOLIST (V ANS)
+		      (IF (AND (EQ (VAR-NAME V) (VAR-NAME (CAR VAR-LIST)))
+			       (NOT (EQ (CAR (VAR-LAP-ADDRESS V)) 'SPECIAL))
+			       (EQUAL (VAR-LAP-ADDRESS V) (VAR-LAP-ADDRESS (CAR VAR-LIST))))
+			  (RETURN T))))		;this a local duplicate, flush
+	      (SETQ ANS (CONS (CAR VAR-LIST) ANS))))
+       (SETQ VAR-LIST (CDR VAR-LIST))
+       (GO L)))
+
+;Expand functions that want keyword arguments.
+;Make them take &REST args instead, and give them code to look up the keywords.
+
+(COMMENT  ;starting from this
+(DEFUN FOO (X &REST Y &KEY MUMBLE &OPTIONAL (BLETCH T BLETCHP) &AUX BAZZZ)
+   BODY)
+
+;We create this:
+;(We call with the rest arg starting with 'permutation-table <table>
+; before the first keyword, if we want to memoize the keyword lookup.
+; The permutation table gets filled with the index of each specified
+; keyword in the list of allowed keywords, and then it is used to
+; permute the args, rather than looking up the keywords again.
+; The leader of the permutation table records the fef that the table
+; was computed for.  If the function definition changes, the table
+; is recomputed).
+(DEFUN FOO (X &REST Y &AUX (MUMBLE KEYWORD-GARBAGE) (BLETCH T) BLETCHP)
+  (SI:STORE-KEYWORD-ARG-VALUES (%STACK-FRAME-POINTER)
+			       Y '(:MUMBLE :BLETCH)
+			       NIL		;T if &ALLOW-OTHER-KEYS
+			       2)		;1st 2 keywords required.
+  (AND (EQ MUMBLE KEYWORD-GARBAGE) (FERROR ...))
+  ((LAMBDA (&AUX BAZZZ)
+     BODY)))
+
+) ;end COMMENT
+
+;Given a lambda which uses &KEY, return an equivalent one
+;which does not use &KEY.  It takes a &REST arg instead
+;(though if the original one had a rest arg, it uses that one).
+;If there is no ARGLIST declaration for this function, we make one
+;so that the user is still told that the function wants keyword args.
+(DEFUN EXPAND-KEYED-LAMBDA (LAMBDA-EXP)
+  (LET (LAMBDA-LIST BODY
+	MAYBE-REST-ARG KEYCHECKS
+	POSITIONAL-ARGS AUXVARS REST-ARG POSITIONAL-ARG-NAMES
+ 	KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS ALLOW-OTHER-KEYS
+	(NUMBER-OF-REQUIRED-KEYWORDS 0))
+    (COND ((EQ (CAR LAMBDA-EXP) 'LAMBDA)
+	   (SETQ LAMBDA-LIST (CADR LAMBDA-EXP) BODY (CDDR LAMBDA-EXP)))
+	  (T
+	   (SETQ LAMBDA-LIST (CADDR LAMBDA-EXP) BODY (CDDDR LAMBDA-EXP))))
+    (MULTIPLE-VALUE (POSITIONAL-ARGS NIL AUXVARS
+		     REST-ARG POSITIONAL-ARG-NAMES
+		     KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS ALLOW-OTHER-KEYS)
+      (DECODE-KEYWORD-ARGLIST LAMBDA-LIST))
+    ;; For each keyword arg, decide whether we need to nit it to KEYWORD-GARBAGE
+    ;; and check explicitly whether that has been overridden.
+    ;; If the arg is optional
+    ;; and the initial value is a constant, we can really init it to that.
+    ;; Otherwise, we change its KEYINITS element to
+    ;; KEYWORD-GARBAGE and push a cleanup form on KEYCHECKS.
+    (DO ((KIS KEYINITS (CDR KIS))
+	 (KNS KEYNAMES (CDR KNS))
+	 (KOS KEYOPTFS (CDR KOS))
+	 (KKS KEYKEYS (CDR KKS))
+	 (KFS KEYFLAGS (CDR KFS))
+	 (MAP-BIT-NUMBER 0 (1+ MAP-BIT-NUMBER)))
+	((NULL KNS))
+      (OR (CAR KOS)
+	  (INCF NUMBER-OF-REQUIRED-KEYWORDS))
+      (LET ((KEYNAME (CAR KNS)) (KEYFLAG (CAR KFS)) (KEYINIT (CAR KIS)))
+	(IF (CAR KOS)
+	    ;; Optional.
+	    (OR (AND (NULL KEYFLAG)
+		     (OR (CONSTANTP KEYINIT)
+			 (QUOTEP KEYINIT)))
+		(PROGN (RPLACA KIS 'SI:KEYWORD-GARBAGE)
+		       (PUSH `(COND ((EQ ,KEYNAME SI:KEYWORD-GARBAGE)
+				     (SETQ ,KEYNAME ,KEYINIT))
+				    (T ,(AND KEYFLAG `(SETQ ,KEYFLAG T))))
+			     KEYCHECKS)))
+	    ;; Required
+	    (RPLACA KIS 'SI:KEYWORD-GARBAGE))))
+    (SETQ KEYFLAGS (REMQ NIL KEYFLAGS))
+    (SETQ KEYCHECKS (NREVERSE KEYCHECKS))
+    
+    ;; Add some declarations to inform user of the fact that this compiled
+    ;; function still logically wants keyword args.
+    ;; The arglist info can be overridden by the user's explicit declaration.
+    (COND ((ASSQ 'ARGLIST LOCAL-DECLARATIONS))
+	  (T
+	   (PUSH `(ARGLIST . ,(LDIFF LAMBDA-LIST AUXVARS)) LOCAL-DECLARATIONS)))
+
+    ;; If the user didn't ask for a rest arg, make one for the
+    ;; outer function anyway.
+    (OR REST-ARG (SETQ REST-ARG (GENSYM)
+		       MAYBE-REST-ARG (LIST '&REST REST-ARG)))
+
+    ;; Put our list of variable names onto CLOBBER-NONSPECIAL-VARS-LISTS
+    ;; so that ASSIGN-LAP-ADDRESSES will clobber out the variables
+    ;; which are not special with NIL.
+    (PUSH KEYNAMES CLOBBER-NONSPECIAL-VARS-LISTS)
+    `(LAMBDA (,@POSITIONAL-ARGS ,@MAYBE-REST-ARG
+	      &AUX ,@(MAPCAR '(LAMBDA (V INIT) `(,V ,INIT)) KEYNAMES KEYINITS)
+	      ,@KEYFLAGS)
+;       (COND ((EQ (CAR ,REST-ARG) 'PERMUTATION-TABLE)
+;	      (OR (%PERMUTE-ARGS)
+;		  (PROGN (RECOMPUTE-KEYWORD-PERMUTATION-TABLE
+;			   (CDR ,REST-ARG)
+;			   (%P-CONTENTS-OFFSET (%STACK-FRAME-POINTER) %LP-FEF)
+;			   ',KEYKEYS)
+;			 (%PERMUTE-ARGS)))
+;	      ;; If the function really wants the rest arg,
+;	      ;; flush the permutation table and its keyword.
+;	      ,(AND (NOT MAYBE-REST-ARG) `(SETQ ,REST-ARG (CDDR ,REST-ARG))))
+;	     (T
+	      (SI:STORE-KEYWORD-ARG-VALUES (%STACK-FRAME-POINTER)
+					,REST-ARG ',KEYKEYS
+					,ALLOW-OTHER-KEYS
+					,NUMBER-OF-REQUIRED-KEYWORDS
+					',KEYNAMES)
+;	      ))
+       ,@KEYCHECKS
+       ((LAMBDA ,AUXVARS . ,BODY)))))
+
+(comment   ;This optimization isn't in use yet, and may never be
+  	   ;if microcoding STORE-KEYWORD-ARG-VALUES is winning enough.
+
+;Given a permutation table for keyword args whose contents are garbage,
+;and the actual arglist with keywords,
+;compute the contents of the permutation table
+;based on calling the fef NEW-FEF.
+(DEFUN RECOMPUTE-KEYWORD-PERMUTATION-TABLE (TABLE-AND-ARGS NEW-FEF KEYWORDS)
+  (LET ((TABLE (CAR TABLE-AND-ARGS)))
+    (DO ((I 0 (1+ I))
+	 (ARGS1 (CDR TABLE-AND-ARGS) (CDDR ARGS1)))
+	((NULL ARGS1)
+	 (SETF (ARRAY-LEADER TABLE 0) NEW-FEF))
+      (LET ((KEYWORD (CAR ARGS1)))
+	(DO (INDEX) (())
+	  (SETQ INDEX (FIND-POSITION-IN-LIST KEYWORD KEYWORDS))
+	  (AND INDEX (RETURN (SETF (AREF TABLE I) INDEX)))
+	  (SETQ KEYWORD (CERROR T NIL ':UNDEFINED-ARG-KEYWORD
+				"Keyword arg keyword ~S unrecognized"
+				KEYWORD)))))))
+
+;Given a form that is a call to a function which takes keyword args,
+;stick in a permutation table, if the keyword names are constant.
+;The question of how calls to such functions are detected is still open.
+(DEFUN OPTIMIZE-KEYWORD-CALL (FORM)
+  (LET ((ARGS-INFO (ARGS-INFO (CAR FORM))))
+    (LET ((KEYARGS (CDR (NTHCDR (LDB %%ARG-DESC-MAX-ARGS ARGS-INFO) FORM))))
+      (COND ((DO ((TAIL KEYARGS (CDDR TAIL)))
+		 ((NULL TAIL) T)
+	       (OR (QUOTEP (CAR TAIL)) (RETURN NIL)))
+	     ;; Here if every keyword name is quoted.
+	     `(,@(LDIFF FORM KEYARGS)
+	       'PERMUTATION-TABLE
+	       ',(MAKE-ARRAY (// 2 (LENGTH KEYARGS))
+			     ':LEADER-LENGTH 1 ':TYPE ART-8B)
+	       . ,KEYARGS))
+	    (T FORM)))))
+
+;Temporary definition for what ought to be defined in the microcode.
+;Keyed functions' expansions call this, but until calls are open-coded
+;the arguments will never be such as to make the call actually happen.
+;The open-coding won't be installed until the ucode function works.
+;Meanwhile this prevents warning messages when keyed functions are compiled.
+(DEFUN %PERMUTE-ARGS () (FERROR NIL "%PERMUTE-ARGS called"))
+
+);end COMMENT
 
 ;Pass 1.
 ;We expand all macros and perform source-optimizations
@@ -352,71 +549,73 @@
        (P1 FORM)))
 
 (DEFUN P1 (FORM)
-       (PROG (TM)
-	     (SETQ FORM (OPTIMIZE FORM T))
-	     (COND
-	      ((CONSTANTP FORM) (RETURN (LIST 'QUOTE FORM)))
-	      ((ATOM FORM)
-	       (RETURN (COND ((SETQ TM (ASSQ FORM VARS))
-			      (VAR-INCREMENT-USE-COUNT TM)
-			      FORM)
-			     (T (MAKESPECIAL FORM) FORM))))
-	      ((EQ (CAR FORM) 'QUOTE) (RETURN  FORM))
-              ;; Certain constructs must be checked for here
-              ;; so we can call P1 recursively without setting TLEVEL to NIL.
-              ((NOT (ATOM (CAR FORM)))
-	       (SELECTQ (CAAR FORM)
-		   ((LAMBDA NAMED-LAMBDA)
-		    (RETURN (P1LAMBDA (CAR FORM) (CDR FORM))))
-		   (OTHERWISE
-		    ;; Old Maclisp evaluated functions.
-		    (BARF FORM '|function is a form to be evaluated; use FUNCALL| 'WARN)
-		    (RETURN (P1 `(FUNCALL . ,FORM))))))
-	      ((NOT (SYMBOLP (CAR FORM)))
-	       (BARF (CAR FORM) '|function is not a symbol or list| 'WARN)
-	       (RETURN (P1 (CONS 'PROGN (CDR FORM)))))
-	      ((MEMQ (CAR FORM) '(PROG PROG* PPROG SPROG)) (RETURN (P1PROG FORM)))
-              ((EQ (CAR FORM) 'RETURN)
-	       (AND (CDDR FORM) (SETQ TLEVEL NIL))
-	       (RETURN (P1EVARGS FORM)))
-	      ((EQ (CAR FORM) '%POP)	;P2 specially checks for this
-	       (RETURN FORM)))
-	     (SETQ TLEVEL NIL)
-	     ;; Check for functions with special P1 handlers.
-	     (COND ((SETQ TM (GET (CAR FORM) 'P1))
-		    (RETURN (FUNCALL TM FORM))))
-	     (COND ((AND ALLOW-VARIABLES-IN-FUNCTION-POSITION-SWITCH
-			 (ASSQ (CAR FORM) VARS)
-			 (NULL (FUNCTION-P (CAR FORM))))
-		    (BARF FORM
-			  '|variable in function position; use FUNCALL|
-			  'WARN)
-		    (RETURN (P1 (CONS 'FUNCALL FORM)))))
-	     (RETURN (P1ARGC FORM (GETARGDESC (CAR FORM))))))
+  (PROG (TM)
+	(SETQ FORM (OPTIMIZE FORM T))
+	(COND
+	  ((CONSTANTP FORM) (RETURN (LIST 'QUOTE FORM)))
+	  ((ATOM FORM)
+	   (RETURN (COND ((SETQ TM (ASSQ FORM VARS))
+			  (VAR-INCREMENT-USE-COUNT TM)
+			  (VAR-LAP-ADDRESS TM))
+			 ((TRY-REF-LEXICAL-VAR FORM))
+			 (T (MAKESPECIAL FORM) FORM))))
+	  ((EQ (CAR FORM) 'QUOTE) (RETURN  FORM))
+	  ;; Certain constructs must be checked for here
+	  ;; so we can call P1 recursively without setting TLEVEL to NIL.
+	  ((NOT (ATOM (CAR FORM)))
+	   (SELECTQ (CAAR FORM)
+	     ((LAMBDA NAMED-LAMBDA)
+	      (RETURN (P1LAMBDA (CAR FORM) (CDR FORM))))
+	     (OTHERWISE
+	      ;; Old Maclisp evaluated functions.
+	      (BARF FORM '|function is a form to be evaluated; use FUNCALL| 'WARN)
+	      (RETURN (P1 `(FUNCALL . ,FORM))))))
+	  ((NOT (SYMBOLP (CAR FORM)))
+	   (BARF (CAR FORM) '|function is not a symbol or list| 'WARN)
+	   (RETURN (P1 (CONS 'PROGN (CDR FORM)))))
+	  ((MEMQ (CAR FORM) '(PROG PROG* PPROG SPROG)) (RETURN (P1PROG FORM)))
+	  ((MEMQ (CAR FORM) '(RETURN RETURN-FROM-T))
+	   (AND (CDDR FORM) (SETQ TLEVEL NIL))
+	   (RETURN (P1EVARGS FORM)))
+	  ((EQ (CAR FORM) '%POP)		;P2 specially checks for this
+	   (RETURN FORM)))
+	(SETQ TLEVEL NIL)
+	;; Check for functions with special P1 handlers.
+	(COND ((SETQ TM (GET (CAR FORM) 'P1))
+	       (RETURN (FUNCALL TM FORM))))
+	(COND ((AND ALLOW-VARIABLES-IN-FUNCTION-POSITION-SWITCH
+		    (ASSQ (CAR FORM) VARS)
+		    (NULL (FUNCTION-P (CAR FORM))))
+	       (BARF FORM
+		     '|variable in function position; use FUNCALL|
+		     'WARN)
+	       (RETURN (P1 (CONS 'FUNCALL FORM)))))
+	(RETURN (P1ARGC FORM (GETARGDESC (CAR FORM))))))
 
-(IF-FOR-MACLISP
- (DEFUN FUNCTION-P (X)
-    (GETL X '(EXPR SUBR FEXPR FSUBR LSUBR Q-LAMBDA-LIST ARGDESC Q-ARGS-PROP
-	     *FEXPR *EXPR *LEXPR AUTOLOAD))))
-
-(IF-FOR-LISPM
 (DEFUN FUNCTION-P (X)
-    (OR (FBOUNDP X)
-        (GETL X '(*EXPR AUTOLOAD)))))
+  (COND ((SYMBOLP X)
+	 (OR (FBOUNDP X) (GETL X '(*EXPR ARGDESC))))
+	((FDEFINEDP X))
+	(T (FUNCALL (GET (CAR X) 'FUNCTION-SPEC-HANDLER) 'SI:COMPILER-FDEFINEDP X))))
 
 (DEFUN MSPL2 (X)
-       (COND ((NOT (SPECIALP X))
-	      (BARF X '|declared special| 'WARN)
-	      (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-		   (PUSH X BARF-SPECIAL-LIST))
-	      (COND ((ASSQ X ALLVARS)
-		     (BARF X '|previously assumed local; you will lose| 'WARN))))))
+  (COND ((LET ((BARF-SPECIAL-LIST THIS-FUNCTION-BARF-SPECIAL-LIST))
+	   (NOT (SPECIALP X)))
+	 ;; Here unless this variable was either 1) declared special, or
+	 ;; 2) already used free in this function.
+	 (BARF X '|declared special| 'WARN)
+	 (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
+	      (OR (MEMQ X BARF-SPECIAL-LIST)
+		  (PUSH X BARF-SPECIAL-LIST))
+	      (PUSH X THIS-FUNCTION-BARF-SPECIAL-LIST))
+	 (COND ((ASSQ X ALLVARS)
+		(BARF X '|previously assumed local; you will lose| 'WARN))))))
 
 (DEFUN MAKESPECIAL (X)
-       (MSPL2 X)
-       (OR (MEMQ X FREEVARS)
-	   (PUSH X FREEVARS))
-       T)
+  (MSPL2 X)
+  (OR (MEMQ X FREEVARS)
+      (PUSH X FREEVARS))
+  T)
 
 ;Given a form, apply optimizations and expand macros until no more is possible
 ;(at the top level).  Also apply style-checkers to the supplied input
@@ -454,32 +653,42 @@
 ;Given a non-atomic form issue any warnings required because of wrong number of arguments.
 ;This function has some of the same knowledge as GETARGDESC but doesn't call
 ;it because GETARGDESC has to do a lot more.
+;This function should never get an error and never warn about
+;anything that gets warned about elsewhere.
 (IF-FOR-LISPM	;to inhibit the Maclisp style warnings
 (DEFUN CHECK-NUMBER-OF-ARGS (FORM)
-  (PROG ((FN (CAR FORM)) (NARGS (LENGTH (CDR FORM))) (MIN NIL) (MAX 0) (ARGS-INFO NIL) TEM)
+  (PROG ((FN (CAR FORM)) NARGS (MIN NIL) (MAX 0) (ARGS-INFO NIL) TEM)
    TOP
-    (COND ((LISTP FN)
-	   (COND ((EQ (CAR FN) 'LAMBDA) (SETQ TEM (CADR FN)))
-		 ((EQ (CAR FN) 'NAMED-LAMBDA) (SETQ TEM (CADDR FN)))
-		 ((EQ (CAR FN) 'SUBST) (SETQ TEM (CADR FN)))
-		 (T (RETURN NIL)))		;Unknown type, don't check
+    (COND ((AND (LISTP FN) (FUNCTIONP FN T))
+	   (SETQ TEM (ARGLIST FN T))
+	   (OR (LISTP TEM) (RETURN))
 	   (DOLIST (X TEM)
 	     (COND ((EQ X '&OPTIONAL) (SETQ MIN MAX))
-		   ((EQ X '&REST) (SETQ MIN MAX MAX 37777777) (RETURN))
+		   ((OR (EQ X '&REST) (EQ X '&KEY))
+		    (SETQ MIN MAX MAX 37777777) (RETURN))
 		   ((EQ X '&AUX) (RETURN))
 		   ((MEMQ X LAMBDA-LIST-KEYWORDS))
 		   (T (SETQ MAX (1+ MAX))))))
 	  ((NOT (SYMBOLP FN)) (RETURN NIL))	;Unknown type, don't check
 	  ((SETQ TEM (GET FN 'ARGDESC))
 	   (DOLIST (X TEM)
-	     (COND ((MEMQ 'FEF-ARG-REQ (CADR X)) (SETQ MAX (+ MAX (CAR X))))
-		   ((MEMQ 'FEF-ARG-OPT (CADR X)) (SETQ MIN MAX MAX (+ MAX (CAR X))))
-		   ((MEMQ 'FEF-ARG-REST (CADR X)) (SETQ MIN MAX MAX 37777777)))))
+	     (COND ((MEMQ 'FEF-ARG-REQ (CADR X))
+		    (SETQ MAX (+ MAX (CAR X))))
+		   ((MEMQ 'FEF-ARG-OPT (CADR X))
+		    (OR MIN (SETQ MIN MAX))
+		    (SETQ MAX (+ MAX (CAR X))))
+		   ((MEMQ 'FEF-ARG-REST (CADR X))
+		    (OR MIN (SETQ MIN MAX))
+		    (SETQ MAX 37777777)))))
 	  ((SETQ TEM (GET FN 'QINTCMP))
 	   (SETQ MAX TEM))
 	  ((SETQ TEM (GET FN 'Q-ARGS-PROP))
 	   (SETQ ARGS-INFO TEM))
 	  ((FBOUNDP FN)
+	   (SETQ TEM (SI:UNENCAPSULATE-FUNCTION-SPEC FN))
+	   (COND ((NOT (EQ TEM FN))
+		  (SETQ FN TEM)
+		  (GO TOP)))
 	   (SETQ TEM (FSYMEVAL FN))
 	   (COND ((OR (SYMBOLP TEM) (LISTP TEM))
 		  (SETQ FN TEM)
@@ -492,139 +701,12 @@
 				 ARGS-INFO)
 		       37777777
 		       (LDB %%ARG-DESC-MAX-ARGS ARGS-INFO))))
+    (SETQ NARGS (LENGTH (CDR FORM)))		;Now that we know it's not a macro
     (COND ((< NARGS (OR MIN MAX))
 	   (BARF FORM '|Too few arguments| 'WARN))
 	  ((> NARGS MAX)
 	   (BARF FORM '|Too many arguments| 'WARN)))))
 );if-for-lispm
-
-;(DEFOPTIMIZER FOO-BAR FOO (UGH BLETCH) ...)
-;defines a function FOO-BAR which is an optimizer on FOO
-;and expands the same way (DEFMACRO FOO (UGH BLETCH) ...) would expand.
-(DEFMACRO DEFOPTIMIZER (OPTIMIZER-NAME TARGET-FUNCTION LAMBDA-LIST &REST BODY)
-    `(PROGN 'COMPILE
-	    ,(SI:DEFMACRO1 `(DEFMACRO ,OPTIMIZER-NAME ,LAMBDA-LIST . ,BODY) 'DEFUN)
-	    (ADD-OPTIMIZER ,TARGET-FUNCTION ,OPTIMIZER-NAME)))
-
-;(ADD-OPTIMIZER FOO BAR) puts FOO on BAR's optimizers list if it isn't there already.
-(DEFUN ADD-OPTIMIZER (&QUOTE TARGET-FUNCTION OPTIMIZER-NAME)
-    (LET ((OPTS (GET TARGET-FUNCTION 'OPTIMIZERS)))
-	 (OR (MEMQ OPTIMIZER-NAME OPTS)
-	     (PUTPROP TARGET-FUNCTION (CONS OPTIMIZER-NAME OPTS) 'OPTIMIZERS))))
-
-;EXPAND ANY MACROS IN TOP LEVEL OF A FORM.  USE THIS BEFORE MAKING SPECIAL
-;CASE CHECKS IN PASS 1.
-;MACROEXPAND X ITERATIVELY UNTIL IT CAN'T EXPAND ANY MORE.
-(IF-FOR-MACLISP
-(DEFUN MACROEXPAND (X IGNORE)
-    (DO ((TM X (MACROEXPAND-1 TM IGNORE))
-	 (OTM NIL TM))
-	((OR (EQ TM OTM) (ATOM TM)) TM))))
-
-;Macroexpand X once, if possible.  If it isn't a macro invocation, return it unchanged.
-;The definition of MACROEXPAND-1 for the real machine is in QFCTNS.
-(IF-FOR-MACLISP
-(DEFUN MACROEXPAND-1 (X IGNORE)
-    (PROG (TM)
-	  (AND (ATOM X) (RETURN X))
-	  (COND ((NOT (ATOM (CAR X)))
-		 (COND ((EQ (CAAR X) 'CURRY-AFTER)
-			(RETURN `(,(CADAR X) ,@(CDR X) . ,(CDDAR X))))
-		       ((EQ (CAAR X) 'CURRY-BEFORE)
-			(RETURN `(,(CADAR X) ,@(CDDAR X) . ,(CDR X))))
-                       ((EQ (CAAR X) 'SUBST)
-                        (RETURN (SUBST-EXPAND (CAR X) X))))
-		 (RETURN X))
-		((SETQ TM (DECLARED-DEFINITION (CAR X)))
-		 (COND ((EQ (CAR TM) 'SUBST) (RETURN (SUBST-EXPAND TM X)))
-		       ((EQ (CAR TM) 'MACRO) 
-			(RETURN
-			  (COND ((SETQ TM (ERRSET (FUNCALL (CDR TM) X)))
-				 (CAR TM))
-				(T (BARF X
-					 (COND ((EQ TM 'DOEXPANDER)
-						'INCORRECT-DO-FORMAT)
-					       (T 'LISP-ERROR-DURING-MACRO-EXPANSION))
-					 'DATA)))))))
-		((SETQ TM (OPEN-CODE-P (CAR X)))
-		 (RETURN (CONS TM (CDR X)))))
-	  (RETURN X))))
-
-;; Given a function-spec, find any definition it has been declared to have
-;; for compilation purposes, and return it.
-(IF-FOR-MACLISP
-(DEFUN DECLARED-DEFINITION (FUNCTION)
-  (OR (DOLIST (L LOCAL-DECLARATIONS)
-	(AND (EQ (CADR L) FUNCTION)
-	     (COND ((EQ (CAR L) 'DEF)
-		    (RETURN (CDDR L))))))
-      (DOLIST (L FILE-LOCAL-DECLARATIONS)
-	(AND (EQ (CADR L) FUNCTION)
-	     (COND ((EQ (CAR L) 'DEF)
-		    (RETURN (CDDR L))))))
-      (GET FUNCTION 'LMDEF)
-      (LET ((TEM (GET FUNCTION 'MACRO)))
-	(AND TEM (CONS 'MACRO TEM))))))
-
-;; Expand a call to a SUBST function.
-;; SUBST is the function definition to use; FORM is the whole form.
-;; Match the SUBST args with the expressions in the form
-;; and then substitute the expressions for the args in the body of the function with SUBLIS.
-
-(IF-FOR-MACLISP
-(DEFUN SUBST-EXPAND (SUBST FORM)
-    (LET (ALIST OPTIONAL-FLAG (LAMBDA-LIST (CADR SUBST)) (BODY (CDDR SUBST)))
-        ;; Provide an implicit PROGN fob the body.
-        (COND ((CDR BODY) (SETQ BODY `(PROGN . ,BODY)))
-              (T (SETQ BODY (CAR BODY))))
-        ;; Process the lambda list and args to make the alist.
-        (DO ((VALS (CDR FORM) (CDR VALS)))
-            (NIL)
-           ;; We allow only &OPTIONAL.
-           (DO () ((NEQ (CAR LAMBDA-LIST) '&OPTIONAL))
-	     (SETQ OPTIONAL-FLAG T)
-	     (POP LAMBDA-LIST))
-           ;; Detect runout of lambda list or of args.
-           (COND ((NULL VALS)
-                  (COND ((NULL LAMBDA-LIST)
-                         (RETURN NIL))
-                        ((NOT OPTIONAL-FLAG)
-			 (RETURN (BARF (CAR FORM)
-				       '|Too few arguments to SUBST function|
-				       'WARN)))))
-                 ((NULL LAMBDA-LIST)
-                  (RETURN (BARF (CAR FORM) '|Too many arguments to SUBST function| 'WARN))))
-           ;; All lambda-list keywords aside from &OPTIONAL are erroneous.
-           (AND (MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS)
-                (RETURN
-		 (BARF (CAR FORM) '|SUBST function contains inappropriate LAMBDA-keyword| 'DATA)))
-           ;; Here we have one more arg.  Add it to the alist.
-           (PUSH (CONS (COND ((ATOM (CAR LAMBDA-LIST)) (CAR LAMBDA-LIST))
-                             (T (CAAR LAMBDA-LIST)))
-                       (COND (VALS (CAR VALS))
-                             ((ATOM (CAR LAMBDA-LIST)) NIL)
-                             (T (CADAR LAMBDA-LIST))))
-                 ALIST)
-           (POP LAMBDA-LIST))
-	 (SUBLIS ALIST BODY))))
-
-;; If symbol as a function should be open-coded
-;; then return the definition to substitute in.
-;; Otherwise, return NIL.
-;; A local declaration (OPEN-CODE symbol definition) takes priority.
-;; Next comes the value of an OPEN-CODE property.
-;; If that is T, the actual function definition is used.
-(IF-FOR-MACLISP
-(DEFUN OPEN-CODE-P (SYMBOL)
-    (OR (DO ((LDECLS LOCAL-DECLARATIONS (CDR LDECLS)))
-	    ((NULL LDECLS) NIL)
-	   (AND (EQ (CAAR LDECLS) 'OPEN-CODE)
-		(EQ (CADAR LDECLS) SYMBOL)
-		(RETURN (CADDAR LDECLS))))
-	(LET ((TM (GET SYMBOL 'OPEN-CODE)))
-	    (COND ((EQ TM T)
-		   (GET SYMBOL 'EXPR))
-		  (T TM))))))
 
 ;Pass 1 processing for a call to an ordinary function (ordinary, at least, for pass 1).
 ;FORM is the call to the function, and DESC is the GETARGDESC of the function.
@@ -644,26 +726,22 @@
 	     (SETQ ARG-P1-RESULTS (SETQ ARGS-LEFT (APPEND (CDR FORM) NIL)))
              (SETQ COUNT 0)
 	L3
+	     ;; If all arguments processed, return.
+	     (COND ((NULL ARGS-LEFT)
+		    (RETURN (CONS FCTN ARG-P1-RESULTS))))
+
 	     ;; Figure out what descriptor to use for the next argument.
 	     ;; TOKEN-LIST is the actual descriptor, and COUNT
 	     ;; is the number of argumens left for it to apply to.
 	     (COND ((ZEROP COUNT)
 		    (COND ((NULL DESCS-LEFT)
-			   ;; Out of descs for arga, and out of args, => return.
-			   (OR ARGS-LEFT (RETURN (CONS FCTN ARG-P1-RESULTS)))
 			   ;; Out of descriptors => treat excess args as evalled.
 			   (SETQ DESCS-LEFT '((1005 (FEF-ARG-OPT FEF-QT-EVAL))))))
 		    (SETQ COUNT (CAAR DESCS-LEFT))
 		    (SETQ TOKEN-LIST (CADAR DESCS-LEFT))
 		    (SETQ DESCS-LEFT (CDR DESCS-LEFT))
 		    (COND ((MEMQ 'FEF-ARG-REST TOKEN-LIST)
-			   (SETQ COUNT 1005)))
-		    ;; Check ZEROP again!
-		    (GO L3)))
-
-	     ;; If all arguments processed, return.
-	     (COND ((NULL ARGS-LEFT)
-		    (RETURN (CONS FCTN ARG-P1-RESULTS))))
+			   (SETQ COUNT 1005)))))
 
 	     ;; Process the next argument according to its descriptor.
 	     (COND ((MEMQ 'FEF-QT-QT TOKEN-LIST))
@@ -675,7 +753,7 @@
 				      (EQ (CAR TM) 'QUOTE))	 ;LOOK FOR '(LAMBDA...)
 				 (P1FUNCTION TM))
 				(T (P1 (CAR ARGS-LEFT))))))
-		   (T (BARF (CAR DESCS-LEFT) 'BAD-EVAL-CODE 'BARF)))
+		   (T (BARF TOKEN-LIST 'BAD-EVAL-CODE 'BARF)))
 	     (SETQ ARGS-LEFT (CDR ARGS-LEFT))
 	     (SETQ COUNT (1- COUNT))
 	     (GO L3)))
@@ -692,15 +770,6 @@
     (AND (NOT (ATOM OBJECT))
          (EQ (CAR OBJECT) 'QUOTE)))
 
-;; Allow the compiler to recognize automatically
-;; the funny representation used for strings.
-(IF-FOR-MACLISP
- (DEFUN STRINGP (OBJECT)
-   (AND (NOT (ATOM OBJECT))
-	(EQ (CAR OBJECT) 'QUOTE)
-	(NOT (ATOM (CADR OBJECT)))
-	(EQ (CAADR OBJECT) '**STRING**))))
-
 ;;When a var is handled by P1BINDVAR which is an optional arg with a specified-flag,
 ;;we push the flag name onto SPECIFIED-FLAGS so that a home will be made for the flag.
 (DEFVAR SPECIFIED-FLAGS)
@@ -714,102 +783,148 @@
 ;Each variable, with its appropeiate keyword info, is passed to P1LMB.
 ;We can do either sequential or parallel binding.
 ;Processing of variables is done in two steps:
-;First, create the homes and put them on VARS and ALLVARS.
-;Second, process all the variables' initializations.
-;This order is so that variables bound inside those initializations
+;First, create the homes
+;Second, if these are not FEF-ARG-INTERNAL-AUX vars,
+; put the homes on VARS and ALLVARS.
+;Third, process all the variables' initializations.
+;Finally, put the homes on VARS and ALLVARS if not already there.
+
+;For variables whose scope is the whole function (not FEF-ARG-INTERNAL-AUX),
+;the order is designed so that variables bound inside their initializations
 ;all come after all the variables of the original (higher) level.
 ;This is needed to make sure that (DEFUN FOO (&OPTIONAL (A (LET ((C ...)) ...)) B) ...)
 ;does not put C into VARS before B.
+
+;For FEF-ARG-INTERNAL-AUX variables, we want the variables bound
+;inside the initializations to come first, since they are used first.
+;That way, our own variables overlap with them rather than vice versa.
+;As a result, the variable with the original home is always the first one used.
+;This is important for deciding which variables need explicit initialization.
+
 ;The IGNORE-NIL-P argument is used by MULTIPLE-VALUE-BIND to say
 ; that if NIL appears as a variable, its initial value should be evaluated
 ; and discarded.
 (DEFUN P1SBIND (X KIND PARALLEL IGNORE-NIL-P)
-       (PROG (TM EVALCODE VARN OVARS MISC-TYPES OALLVARS SPECIFIED-FLAGS)
-	     (SETQ EVALCODE 'FEF-QT-DONTCARE)
-	     (SETQ OVARS VARS)
-	     (SETQ OALLVARS ALLVARS)
-	A    (COND ((NULL X)
-		    (DOLIST (V SPECIFIED-FLAGS)
-		      (CREATE-SPECIFIED-FLAG-VARIABLE V))
-                    (RETURN (MAPCAR (FUNCTION VAR-COMPUTE-INIT)
-                                    (REVERSE (LDIFF ALLVARS OALLVARS))
-                                    (CIRCULAR-LIST PARALLEL)
-                                    (CIRCULAR-LIST OVARS))))
-		   ((SETQ TM (ASSQ (CAR X)
-				   '((&OPTIONAL . FEF-ARG-OPT)
-				     (&REST . FEF-ARG-REST) (&AUX . FEF-ARG-AUX))))
-		    (COND ((OR (EQ KIND 'FEF-ARG-AUX)
-			       (EQ KIND 'FEF-ARG-INTERNAL-AUX))
-			   (BARF (CAR X) '|argument keywords in PROG variable list| 'DATA))
-			  (T (SETQ KIND (CDR TM))))
-		    (GO B))
-		   ((SETQ TM (ASSQ (CAR X)
-				   '((&EVAL . FEF-QT-EVAL)
-				     (&QUOTE . FEF-QT-QT)
-				     (&QUOTE-DONTCARE . FEF-QT-DONTCARE))))
-		    (SETQ EVALCODE (CDR TM))
-		    (GO B))
-		   ((SETQ TM (ASSQ (CAR X)
-				   '((&FUNCTIONAL . FEF-FUNCTIONAL-ARG))))
-		    (PUSH (CDR TM) MISC-TYPES)
-		    (GO B))
-		   ((MEMQ (CAR X) LAMBDA-LIST-KEYWORDS)
-		    (GO B)))
-             ;; LAMBDA-list keywords have jumped to B.
-             ;; Get here when (CAR X) is a variable or (var init).
-	     (SETQ VARN (COND ((ATOM (CAR X)) (CAR X)) (T (CAAR X))))
-	     (AND (NOT (OR (SAMEPNAMEP VARN '|IGNORE|)
-			   (SAMEPNAMEP VARN '|IGNORED|)
-			   (NULL VARN)))
-		  (DOLIST (X1 (CDR X))
-		     (COND ((OR (EQ X1 VARN)
-				(AND (NOT (ATOM X1)) (EQ (CAR X1) VARN)))
-			    (RETURN T))))
-		  (BARF VARN '|duplicated in lambda-list| 'WARN))
-	     (AND (= (GETCHARN VARN 1) #/&)
-		  (BARF VARN '|probably mispelled keyword| 'WARN))
-	     (COND ((AND IGNORE-NIL-P (NULL VARN))
-		    (P1 (CADAR X)))		;Out of order, but works in these simple cases
-		   ((OR (NULL VARN) (EQ VARN T))
-		    (BARF VARN '|bound| 'WARN))
-		   (T
-		     ;; Make the variable's home.
-		     (P1BINDVAR (CAR X) KIND EVALCODE MISC-TYPES)))
-	     (SETQ MISC-TYPES NIL)
-	     B
-	     (SETQ X (CDR X))
-	     (GO A)))
+  (LET (TM EVALCODE VARN MYVARS MISC-TYPES
+	SPECIFIED-FLAGS (SPECIALNESS NIL))
+    ;; First look at the var specs and make homes, pushing them on MYVARS (reversed).
+    (PROG ()
+	  (SETQ EVALCODE 'FEF-QT-DONTCARE)
+       A  (COND ((NULL X) (RETURN))
+		((SETQ TM (ASSQ (CAR X)
+				'((&OPTIONAL . FEF-ARG-OPT)
+				  (&REST . FEF-ARG-REST) (&AUX . FEF-ARG-AUX))))
+		 (COND ((OR (EQ KIND 'FEF-ARG-AUX)
+			    (EQ KIND 'FEF-ARG-INTERNAL-AUX))
+			(BARF (CAR X) '|argument keywords in PROG variable list| 'WARN))
+		       (T (SETQ KIND (CDR TM))))
+		 (GO B))
+		((SETQ TM (ASSQ (CAR X)
+				'((&EVAL . FEF-QT-EVAL)
+				  (&QUOTE . FEF-QT-QT)
+				  (&QUOTE-DONTCARE . FEF-QT-DONTCARE))))
+		 (SETQ EVALCODE (CDR TM))
+		 (GO B))
+		((SETQ TM (ASSQ (CAR X)
+				'((&FUNCTIONAL . FEF-FUNCTIONAL-ARG))))
+		 (PUSH (CDR TM) MISC-TYPES)
+		 (GO B))
+		((EQ (CAR X) '&SPECIAL)
+		 (SETQ SPECIALNESS T)
+		 (GO B))
+		((EQ (CAR X) '&LOCAL)
+		 (SETQ SPECIALNESS NIL)
+		 (GO B))
+		((MEMQ (CAR X) LAMBDA-LIST-KEYWORDS)
+		 (GO B)))
+	  ;; LAMBDA-list keywords have jumped to B.
+	  ;; Get here when (CAR X) is a variable or (var init).
+	  (SETQ VARN (COND ((ATOM (CAR X)) (CAR X)) (T (CAAR X))))
+	  (AND PARALLEL	       
+	       (NOT (OR (STRING-EQUAL VARN '|IGNORE|)
+			(STRING-EQUAL VARN '|IGNORED|)
+			(NULL VARN)))
+	       (DOLIST (X1 (CDR X))
+		 (COND ((OR (EQ X1 VARN)
+			    (AND (NOT (ATOM X1)) (EQ (CAR X1) VARN)))
+			(RETURN T))))
+	       (BARF VARN '|duplicated in lambda-list| 'WARN))
+	  (AND (= (AREF (GET-PNAME VARN) 0) #/&)
+	       (BARF VARN '|probably mispelled keyword| 'WARN))
+	  (COND ((AND IGNORE-NIL-P (NULL VARN))
+		 (P1 (CADAR X)))		;Out of order, but works in these simple cases
+		((OR (NULL VARN) (EQ VARN T))
+		 (BARF VARN '|bound| 'WARN))
+		(T
+		 ;; Make the variable's home.
+		 (IF SPECIALNESS
+		     (PUSH `(SPECIAL ,(CAR X)) LOCAL-DECLARATIONS))
+		 (PUSH (P1BINDVAR (CAR X) KIND EVALCODE MISC-TYPES)
+		       MYVARS)))
+	  (SETQ MISC-TYPES NIL)
+       B
+	  (SETQ X (CDR X))
+	  (GO A))
 
-;Create a home for a variable and push the home on VARS and ALLVARS.
+    ;; Arguments should go on ALLVARS now, so all args precede all boundvars.
+    (OR (EQ KIND 'FEF-ARG-INTERNAL-AUX)
+	(EQ KIND 'FEF-ARG-AUX)
+	(SETQ ALLVARS (APPEND SPECIFIED-FLAGS MYVARS ALLVARS)))
+    (MAPC 'VAR-COMPUTE-INIT SPECIFIED-FLAGS (CIRCULAR-LIST NIL))
+
+    ;; Now do pass 1 on the initializations for the variables.
+    (DO ((ACCUM)
+	 (VS (REVERSE MYVARS) (CDR VS)))
+	((NULL VS)
+	 ;; If parallel binding, put all var homes on VARS
+	 ;; after all the inits are thru.
+	 (COND (PARALLEL
+		(SETQ VARS (APPEND MYVARS VARS))
+		(COND ((OR (EQ KIND 'FEF-ARG-INTERNAL-AUX)
+			   (EQ KIND 'FEF-ARG-AUX))
+		       (MAPC 'VAR-CONSIDER-OVERLAP MYVARS)
+		       (SETQ ALLVARS (APPEND MYVARS ALLVARS))))))
+	 (NREVERSE ACCUM))
+      (PUSH (VAR-COMPUTE-INIT (CAR VS) PARALLEL) ACCUM)
+      ;; For sequential binding, put each var on VARS
+      ;; after its own init.
+      (OR PARALLEL
+	  (PROGN (COND ((OR (EQ KIND 'FEF-ARG-INTERNAL-AUX)
+			    (EQ KIND 'FEF-ARG-AUX))
+			(VAR-CONSIDER-OVERLAP (CAR VS))
+			(PUSH (CAR VS) ALLVARS)))
+		 (PUSH (CAR VS) VARS)
+		 (LET ((TEM (CDDR (VAR-INIT (CAR VS)))))
+		   (AND TEM (PUSH TEM VARS))))))))
+
+;Create a home for a variable.
 ;We fill the variable's INIT slot with a list whose car is the init form
 ;and whose cadr may be the supplied-flag-name, or with nil if there is no init at all,
 ;rather than what is ultimately to go there (which gets there in VAR-COMPUTE-INIT).
 (DEFUN P1BINDVAR (VARSPEC KIND EVAL-TYPE MISC-TYPES)
-       (PROG (TYPE HOME INIT-SPECS)
-	     (COND ((NOT (ATOM VARSPEC))
-		    (SETQ INIT-SPECS (CDR VARSPEC))
-		    (SETQ VARSPEC (CAR VARSPEC))))
-	     (AND (OR (EQ VARSPEC NIL) (EQ VARSPEC T))
-		  (RETURN (BARF VARSPEC '|was used as a bound variable| 'WARN)))
-	     ;; If this variable is an optional arg with a specified-flag,
-	     ;; remember to make a home for the flag as well.
-	     (AND (CADR INIT-SPECS)
-		  (COND ((NEQ KIND 'FEF-ARG-OPT)
-			 (BARF VARSPEC '|has a specified-flag but isn't an optional arg|
-			       'WARN))
-			((NOT (EQ (TYPEP (CADR INIT-SPECS)) 'SYMBOL))
-			 (BARF VARSPEC '|has a specified-flag name which isn't a symbol|
-			       'WARN))
-			(T
-			 (PUSH (CADR INIT-SPECS) SPECIFIED-FLAGS))))
-	     (COND ((NOT (EQ (TYPEP VARSPEC) 'SYMBOL))
-		    (BARF VARSPEC '|non-atomic variable name| 'DATA)))
-             (SETQ TYPE (FIND-TYPE VARSPEC))
-	     (COND ((MEMQ TYPE '(FEF-SPECIAL FEF-REMOTE)) (SETQ SPECIALFLAG T)))
-             (SETQ HOME (VAR-MAKE-HOME VARSPEC TYPE KIND INIT-SPECS
-				       EVAL-TYPE MISC-TYPES))
-	     (PUSH HOME VARS)
-	     (PUSH HOME ALLVARS)))
+  (LET (TYPE INIT-SPECS)
+    (COND ((NOT (ATOM VARSPEC))
+	   (SETQ INIT-SPECS (CDR VARSPEC))
+	   (SETQ VARSPEC (CAR VARSPEC))))
+    (IF (OR (EQ VARSPEC NIL) (EQ VARSPEC T))
+	(BARF VARSPEC '|was used as a bound variable| 'WARN)
+	;; If this variable is an optional arg with a specified-flag,
+	;; remember to make a home for the flag as well.
+	(AND (CADR INIT-SPECS)
+	     (COND ((NEQ KIND 'FEF-ARG-OPT)
+		    (BARF VARSPEC '|has a specified-flag but isn't an optional arg|
+			  'WARN))
+		   ((NOT (EQ (TYPEP (CADR INIT-SPECS)) 'SYMBOL))
+		    (BARF VARSPEC '|has a specified-flag name which isn't a symbol|
+			  'WARN))
+		   (T
+		    (PUSH (CREATE-SPECIFIED-FLAG-HOME (CADR INIT-SPECS)) SPECIFIED-FLAGS))))
+	(COND ((NOT (EQ (TYPEP VARSPEC) 'SYMBOL))
+	       (BARF VARSPEC '|non-atomic variable name| 'DATA)))
+	(SETQ TYPE (FIND-TYPE VARSPEC))
+	(COND ((MEMQ TYPE '(FEF-SPECIAL FEF-REMOTE)) (SETQ SPECIALFLAG T)))
+	(VAR-MAKE-HOME VARSPEC TYPE KIND INIT-SPECS
+		       EVAL-TYPE MISC-TYPES))))
 
 ;Make a home for the "specified-flag" of an optional variable
 ;(such as, FOOP in &OPTIONAL (FOO 69 FOOP)).
@@ -820,13 +935,10 @@
 ;It is of kind "aux" and initialized to the constant T
 ;regardless of the fact that TLFUNINIT is already set and so
 ;(usually) only FEF-INI-COMP-C is allowed at this point.
-(DEFUN CREATE-SPECIFIED-FLAG-VARIABLE (NAME)
-  (PROG (HOME)
-    (SETQ HOME (VAR-MAKE-HOME NAME (FIND-TYPE NAME)
-			      'FEF-ARG-AUX '('T)
-			      'FEF-QT-DONTCARE '(FEF-ARG-SPECIFIED-FLAG)))
-    (PUSH HOME ALLVARS)
-    (PUSH HOME VARS)))
+(DEFUN CREATE-SPECIFIED-FLAG-HOME (NAME)
+  (VAR-MAKE-HOME NAME (FIND-TYPE NAME)
+		 'FEF-ARG-AUX '('T)
+		 'FEF-QT-DONTCARE '(FEF-ARG-SPECIFIED-FLAG)))
 
 (DEFUN SPECIALP (SYMBOL)
   (OR (MEMQ SYMBOL BARF-SPECIAL-LIST)
@@ -852,7 +964,7 @@
 ;This home has, in the VAR-INIT slot, not what is supposed to be there
 ;but the actual initialization-form for the variable.
 ;Later, VAR-COMPUTE-INIT is called to fix that up.
-(DEFUN VAR-MAKE-HOME (NAME TYPE KIND INIT-SPECS EVAL-TYPE MISC-TYPES)
+(DEFUN VAR-MAKE-HOME (NAME TYPE KIND INIT-SPECS EVAL-TYPE MISC-TYPES &AUX HOME)
     (COND ((NULL (MEMQ KIND '(FEF-ARG-REQ FEF-ARG-OPT FEF-ARG-REST
                                           FEF-ARG-AUX FEF-ARG-INTERNAL-AUX)))
            (BARF KIND 'BAD-KIND 'BARF)))
@@ -872,10 +984,44 @@
            (MSPL2 NAME)
            (SETQ TYPE 'FEF-SPECIAL)))
     ;; Cons up the variable descriptor.
-    (LIST NAME KIND TYPE 0
-          NIL            ;Lap address will be assigned later.
-          INIT-SPECS	;Init info not determined yet; store init form.
-          EVAL-TYPE MISC-TYPES))
+    (SETQ HOME (LIST NAME KIND TYPE 0
+		     NIL			;Lap address will be assigned later.
+		     INIT-SPECS			;Init info not determined yet; store init form.
+		     EVAL-TYPE MISC-TYPES
+		     NIL NIL))
+    (SETF (VAR-LAP-ADDRESS HOME)
+	  ;; Not the real lap address,
+	  ;; but something for P1 to use for the value of the variable
+	  (IF (EQ TYPE 'FEF-SPECIAL) NAME `(LOCAL-REF ,HOME)))
+    HOME)
+
+;; For a variable whose scope is ready to begin (it's about to be put on VARS),
+;; look for another variable whose scope already ended, to share a slot with.
+;; If we find a suitable one, just clobber it in.
+(DEFUN VAR-CONSIDER-OVERLAP (VAR)
+  (AND (EQ (VAR-KIND VAR) 'FEF-ARG-INTERNAL-AUX)
+       (DO ((VS ALLVARS (CDR VS)))
+	   ((NULL VS))
+	 ;; Look for other vars with the same name;
+	 ;; for a gensym, look for another gensym.
+	 (AND (OR (EQ (VAR-NAME VAR) (CAAR VS))
+		  (AND (NULL (SYMBOL-PACKAGE (CAAR VS)))
+		       (NULL (SYMBOL-PACKAGE (VAR-NAME VAR)))))
+	      ;; But don't try to overlap a local with a special that happens to have the same
+	      ;; name.
+	      (NEQ (VAR-TYPE (CAR VS)) 'FEF-SPECIAL)
+	      ;; And don't overlap with arguments
+	      ;; (in (LAMBDA (&OPTIONAL (A (LET (B)...)) B) ...) we might otherwise try to do it)
+	      (EQ (VAR-KIND (CAR VS)) 'FEF-ARG-INTERNAL-AUX)
+	      ;; Insist on a slot that represents a canonical home (does not
+	      ;; map to another slot), and that is not currently in use
+	      (NOT (OR (VAR-OVERLAP-VAR (CAR VS))
+		       (DOLIST (V VARS)
+			 (AND (OR (EQ V (CAR VS))
+				  (EQ (VAR-OVERLAP-VAR V) (CAR VS)))
+			      (RETURN T)))))
+	      (RETURN (SETF (VAR-OVERLAP-VAR VAR) (CAR VS)))))))
+
 
 ;; After the end of pass 1, assign lap addresses to the variables.
 (DEFUN ASSIGN-LAP-ADDRESSES ()
@@ -888,7 +1034,8 @@
       ;; Cons up the expression for Lap to use to refer to this variable.
       (LET ((TYPE (VAR-TYPE V))
             (KIND (VAR-KIND V))
-	    (NAME (VAR-NAME V)))
+	    (NAME (VAR-NAME V))
+	    PERMANENT-NAME)
         (SETF-VAR-LAP-ADDRESS V
               (COND ((EQ TYPE 'FEF-SPECIAL)
                      `(SPECIAL ,NAME))
@@ -896,34 +1043,64 @@
                      `(REMOTE ,NAME))
                     ((MEMQ KIND '(FEF-ARG-REQ FEF-ARG-OPT))
                      `(ARG ,ARGN))
+		    ((VAR-OVERLAP-VAR V)
+		     (VAR-LAP-ADDRESS (VAR-OVERLAP-VAR V)))
                     (T `(LOCBLOCK ,LVCNT))))
+	;; If the name is a gensym that is in the temporary area, don't put it in the
+	;; arg/local map.  This is partly to avoid putting all these stupid gensyms
+	;; into the qfasl file, but the real reason is to avoid the dreaded scourge
+	;; of temporary area lossage in the error handler.
+	(SETQ PERMANENT-NAME (IF (= (%AREA-NUMBER NAME) FASD-TEMPORARY-AREA)
+				 NIL
+				 NAME))
         ;; Now increment one or more of the counters of variables
         ;; and maybe make an entry on LOCAL-MAP or ARG-MAP
         (COND ((MEMQ KIND '(FEF-ARG-REQ FEF-ARG-OPT))
-               (PUSH (LIST NAME) ARG-MAP)
+               (PUSH (AND PERMANENT-NAME (LIST PERMANENT-NAME)) ARG-MAP)
                (AND (= (SETQ ARGN (1+ ARGN)) 101)
                     (BARF NAME '|More than 100 arguments accepted by one function| 'DATA)))
               ((OR (EQ TYPE 'FEF-LOCAL)
-                   (NOT (MEMQ KIND '(FEF-ARG-INTERNAL FEF-ARG-INTERNAL-AUX))))
-               (PUSH (LIST NAME) LOCAL-MAP)
-               (AND (= (SETQ LVCNT (1+ LVCNT)) 101)
-                    (BARF NAME '|More than 100 local variable slots in one function|
-                          'DATA))))))
-    ;; Now find any variables that want to be initted to other variables
-    ;; and set up their inits with the addresses of the vars to init from.
-    (DOLIST (V ALLVARS)
-      (LET ((INIT (VAR-INIT V)))
-        (COND ((EQ (CAR INIT) 'FEF-INI-EFF-ADR)
-               (RPLACA (CDR INIT) `(FIXE ,(MADR (CADR INIT))))))))
+		   (NOT (MEMQ KIND '(FEF-ARG-INTERNAL FEF-ARG-INTERNAL-AUX))))
+	       (COND ((NOT (VAR-OVERLAP-VAR V))
+		      (PUSH (AND PERMANENT-NAME (LIST PERMANENT-NAME)) LOCAL-MAP)
+		      (AND (= (SETQ LVCNT (1+ LVCNT)) 101)
+			   (BARF NAME '|More than 100 local variable slots in one function|
+				 'DATA)))
+		     (T (LET ((L1 (NTHCDR (- (LENGTH LOCAL-MAP)
+					     (CADR (VAR-LAP-ADDRESS V))
+					     1)
+					  LOCAL-MAP)))
+			  (OR (NULL PERMANENT-NAME)
+			      (NULL (SYMBOL-PACKAGE NAME))
+			      (MEMQ NAME (CAR L1))
+			      (PUSH NAME (CAR L1))))))))))
+    (DOLIST (V ALLVARS)		;Fix FIXE's put in by VAR-COMPUTE-INIT
+      (AND (EQ (CAR (VAR-INIT V)) 'FEF-INI-EFF-ADR)
+	   (EQ (CAADR (VAR-INIT V)) 'FIXE)
+	   (SETF (CADADR (VAR-INIT V)) (VAR-LAP-ADDRESS (CADR (CADADR (VAR-INIT V)))))))
     (SETQ LOCAL-MAP (NREVERSE LOCAL-MAP)
-          ARG-MAP (NREVERSE ARG-MAP)))
+          ARG-MAP (NREVERSE ARG-MAP))
+    ;; Clobber all nonspecial varnames in elements of
+    ;; CLOBBER-NONSPECIAL-VARS-LISTS with NIL.
+    ;; Clobber away all-NIL tails of those lists with NIL.
+    (DOLIST (L CLOBBER-NONSPECIAL-VARS-LISTS)
+      (LET ((LAST-NON-NIL-PTR L))
+	(DO ((L1 L (CDR L1)))
+	    ((NULL L1))
+	  (LET ((HOME (ASSQ (CAR L1) ALLVARS)))
+	    (IF (AND HOME (EQ (VAR-TYPE HOME) 'FEF-LOCAL))
+		(RPLACA L1 NIL)
+		(SETQ LAST-NON-NIL-PTR L1))))
+	(RPLACD LAST-NON-NIL-PTR NIL))))
 
 ;Given a variable home, compute its VAR-INIT and install it.
 ;When we are called, the VAR-INIT contains the data for us to work on
 ;which looks like (init-form arg-supplied-flag-name).
 ;Note that for a FEF-ARG-INTERNAL-AUX variable, the init-type will
 ;always be FEF-INI-COMP-C.
-(DEFUN VAR-COMPUTE-INIT (HOME PARALLEL OVARS)
+;At time of call, VARS should be bound to the environment for
+;execution of the init form for this variable.
+(DEFUN VAR-COMPUTE-INIT (HOME PARALLEL)
   (PROG (INIT-SPECS INIT-FORM INIT-TYPE INIT-DATA SPECIFIED-FLAG-NAME NAME KIND TYPE)
 	(SETQ NAME (VAR-NAME HOME)
 	      KIND (VAR-KIND HOME)
@@ -931,86 +1108,81 @@
 	      INIT-SPECS (VAR-INIT HOME)
 	      INIT-FORM (CAR INIT-SPECS)
 	      SPECIFIED-FLAG-NAME (CADR INIT-SPECS))
-	;; Determine the environment (value of VARS)
-	;; to use in computing this var's init form.
-	;; For a serial prog, it's all vars preceding this one.
-	;; Bind VARS to it so we don't fuck up when calling things that
-	;; use it free.  (e.g. MADR)
-	(LET ((VARS (COND (PARALLEL OVARS)
-			  (T (CDR (MEMQ HOME VARS))))))
-          (COND ((NULL INIT-FORM))
-                ((CONSTANTP INIT-FORM)
-                 (SETQ INIT-FORM `',INIT-FORM))
-                ((AND (NOT (ATOM INIT-FORM))
-                      (EQ (CAR INIT-FORM) 'QUOTE)))
-                (T
-                 ;; Init is not NIL, constant or self => must P1 it, and maybe set TLFUNINIT.
-                 (LET ((TLEVEL NIL))
-                    (SETQ INIT-FORM (P1 INIT-FORM)))
-                 (COND ((NOT (ADRREFP INIT-FORM))
-                        (SETQ TLFUNINIT T)))))
-          ;; Now that we have processed the init form, determine the ADL initialization field.
-	  ;; First, must we, or would we rather, use code to initialize the variable?
-	  ;; Note: specified-flags MUST be initted at entry time regardless of anything else.
-	  (COND ((AND (NOT (MEMQ 'FEF-ARG-SPECIFIED-FLAG (VAR-MISC HOME)))
-		      (OR (EQ KIND 'FEF-ARG-INTERNAL-AUX) TLFUNINIT
-			  ;; Don't spoil the fast arg option with nontrivial inits for aux's. 
-			  (AND (EQ KIND 'FEF-ARG-AUX)
-			       FAST-ARGS-POSSIBLE
-			       (NOT (MEMBER INIT-FORM '(NIL 'NIL))))
-			  (COND (PARALLEL (NEQ TYPE 'FEF-LOCAL)))))
-		 (SETQ INIT-TYPE 'FEF-INI-COMP-C)
-		 ;; Note: if we are initting by code, there is no advantage
-		 ;; in binding at function entry, and doing so would
-		 ;; make lap stupidly turn off the fast arg option!
-		 (AND (EQ KIND 'FEF-ARG-AUX)
-		      (SETF-VAR-KIND HOME (SETQ KIND 'FEF-ARG-INTERNAL-AUX)))
-                 (SETQ TLFUNINIT T)))
-	  ;; If we aren't forced already not to use an init, figure out
-	  ;; what type of init to use if there's no init-form: either "none" or "nil".
-	  (OR INIT-TYPE
-	      (SETQ INIT-TYPE
-		    (COND ((OR (EQ KIND 'FEF-ARG-OPT)
-			       (AND (EQ KIND 'FEF-ARG-AUX)
-				    (MEMQ TYPE '(FEF-SPECIAL FEF-REMOTE))))
-			   'FEF-INI-NIL)
-			  (T 'FEF-INI-NONE))))
-	  ;; Then, if there is an init form, gobble it.
-	  (COND ((AND INIT-FORM (NEQ INIT-TYPE 'FEF-INI-COMP-C))
-		 (COND ((NOT (MEMQ KIND
-				   '(FEF-ARG-OPT FEF-ARG-AUX FEF-ARG-INTERNAL-AUX)))
-			(BARF NAME
-			      '|initialization specified for mandatory argument|
-			      'WARN))
-                       ;; There's a hack for binding a special var to itself.
-		       ((AND (EQ NAME INIT-FORM)
-                             (NEQ TYPE 'FEF-LOCAL))
-                        (SETQ INIT-TYPE 'FEF-INI-SELF))
-		       ((ATOM INIT-FORM)
-                        (COND ((SPECIALP INIT-FORM)
-                               (SETQ INIT-TYPE 'FEF-INI-C-PNTR)
-                               (SETQ INIT-DATA (LIST 'LOCATIVE-TO-S-V-CELL INIT-FORM)))
-                              (T (SETQ INIT-TYPE 'FEF-INI-EFF-ADR)
-                                 ;; Initted to value of local var:
-                                 ;; Make init data be the var, for now.
-                                 ;; ASSIGN-LAP-ADDRESSES will change it.
-                                 (SETQ INIT-DATA INIT-FORM))))
-		       ((MEMQ (CAR INIT-FORM) '(QUOTE FUNCTION))
-			(SETQ INIT-TYPE 'FEF-INI-PNTR)
-			(SETQ INIT-DATA INIT-FORM)))))
-	  (COND ((AND (EQ KIND 'FEF-ARG-OPT)
-		      (OR TLFUNINIT SPECIFIED-FLAG-NAME))
-		 ;; Once an opt arg gets an alternate starting address,
-		 ;; all following args must be similar or else FEF-INI-COMP-C.
-		 (SETQ TLFUNINIT T)
-		 (SETQ INIT-TYPE 'FEF-INI-OPT-SA)
-		 (SETQ INIT-DATA (GENSYM)))
-		;; If something not an optional arg was given a specified-flag,
-		;; discard that flag now.  There has already been an error message.
-		(T (SETQ SPECIFIED-FLAG-NAME NIL)))
-	  (SETF-VAR-INIT HOME (LIST* INIT-TYPE INIT-DATA
-				     (ASSQ SPECIFIED-FLAG-NAME ALLVARS)))
-          (RETURN (COND ((NULL INIT-FORM) NAME) (T (LIST NAME INIT-FORM)))))))
+    (COND ((NULL INIT-FORM))
+	  ((CONSTANTP INIT-FORM)
+	   (SETQ INIT-FORM `',INIT-FORM))
+	  ((AND (NOT (ATOM INIT-FORM))
+		(EQ (CAR INIT-FORM) 'QUOTE)))
+	  (T
+	   ;; Init is not NIL, constant or self => must P1 it, and maybe set TLFUNINIT.
+	   (LET ((TLEVEL NIL))
+	     (SETQ INIT-FORM (P1 INIT-FORM)))
+	   (COND ((NOT (ADRREFP INIT-FORM))
+		  (SETQ TLFUNINIT T)))))
+    ;; Now that we have processed the init form, determine the ADL initialization field.
+    ;; First, must we, or would we rather, use code to initialize the variable?
+    ;; Note: specified-flags MUST be initted at entry time regardless of anything else.
+    (COND ((AND (NOT (MEMQ 'FEF-ARG-SPECIFIED-FLAG (VAR-MISC HOME)))
+		(OR (EQ KIND 'FEF-ARG-INTERNAL-AUX) TLFUNINIT
+		    ;; Don't spoil the fast arg option with nontrivial inits for aux's. 
+		    (AND (EQ KIND 'FEF-ARG-AUX)
+			 FAST-ARGS-POSSIBLE
+			 (NOT (MEMBER INIT-FORM '(NIL 'NIL))))
+		    (COND (PARALLEL (NEQ TYPE 'FEF-LOCAL)))))
+	   (SETQ INIT-TYPE 'FEF-INI-COMP-C)
+	   ;; Note: if we are initting by code, there is no advantage
+	   ;; in binding at function entry, and doing so would
+	   ;; make lap stupidly turn off the fast arg option!
+	   (AND (EQ KIND 'FEF-ARG-AUX)
+		(SETF-VAR-KIND HOME (SETQ KIND 'FEF-ARG-INTERNAL-AUX)))
+	   (SETQ TLFUNINIT T)))
+    ;; If we aren't forced already not to use an init, figure out
+    ;; what type of init to use if there's no init-form: either "none" or "nil".
+    (OR INIT-TYPE
+	(SETQ INIT-TYPE
+	      (COND ((OR (EQ KIND 'FEF-ARG-OPT)
+			 (AND (EQ KIND 'FEF-ARG-AUX)
+			      (MEMQ TYPE '(FEF-SPECIAL FEF-REMOTE))))
+		     'FEF-INI-NIL)
+		    (T 'FEF-INI-NONE))))
+    ;; Then, if there is an init form, gobble it.
+    (COND ((AND INIT-FORM (NEQ INIT-TYPE 'FEF-INI-COMP-C))
+	   (COND ((NOT (MEMQ KIND
+			     '(FEF-ARG-OPT FEF-ARG-AUX FEF-ARG-INTERNAL-AUX)))
+		  (BARF NAME
+			'|initialization specified for mandatory argument|
+			'WARN))
+		 ;; There's a hack for binding a special var to itself.
+		 ((AND (EQ NAME INIT-FORM)
+		       (NEQ TYPE 'FEF-LOCAL))
+		  (SETQ INIT-TYPE 'FEF-INI-SELF))
+		 ((ATOM INIT-FORM)
+		  (SETQ INIT-TYPE 'FEF-INI-C-PNTR)
+		  (SETQ INIT-DATA (LIST 'LOCATIVE-TO-S-V-CELL INIT-FORM)))
+		 ((EQ (CAR INIT-FORM) 'LOCAL-REF)
+		  (SETQ INIT-TYPE 'FEF-INI-EFF-ADR) ;Initted to value of local var
+		  (SETQ INIT-DATA (LIST 'FIXE INIT-FORM)))
+		 ((MEMQ (CAR INIT-FORM) '(QUOTE FUNCTION BREAKOFF-FUNCTION))
+		  (SETQ INIT-TYPE 'FEF-INI-PNTR)
+		  (SETQ INIT-DATA INIT-FORM))
+		 (T (BARF INIT-FORM '|init-form calculation confused| 'BARF)))))
+    (COND ((AND (EQ KIND 'FEF-ARG-OPT)
+		(OR TLFUNINIT SPECIFIED-FLAG-NAME))
+	   ;; Once an opt arg gets an alternate starting address,
+	   ;; all following args must be similar or else FEF-INI-COMP-C.
+	   (SETQ TLFUNINIT T)
+	   (SETQ INIT-TYPE 'FEF-INI-OPT-SA)
+	   (SETQ INIT-DATA (GENSYM)))
+	  ;; If something not an optional arg was given a specified-flag,
+	  ;; discard that flag now.  There has already been an error message.
+	  (T (SETQ SPECIFIED-FLAG-NAME NIL)))
+    (SETF-VAR-INIT HOME (LIST* INIT-TYPE INIT-DATA
+			       (AND SPECIFIED-FLAG-NAME
+				    (DOLIST (V ALLVARS)
+				      (AND (EQ (VAR-NAME V) SPECIFIED-FLAG-NAME)
+					   (MEMQ 'FEF-ARG-SPECIFIED-FLAG (VAR-MISC V))
+					   (RETURN V))))))
+    (RETURN (COND ((NULL INIT-FORM) NAME) (T (LIST NAME INIT-FORM))))))
 
 ;; (MULTIPLE-VALUE-BIND variable-list m-v-returning-form . body)
 ;; turns into (MULTIPLE-VALUE-BIND variable-list vars-segment m-v-returning-form . body)
@@ -1034,6 +1206,9 @@
 ;;; If this wasn't here the compiler would be confused into not compiling the arguments
 (DEFUN (PROGN P1) (FORM)
   (CONS 'PROGN (MAPCAR 'P1 (CDR FORM))))
+
+(DEFUN (UNWIND-PROTECT P1) (FORM)
+  (CONS 'UNWIND-PROTECT (MAPCAR 'P1 (CDR FORM))))
 
 ;Analyze a prog's variable bindings and tags,
 ;and convert it to an internal form which looks like
@@ -1075,11 +1250,12 @@
          (AND (EQ FN 'PPROG)
               (DO ((XX VLIST (CDR XX)))
                   ((NULL XX) (SETQ FN 'SPROG))
-                 (OR (ATOM (CAR XX))
-                     (CONSTANTP (CADAR XX))
-                     (QUOTEP (CADAR XX))
-                     (EQ (CAR XX) (CADAR XX))
-                     (RETURN NIL))))
+		;; Namely, if binding each symbol to NIL, a constant, or itself.
+		(OR (ATOM (CAR XX))
+		    (CONSTANTP (CADAR XX))
+		    (QUOTEP (CADAR XX))
+		    (EQ (CAAR XX) (CADAR XX))
+		    (RETURN NIL))))
 	 ;; Flush rebinding a var to itself if it isn't special
 	 ;; and range of rebinding is rest of function.
 	 (AND TLEVEL
@@ -1087,7 +1263,7 @@
 		    (SUBSET-NOT #'(LAMBDA (VAR)
 				    (AND (NOT (ATOM VAR))
 					 (EQ (CAR VAR) (CADR VAR))
-					 (EQ (VAR-TYPE (ASSQ VAR VARS)) 'FEF-LOCAL)))
+					 (EQ (VAR-TYPE (ASSQ (CAR VAR) VARS)) 'FEF-LOCAL)))
 				VLIST)))
 	 (SETQ VLIST (P1SBIND VLIST
 			      (COND (TLEVEL 'FEF-ARG-AUX)
@@ -1107,7 +1283,8 @@
 	    (COND ((EQUAL (CAR BODY) '(SETQ))
 		   (SETQ BODY (CDR BODY)))
 		  ((OR (ATOM (CAR BODY))
-		       (NEQ (CAR (SETQ TEM (OPTIMIZE (CAR BODY) NIL))) 'SETQ)
+		       (ATOM (SETQ TEM (OPTIMIZE (CAR BODY) NIL)))
+		       (NEQ (CAR TEM) 'SETQ)
 		       (NOT (P1PROG-VAR-FIND (CADR TEM) VLIST))
 		       (NOT (OR (CONSTANTP (CADDR TEM))
 				(AND (NOT (ATOM (CADDR TEM)))
@@ -1129,14 +1306,13 @@
 	 ;; Now P1 process what is left of the body.
 	 (AND (CDR BODY) (SETQ TLEVEL NIL))
 	 (SETQ BODY (MAPCAR (FUNCTION (LAMBDA (STMT)
-			         (COND ((EQ (TYPEP STMT) 'SYMBOL) (P1TAGAD STMT PROGNAME))
+			         (COND ((EQ (TYPEP STMT) 'SYMBOL) (P1TAGAD STMT))
 				       (T (P1 STMT)))))
 			    BODY))
 	 (LET ((RETTAG (GENSYM)))
 	      ;; Push on GOTAGS a description of this prog's "return tag",
 	      ;; a tag we generate and stick at the end of the prog.
-	      (PUSH (MAKE-GOTAG RETTAG RETTAG NIL
-			       PROGNAME PROGNAME) GOTAGS)
+	      (PUSH (MAKE-GOTAG RETTAG RETTAG) GOTAGS)
 	      `(,FN ,VLIST ,VARS ,GOTAGS ,PROGNAME ,BINDP . ,BODY))))
 
 ;MEMQ and ASSQ together.  Find the tail of VLIST
@@ -1148,14 +1324,14 @@
 		     (EQ VARNAME (CAAR VL))))
 	    (RETURN VL))))
 
-(DEFUN P1TAGAD (X PROGNAME)
+(DEFUN P1TAGAD (X)
     (COND ((ASSQ X GOTAGS)
 	   (AND X (BARF X '|duplicated PROG tag| 'WARN))
 	   ;; Replace duplicate progtags with something that
 	   ;; will be ignored by pass 2, to avoid making LAP get unhappy.
 	   '(QUOTE NIL))
 	  (T (PUSH X ALLGOTAGS)
-	     (PUSH (MAKE-GOTAG X (COND ((MEMQ X ALLGOTAGS) (GENSYM)) (T X)) NIL PROGNAME)
+	     (PUSH (MAKE-GOTAG X (COND ((MEMQ X ALLGOTAGS) (GENSYM)) (T X)))
 		   GOTAGS)
 	     X)))
 
@@ -1165,6 +1341,12 @@
 (DEFPROP RETURN-FROM P1RETURN-FROM P1)
 (DEFUN P1RETURN-FROM (FORM)
     (CONS 'RETURN-FROM (CONS (CADR FORM) (MAPCAR 'P1V (CDDR FORM)))))
+
+(DEFUN (LET P1) (FORM)
+  (P1 `(PROG T ,(CADR FORM) (RETURN-FROM-T (PROGN . ,(CDDR FORM))))))
+
+(DEFUN (LET* P1) (FORM)
+  (P1 `(PROG* T ,(CADR FORM) (RETURN-FROM-T (PROGN . ,(CDDR FORM))))))
 
 ;Turn an internal lambda containing &AUX variables
 ;into one containing an SPROG and having no &AUX variables.
@@ -1186,6 +1368,8 @@
 ;This means that &OPTIONALs don't work quite right;
 ;but they never used to work at all in internal lambdas anyway.
 ;The PPROG is named T so that RETURNs to the user's PROGs aren't screwed up.
+;No checking of number of args here, because it is done elsewhere.
+;We just eval and ignore extra args and take missing ones to be NIL.
 (DEFUN P1LAMBDA (LAMBDA ARGS)
     (PROG (ARGLIST BODY ARGS1 OPTIONAL PROGVARS VAR)
 	  (SETQ LAMBDA (P1AUX LAMBDA))
@@ -1197,30 +1381,29 @@
               (NIL)
               (SETQ VAR (CAR ARGLIST1))
               (COND ((NULL ARGLIST1)
-                     (AND ARGS1
-                          (BARF (LIST ARGLIST ARGS)
-                                '|Too many arguments to internal lambda| 'DATA))
                      (RETURN T))
+		    ((EQ VAR '&KEY)
+		     (BARF ARGLIST "&KEY in internal lambda" 'WARN))
                     ((EQ VAR '&REST)
                      (POP ARGLIST1)
                      (PUSH (LIST (CAR ARGLIST1) `(LIST . ,ARGS1)) PROGVARS)
                      (RETURN (SETQ ARGS1 NIL)))
                     ((EQ VAR '&OPTIONAL)
                      (SETQ OPTIONAL T))
-                    ((MEMQ VAR LAMBDA-LIST-KEYWORDS)
-                     (PUSH VAR PROGVARS))
-                    ((NULL ARGS1)
-                     (OR OPTIONAL
-                         (BARF (LIST ARGLIST ARGS)
-                               '|Too few arguments to internal lambda| 'BARF))
-                     (RETURN T))
-                    (T (OR (ATOM VAR)
-                           (COND (OPTIONAL (SETQ VAR (CAR VAR)))
-                                 (T (BARF VAR '|Initialization specified for mandatory argument|
-                                          'DATA))))
-                       (PUSH (LIST VAR (CAR ARGS1)) PROGVARS)
+                    ((MEMQ VAR LAMBDA-LIST-KEYWORDS))
+                    (T (COND ((SYMBOLP VAR)
+			      (PUSH (LIST VAR (CAR ARGS1)) PROGVARS))
+			     (T
+			      (COND ((NOT OPTIONAL)
+				     (BARF ARGLIST
+					   "Initialization given for non-optional argument in internal lambda"
+					   'WARN)))
+			      (PUSH (LIST (CAR VAR)
+					  (COND (ARGS1 (CAR ARGS1))
+						(T (CADR VAR)))) PROGVARS)))
                        (POP ARGS1))))
 	  (RETURN (P1 `(PPROG T ,(NREVERSE PROGVARS)
+			      ,@ARGS1    ;Eval any extra unnecessary args!
 			      (INHIBIT-STYLE-WARNINGS (RETURN-FROM-T (PROGN . ,BODY))))))))
 
 (DEFPROP COND P1COND P1)
@@ -1230,7 +1413,12 @@
 	(COND
 	 ((ATOM (CDR X))
 	  (BARF X '|atomic COND body| 'DATA))
-	 (T (MAPCAR (FUNCTION P1PROGN-1) (CDR X))))))
+	 (T (MAPCAR (FUNCTION P1COND-1) (CDR X))))))
+
+(DEFUN P1COND-1 (FORMS)
+  (IF (ATOM FORMS)
+      (BARF FORMS "Atomic cond pair" 'DATA)
+      (P1PROGN-1 FORMS)))
 
 (ADD-OPTIMIZER PROGN 1-ARG-NO-OP)
 (DEFUN P1PROGN (X)
@@ -1248,9 +1436,8 @@
 (DEFUN P1-MULTIPLE-VALUE (FORM)
     (AND (CDDDR FORM)
 	 (BARF FORM '|too many arguments| 'WARN))
-    (MAPC 'P1SETVAR (CADR FORM))
     (LIST 'MULTIPLE-VALUE
-	  (CADR FORM)
+	  (MAPCAR 'P1SETVAR (CADR FORM))
 	  (P1V (CADDR FORM))))
 
 (DEFPROP MULTIPLE-VALUE-LIST ((1 (FEF-ARG-REQ FEF-QT-EVAL))) ARGDESC)
@@ -1265,22 +1452,19 @@
 (DEFUN P1SETQ-1 (PAIRS)
     (COND ((NULL PAIRS) NIL)
 	  ((NULL (CDR PAIRS))
-	   (BARF PAIRS '|odd number of args to SETQ| 'DATA))
+	   (BARF PAIRS '|odd number of args to SETQ| 'WARN))
 	  ((OR (NULL (CAR PAIRS)) (EQ (CAR PAIRS) T))
-	   (BARF (CAR PAIRS) '|being SETQ'd| 'DATA))
+	   (BARF (CAR PAIRS) '|being SETQ'd| 'WARN))
 	  (T
-	   (P1SETVAR (CAR PAIRS))
-	   (CONS (CAR PAIRS) (CONS (P1V (CADR PAIRS)) (P1SETQ-1 (CDDR PAIRS)))))))
+	   (CONS (P1SETVAR (CAR PAIRS))
+		 (CONS (P1V (CADR PAIRS)) (P1SETQ-1 (CDDR PAIRS)))))))
 
 (DEFUN P1SETVAR (VAR)
-  (LET ((TM))
-    (COND ((NULL VAR) NIL)	;FOR MULTIPLE-VALUE
-	  ((OR (NUMBERP VAR)
-	       (NOT (ATOM VAR)))
-	   (BARF VAR '|attempt to SETQ something not a symbol| 'DATA))
-	  ((SETQ TM (ASSQ VAR VARS))
-	   (VAR-INCREMENT-USE-COUNT TM))
-	  (T (MAKESPECIAL VAR)))))
+  (COND ((NULL VAR) NIL)	;FOR MULTIPLE-VALUE
+	((NOT (SYMBOLP VAR))
+	 (BARF VAR '|attempt to SETQ something not a symbol| 'WARN)
+	 NIL)
+	(T (P1 VAR))))
 
 ;Given an entry on VARS, increment the usage count.
 (DEFUN VAR-INCREMENT-USE-COUNT (VAR)
@@ -1301,14 +1485,25 @@
 
 (DEFPROP FUNCTION P1FUNCTION P1)
 (DEFUN P1FUNCTION (FORM)
-    (COND ((ATOM (CADR FORM)) FORM)
-	  (T
-	   (LET ((TEM (MAYBE-BREAKOFF (CADR FORM))))
-		(COND (TEM (LIST (COND ((ATOM TEM) 'FUNCTION) (T 'QUOTE)) TEM))
-		      (T (LIST 'QUOTE (CADR FORM))))))))
+    (COND ((SYMBOLP (CADR FORM)) FORM)		;Functional variable
+	  ((FUNCTIONP (CADR FORM))		;Functional constant
+	   (OR (MAYBE-BREAKOFF (CADR FORM)) (LIST 'QUOTE (CADR FORM))))
+	  ((VALIDATE-FUNCTION-SPEC (CADR FORM))	;Function spec
+	   FORM)
+	  (T (BARF FORM "Contains neither a function nor the name of a function" 'DATA))))
+
+(DEFUN (LEXICAL-CLOSURE P1) (FORM)
+  (COND ((ATOM (CADR FORM)) `(FUNCTION ,(CADR FORM)))
+	((MAYBE-BREAKOFF-LEXICAL-CLOSURE (CADR FORM)))
+	(T (P1FUNCTION FORM))))
 
 ;FUNCTIONAL-ALIST IS LIKE QUOTE, BUT BREAKS OFF ANY FUNCTIONS IT FINDS
 ; IN THE CDR OR CADR POSITION OF AN ALIST ELEMENT.
+;;;??? This does not work any more, and is hard to make work
+;;;??? now that broken off functions don't have symbols for names.
+;;;??? People expect their definitions to be found in slots in the
+;;;??? main function's fef; but the functions in this list are not
+;;;??? pointed to from anywhere in the main function's fef.
 (DEFPROP FUNCTIONAL-ALIST P1FUNCTIONAL-ALIST P1)
 (DEFUN P1FUNCTIONAL-ALIST (FORM)
    `(QUOTE ,(MAPCAR (FUNCTION (LAMBDA (X)
@@ -1324,12 +1519,18 @@
 (DEFPROP VALUE-CELL-LOCATION P1VALUE-CELL-LOCATION P1)
 
 ;Make sure that (VALUE-CELL-LOCATION 'FOO) marks FOO as "used".
-(DEFUN P1VALUE-CELL-LOCATION (FORM)
+(DEFUN P1VALUE-CELL-LOCATION (FORM &AUX TEM)
     (COND ((AND (NOT (ATOM (CADR FORM)))
 		(EQ (CAR (CADR FORM)) 'QUOTE))
-	   (LET ((TEM (ASSQ (CADADR FORM) VARS)))
-		(AND TEM (VAR-INCREMENT-USE-COUNT TEM))
-                FORM))
+	   (COND ((NOT (SYMBOLP (CADADR FORM)))
+		  (BARF FORM "Value cell location of non-symbol" 'WARN)
+		  ''NIL)
+		 ((SETQ TEM (ASSQ (CADADR FORM) VARS))
+		  (VAR-INCREMENT-USE-COUNT TEM)
+		  `(VALUE-CELL-LOCATION (QUOTE (LOCAL-REF ,TEM))))
+		 ((SETQ TEM (TRY-REF-LEXICAL-VAR FORM))
+		  `(VALUE-CELL-LOCATION (QUOTE ,TEM)))
+		 (T FORM)))
 	  (T (P1EVARGS FORM))))
 
 (DEFPROP OR P1EVARGS P1)
@@ -1352,787 +1553,8 @@
 	 (EQ (CAADR FORM) 'QUOTE)
 	 (MAPC 'MSPL2 (CADADR FORM)))
     (P1EVARGS FORM))
-
-;;; Convert DOs into PROGs.
 
-(ADD-OPTIMIZER DO DOEXPANDER)
-(ADD-OPTIMIZER DO-NAMED DOEXPANDER)
-
-(DEFUN DOEXPANDER (X)
-  (LET ((PROGNAME) (PROGREST))
-    (SETQ PROGREST
-      (PROG (DOSPECS ENDTEST ENDVALS TAG1 TAG3 PVARS STEPDVARS ONCE)
-            (COND ((EQ (CAR X) 'DO-NAMED)
-                   (SETQ PROGNAME (CADR X))
-                   (SETQ X (CDDR X)))
-                  (T (SETQ X (CDR X))))			;Get rid of "DO".
-            (COND ((AND (CAR X) (ATOM (CAR X)))
-                   (SETQ  DOSPECS `((,(CAR X) ,(CADR X) ,(CADDR X)))
-                          ENDTEST (CAR (SETQ X (CDDDR X)))
-                          ENDVALS NIL))
-                  (T (SETQ DOSPECS (CAR X))
-                     (SETQ X (CDR X))
-                     (COND ((CAR X)
-                            (SETQ ENDTEST (CAAR X)
-                                  ENDVALS (AND (OR (CDDAR X)
-                                                   (CADAR X))
-                                               (CDAR X))))
-                           (T (SETQ ONCE T)))))
-            (SETQ X (CDR X))
-            (SETQ DOSPECS (REVERSE DOSPECS)); Do NOT use NREVERSE, or you will destroy
-					    ; every macro definition in sight!! -DLW
-            ;; DOVARS has new-style list of DO variable specs,
-            ;; ENDTEST has the end test form,
-            ;; ENDVALS has the list of forms to be evaluated when the end test succeeds,
-            ;; ONCE is T if this is a DO-once as in (DO ((VAR)) () ...),
-            ;; X has the body.
-            ;; Now process the variable specs.
-            (DO X DOSPECS (CDR X) (NULL X)
-                (COND ((ATOM (CAR X))
-		       (PUSH (CAR X) PVARS))
-                      ((OR (> (LENGTH (CAR X)) 3) (NOT (ATOM (CAAR X))))
-		       (BARF (CAR X) '|malformatted DO-variable specification|
-			     'DATA))
-		      (T (PUSH `(,(CAAR X) ,(CADAR X)) PVARS)
-                         (AND (CDDAR X)
-                              (PUSH `(,(CAAR X) ,(CADDAR X)) STEPDVARS)))))
-            (COND (ONCE
-                   (AND STEPDVARS (BARF STEPDVARS '|Stepped variables in once-through DO| 'WARN))
-                   (RETURN `(,PVARS . ,X))))
-	    ;; Turn STEPDVARS into a PSETQ form to step the vars,
-	    ;; or into NIL if there are no vars to be stepped.
-            (SETQ STEPDVARS (APPLY 'NCONC STEPDVARS))
-	    (AND STEPDVARS (SETQ STEPDVARS (CONS 'PSETQ STEPDVARS)))
-            (SETQ TAG3 (GENSYM))
-            (SETQ TAG1 (GENSYM))
-            (SETQ ENDTEST (OPTIMIZE ENDTEST T))
-            (COND ((NULL ENDTEST)
-                   (AND ENDVALS
-                        (BARF ENDVALS
-                              '|DO end-test is NIL, but forms are to be evalled on exit|
-                              'WARN))
-                   (RETURN `(,PVARS ,TAG1
-                             ,@X
-			     ,STEPDVARS
-                             (GO ,TAG1)))))
-            (COND ((EQ PROGNAME T)
-                   (SETQ ENDVALS `(INHIBIT-STYLE-WARNINGS
-                                     (RETURN-FROM-T (PROGN NIL . ,ENDVALS)))))
-                  (T (SETQ ENDVALS `(RETURN (PROGN NIL . ,ENDVALS)))))
-	    (RETURN `(,PVARS
-		      (GO ,TAG3)
-		      ,TAG1
-		      ,@X	;body
-		      ,STEPDVARS
-		      ,TAG3
-		      (OR ,ENDTEST (GO ,TAG1))
-		      ,ENDVALS))))
-    (AND PROGNAME (SETQ PROGREST (CONS PROGNAME PROGREST)))
-    (CONS 'PPROG PROGREST)))
-
-
-(ADD-OPTIMIZER MAP MAPEXPAND)
-(ADD-OPTIMIZER MAPC MAPEXPAND)
-(ADD-OPTIMIZER MAPCAR MAPEXPAND)
-(ADD-OPTIMIZER MAPLIST MAPEXPAND)
-(ADD-OPTIMIZER MAPCAN MAPEXPAND)
-(ADD-OPTIMIZER MAPCON MAPEXPAND)
-
-(DEFUN MAPEXPAND (FORM)
-  (COND ((NULL (CDDR FORM)) FORM)  ;Don't bomb out if no args for the function to map.
-	(T
-    (LET ((FN (OPTIMIZE (CADR FORM) NIL))
-	  (TAKE-CARS (MEMQ (CAR FORM) '(MAPC MAPCAR MAPCAN)))
-	  TEM)
-         (COND ((NOT OPEN-CODE-MAP-SWITCH) FORM)
-               ;; Expand maps only if specified function is a quoted LAMBDA or a SUBST,
-	       ;; or some arg is a call to CIRCULAR-LIST and we are mapping on cars.
-	       ((NOT (OR (AND (NOT (ATOM FN))
-			      (MEMQ (CAR FN) '(QUOTE FUNCTION))
-			      (NOT (ATOM (CADR FN))))
-			 (AND (NOT (ATOM FN))
-			      (EQ (CAR FN) 'FUNCTION)
-			      (NOT (ATOM (SETQ TEM (DECLARED-DEFINITION (CADR FN)))))
-			      (MEMQ (CAR TEM) '(SUBST MACRO)))
-			 (AND TAKE-CARS
-			      (SOME (CDDR FORM)
-				    (FUNCTION (LAMBDA (X)
-						(AND (NOT (ATOM X))
-						     (NULL (CDDR X))
-						     (EQ (CAR X) 'CIRCULAR-LIST))))))))
-		FORM)
-	       (T (SETQ FN (CADR FN))
-		  ;; VARNMS gets a list of gensymmed variables to use to hold
-		  ;; the tails of the lists we are mapping down.
-		  (LET ((VARNMS)(DOCLAUSES) (ENDTEST) (CARS-OR-TAILS) (TEM))
-		       ;; DOCLAUSES looks like ((G0001 expression (CDR G0001)) ...)
-		       ;;  repeated for each variable.
-		       ;; ENDTEST is (OR (NULL G0001) (NULL G0002) ...)
-		       ;; CARS-OR-TAILS is what to pass to the specified function:
-		       ;;  either (G0001 G0002 ...) or ((CAR G0001) (CAR G0002) ...)
-		       (SETQ VARNMS (DO ((L (CDDR FORM) (CDR L)) (OUTPUT) )
-					((NULL L) OUTPUT)
-				      (PUSH (GENSYM) OUTPUT)))
-		       (SETQ DOCLAUSES
-			     (MAPCAR '(LAMBDA (V L)
-				       (COND ((AND TAKE-CARS (NOT (ATOM L))
-						   (EQ (CAR L) 'CIRCULAR-LIST)
-						   (NULL (CDDR L)))
-					      `(,V ,(CADR L)))
-					     (T `(,V ,L (CDR ,V)))))
-				     VARNMS (CDDR FORM)))
-		       (SETQ ENDTEST
-			     (CONS 'OR (MAPCAN '(LAMBDA (VL)
-						 (AND (CDDR VL) `((NULL ,(CAR VL)))))
-					       DOCLAUSES)))
-		       (SETQ CARS-OR-TAILS
-			     (COND (TAKE-CARS
-				    (MAPCAR '(LAMBDA (DC)
-					      (COND ((CDDR DC) `(CAR ,(CAR DC)))
-						    (T (CAR DC))))
-					    DOCLAUSES))
-				   (T VARNMS)))
-		       (COND ((MEMQ (CAR FORM) '(MAP MAPC))	;NO RESULT
-			      (SETQ TEM `(INHIBIT-STYLE-WARNINGS
-                                            (DO-NAMED T ,DOCLAUSES
-						   (,ENDTEST)
-						   (,FN . ,CARS-OR-TAILS))))
-			      ;; Special hack for MAP or MAPC for value:
-			      ;; Bind an extra local to 1st list and return that.
-			      (COND (P1VALUE
-                                     `(LET ((MAP-RESULT ,(PROG1 (CADAR DOCLAUSES)
-								(RPLACA (CDAR DOCLAUSES)
-									'MAP-RESULT))))
-                                         ,TEM
-                                         MAP-RESULT))
-				    (T TEM)))
-			     ((MEMQ (CAR FORM) '(MAPCAR MAPLIST))	;CONS UP RESULT
-			      `(LET ((MAP-RESULT))
-                                  (INHIBIT-STYLE-WARNINGS
-				    (DO-NAMED T ((MAP-TEMP (INHIBIT-STYLE-WARNINGS
-                                                            (VALUE-CELL-LOCATION 'MAP-RESULT)))
-                                                 . ,DOCLAUSES)
-					      (,ENDTEST)
-					   (RPLACD MAP-TEMP
-						   (SETQ MAP-TEMP
-							 (NCONS (,FN . ,CARS-OR-TAILS))))))
-				    MAP-RESULT))
-			     (T
-			      ;; MAPCAN and MAPCON:  NCONC the result.
-			      `(INHIBIT-STYLE-WARNINGS
-                                 (DO-NAMED T (,@DOCLAUSES (MAP-TEM) (MAP-RESULT))
-				    (,ENDTEST MAP-RESULT)
-				    (SETQ MAP-TEM (NCONC MAP-TEM (,FN . ,CARS-OR-TAILS)))
-				    (OR MAP-RESULT (SETQ MAP-RESULT MAP-TEM))
-				    (SETQ MAP-TEM (LAST MAP-TEM))))))
-			    )))))))
-
-
-(ADD-OPTIMIZER SUBSET SUBSET-EXPAND)
-(ADD-OPTIMIZER SUBSET-NOT SUBSET-EXPAND)
-
-(DEFUN SUBSET-EXPAND (FORM)
-  (LET ((FN (OPTIMIZE (CADR FORM) NIL))
-	PREDARGS DOCLAUSES TEM)
-    (COND ((NOT OPEN-CODE-MAP-SWITCH) FORM)
-	  ;; Expand only if specified function is a quoted LAMBDA or a SUBST,
-	  ((NOT (OR (AND (NOT (ATOM FN))
-			 (MEMQ (CAR FN) '(QUOTE FUNCTION))
-			 (NOT (ATOM (CADR FN))))
-		    (AND (NOT (ATOM FN))
-			 (EQ (CAR FN) 'FUNCTION)
-			 (NOT (ATOM (SETQ TEM (DECLARED-DEFINITION (CADR FN)))))
-			 (MEMQ (CAR TEM) '(SUBST MACRO)))))
-	   FORM)
-	  (T (SETQ FN (CADR FN)) ;Strip off the QUOTE or FUNCTION.
-	     ;; Generate N local variable names.
-	     (DO ((L (CDDR FORM) (CDR L)) (I 0 (1+ I)))
-		 ((NULL L))
-	       (LET ((V (INTERN (FORMAT NIL "MAP-LOCAL-~D" I))))
-		 (PUSH `(,V ,(CAR L) (CDR ,V)) DOCLAUSES)
-		 (PUSH `(CAR ,V) PREDARGS)))	       
-	     (SETQ DOCLAUSES (NREVERSE DOCLAUSES)
-		   PREDARGS (NREVERSE PREDARGS))
-	     `(LET (MAP-RESULT)
-		(INHIBIT-STYLE-WARNINGS
-		  (DO-NAMED T
-		     ((MAP-TEMP (INHIBIT-STYLE-WARNINGS (VALUE-CELL-LOCATION 'MAP-RESULT)))
-		      . ,DOCLAUSES)
-		     ((NULL ,(CAAR DOCLAUSES)))	;Stop when first local variable runs out
-		    (,(COND ((EQ (CAR FORM) 'SUBSET) 'AND) (T 'OR))
-		      (,FN . ,PREDARGS)
-		      (RPLACD MAP-TEMP (SETQ MAP-TEMP (NCONS ,(CAR PREDARGS)))))))
-		MAP-RESULT)))))
-
-;Express multi-argument arithmetic functions in terms of two-argument versions.
-(MAPC (FUNCTION (LAMBDA (FN) (PUTPROP FN '(ARITHEXP) 'OPTIMIZERS)))
-      '(+ * - // LOGAND LOGIOR LOGXOR MIN MAX PLUS TIMES DIFFERENCE QUOTIENT
-        +$ *$ -$ //$))
-
-
-(DEFPROP + *PLUS TWO-ARGUMENT-FUNCTION)
-(DEFPROP +$ *PLUS TWO-ARGUMENT-FUNCTION)
-(DEFPROP * *TIMES TWO-ARGUMENT-FUNCTION)
-(DEFPROP *$ *TIMES TWO-ARGUMENT-FUNCTION)
-(DEFPROP - *DIF TWO-ARGUMENT-FUNCTION)
-(DEFPROP -$ *DIF TWO-ARGUMENT-FUNCTION)
-(DEFPROP // *QUO TWO-ARGUMENT-FUNCTION)
-(DEFPROP //$ *QUO TWO-ARGUMENT-FUNCTION)
-(DEFPROP LOGIOR *LOGIOR TWO-ARGUMENT-FUNCTION)
-(DEFPROP LOGAND *LOGAND TWO-ARGUMENT-FUNCTION)
-(DEFPROP LOGXOR *LOGXOR TWO-ARGUMENT-FUNCTION)
-(DEFPROP MIN *MIN TWO-ARGUMENT-FUNCTION)
-(DEFPROP MAX *MAX TWO-ARGUMENT-FUNCTION)
-(DEFPROP PLUS *PLUS TWO-ARGUMENT-FUNCTION)
-(DEFPROP TIMES *TIMES TWO-ARGUMENT-FUNCTION)
-(DEFPROP DIFFERENCE *DIF TWO-ARGUMENT-FUNCTION)
-(DEFPROP QUOTIENT *QUO TWO-ARGUMENT-FUNCTION)
-
-(DEFUN ARITHEXP (X)
-       (PROG (L OP)
-	     (SETQ L (LENGTH (CDR X)))
-	     (COND ((NULL (SETQ OP (GET (CAR X) 'TWO-ARGUMENT-FUNCTION)))
-		    (BARF X 'BAD-OP-ARITHEXP 'BARF))
-		   ((= 0 L)
-		    (OR (SETQ L (ASSQ OP '((*PLUS . 0) (*DIF . 0) (*TIMES . 1) (*QUO . 1))))
-			(BARF X '|Illegal with no arguments| 'WARN))
-		    (RETURN (CDR L)))
-		   ((= L 1)
-		    (RETURN (COND ((MEMQ (CAR X) '(- -$))
-				   (LIST 'MINUS (CADR X)))
-                                  ((MEMQ (CAR X) '(// //$))
-				   (LIST '*QUO '1 (CADR X)))
-				  (T (CADR X)))))
-		   ((= L 2) (RETURN (CONS OP (CDR X))))
-		   (T (RETURN (CONS OP
-				    (CONS (CONS (CAR X)
-						(BUTLAST (CDR X)))
-					  (LAST X))))))))
-
-(ADD-OPTIMIZER BOOLE BOOLE-EXPAND)
-(DEFUN BOOLE-EXPAND (X)
-  (PROG (L OP INST)
-	(SETQ L (LENGTH (CDR X)))
-	(SETQ OP (CADR X))
-	(COND ((= L 2) (RETURN (CADDR X)))
-	      ((AND (NUMBERP OP)
-		    (SETQ INST (ASSQ OP '((1 . LOGAND)
-				 (6 . LOGXOR) (7 . LOGIOR)))))
-		(RETURN (CONS (CDR INST) (CDDR X))))
-	      ((= L 3) (RETURN (CONS '*BOOLE (CDR X))))
-	      (T (RETURN (LIST '*BOOLE (CADR X)
-			       (CONS 'BOOLE (BUTLAST (CDR X)))
-			       (CAR (LAST X))))))))
-
-;(ADD-OPTIMIZER < COMPARISON-EXPAND)	;These 2 still take only 2 arguments
-;(ADD-OPTIMIZER > COMPARISON-EXPAND)
-(ADD-OPTIMIZER LESSP COMPARISON-EXPAND)
-(ADD-OPTIMIZER GREATERP COMPARISON-EXPAND)
-(DEFUN COMPARISON-EXPAND (FORM)
-  (LET ((OP (CDR (ASSQ (CAR FORM) '((LESSP . <) (GREATERP . >)))))
-	(LEN (LENGTH FORM)))
-    (COND ((< LEN 3)
-	   (BARF FORM '|too few arguments| 'DATA))
-	  ((= LEN 3)
-	   (CONS OP (CDR FORM)))
-;	  ((AND (= LEN 4) (ATOM (CADDR FORM)))
-;	   `(AND ,(LIST OP (CADR FORM) (CADDR FORM))
-;		 ,(LIST OP (CADDR FORM) (CADDDR FORM))))
-	  (T FORM))))	;With more than 2 arguments, don't open-code
-
-(ADD-OPTIMIZER ADD1 ADD1-FIX)
-(ADD-OPTIMIZER SUB1 ADD1-FIX)
-(ADD-OPTIMIZER 1+$ ADD1-FIX)
-(ADD-OPTIMIZER 1-$ ADD1-FIX)
-(DEFUN ADD1-FIX (FORM)
-  (CONS (CDR (ASSQ (CAR FORM) '((ADD1 . 1+)  (1+$ . 1+) (SUB1 . 1-) (1-$ . 1-))))
-	(CDR FORM)))
-
-(ADD-OPTIMIZER NULL NULL-NOT)
-(DEFUN NULL-NOT (FORM)
-    `(NOT . ,(CDR FORM)))
-
-;Optimize (FUNCALL (FUNCTION (LAMBDA ...)) ...) into ((LAMBDA ...) ...).
-;Do not optimize (FUNCALL (FUNCTION FOO) ...) because in that case
-;it would not improve anything and would lose if FOO quotes some args.
-(ADD-OPTIMIZER FUNCALL FUNCALL-FUNCTION)
-(DEFUN FUNCALL-FUNCTION (FORM)
-    (LET ((FNFORM (OPTIMIZE (CADR FORM) NIL)))
-	 (COND ((AND (NOT (ATOM FNFORM))
-		     (MEMQ (CAR FNFORM) '(FUNCTION QUOTE))
-		     (NOT (ATOM (CADR FNFORM))))
-		(CONS (CADR FNFORM) (CDDR FORM)))
-	       (T FORM))))
-
-(ADD-OPTIMIZER APPLY APPLY-TO-LIST)
-(DEFUN APPLY-TO-LIST (FORM)
-    (LET ((ARGFORM (OPTIMIZE (CADDR FORM) NIL)))
-	 (COND ((ATOM ARGFORM)
-		FORM)
-	       ((EQ (CAR ARGFORM) 'LIST)
-		`(FUNCALL ,(CADR FORM) . ,(CDR ARGFORM)))
-	       ((EQ (CAR ARGFORM) 'LIST*)
-		`(LEXPR-FUNCALL ,(CADR FORM) . ,(CDR ARGFORM)))
-	       ((EQ (CAR ARGFORM) 'QUOTE)
-		`(FUNCALL ,(CADR FORM)
-			  . ,(MAPCAR (FUNCTION (LAMBDA (X) (LIST 'QUOTE X))) (CADR ARGFORM))))
-	       (T FORM))))
-
-(ADD-OPTIMIZER AND AND-OR-NO-OP)
-(ADD-OPTIMIZER OR AND-OR-NO-OP)
-(DEFUN AND-OR-NO-OP (FORM)
-    (COND ((NULL (CDR FORM))
-	   (COND ((EQ (CAR FORM) 'AND)
-		  ''T)
-		 (T ''NIL)))
-	  ((NULL (CDDR FORM))
-	   (CADR FORM))
-	  (T FORM)))
-
-(ADD-OPTIMIZER PROGN 1-ARG-NO-OP)
-(DEFUN 1-ARG-NO-OP (FORM)
-       (COND ((CDDR FORM) FORM)
-             (T (CADR FORM))))
-
-(ADD-OPTIMIZER PROG2 PROG2-NO-OP)
-(DEFUN PROG2-NO-OP (FORM)
-    (COND ((OR (CADR FORM) (CDDDR FORM)) FORM)
-          (T (CADDR FORM))))
-
-;Here are a bunch of random compile-time expansions for built-in functions.
-
-(ADD-OPTIMIZER STORE STORE-CONVERT)
-(DEFUN STORE-CONVERT (X)
-  (COND ((AND (NOT (ATOM (CADR X)))	;(STORE (ARRAYCALL ...) ...)
-	      (EQ (CAADR X) 'ARRAYCALL))
-	 `(ASET ,(CADDR X) ,(CADDR (CADR X)) . ,(CDDDR (CADR X))))
-	(T `(XSTORE ,(CADDR X) ,(CADR X)))))
-
-;Turn EQUAL into EQ when that is safe.
-;EQUAL can never be turned into = alone because = signals an error if either
-;arg is not a number, whereas EQUAL does not.  However, (EQUAL <fixnum> xxx)
-;can be turned into EQ since EQ "works" for fixnums.
-;Also EQUALwith one of the arguments a number turns into
-;(AND (NUMBERP <form>) (= <number> <form>))
-(ADD-OPTIMIZER EQUAL EQUAL-EQ-=)
-(DEFUN EQUAL-EQ-= (FORM)
-  (COND ((OR (POINTER-IDENTITY-P (CADR FORM))
-	     (POINTER-IDENTITY-P (CADDR FORM)))
-	 (CONS 'EQ (CDR FORM)))
-	((AND (NUMBERP (CADR FORM)) (ATOM (CADDR FORM)))
-	 (EQUAL-= (CADR FORM) (CADDR FORM)))
-	((AND (NUMBERP (CADDR FORM)) (ATOM (CADR FORM)))
-	 (EQUAL-= (CADDR FORM) (CADR FORM)))
-	(T FORM)))
-
-(DEFUN EQUAL-= (NUMBER ATOM)
-       `(AND (NUMBERP ,ATOM) (= ,NUMBER ,ATOM)))
-
-(IF-FOR-LISPM
-(DEFUN POINTER-IDENTITY-P (QUAN)
-   (OR (EQ (TYPEP QUAN) 'FIXNUM)
-       (AND (NOT (ATOM QUAN))
-	    (EQ (CAR QUAN) 'QUOTE)
-	    (MEMQ (TYPEP (CADR QUAN))
-		  '(FIXNUM SYMBOL))))) )
-
-(IF-FOR-MACLISP 	;ON MACLISP, MUST VERIFY THAT IT WILL REALLY BE A FIXNUM
-			; ON REAL MACHINE, IE FITS IN 24 BITS.
-(DEFUN POINTER-IDENTITY-P (QUAN)
-   (OR (AND (EQ (TYPEP QUAN) 'FIXNUM)
-	    (< (ABS QUAN) 37777777))
-       (AND (NOT (ATOM QUAN))
-	    (EQ (CAR QUAN) 'QUOTE)
-	    (OR (EQ (TYPEP (CADR QUAN)) 'SYMBOL)
-		(AND (EQ (TYPEP (CADR QUAN)) 'FIXNUM)
-		     (< (ABS QUAN) 37777777)))))) )
-
-;Turn (EQ FOO NIL) into (NOT FOO).
-(DEFPROP EQ (EQ-NIL EQ-TYPEP) OPTIMIZERS)
-(DEFUN EQ-NIL (FORM)
-    (COND ((NULL (CDDR FORM)) FORM)  ;0 or 1 arg => let it get the error.
-	  ((MEMBER (CADR FORM) '(NIL 'NIL))
-           `(NOT ,(CADDR FORM)))
-          ((MEMBER (CADDR FORM) '(NIL 'NIL))
-           `(NOT ,(CADR FORM)))
-          (T FORM)))
-
-;Optimize (EQ (TYPEP ...) 'SYMBOL), etc.
-(DEFUN EQ-TYPEP (FORM)
-  (PROG NIL     
-      (AND (NOT (ATOM (CADR FORM)))
-	   (NOT (ATOM (CADDR FORM)))
-	   (COND ((AND (MEMQ (CAADR FORM) '(TYPEP DATA-TYPE))
-		       (NULL (CDDADR FORM))  ;Check that TYPEP has only one arg!
-		       (EQ (CAADDR FORM) 'QUOTE))
-		  (RETURN (EQ-TYPEP-1 (CADADR FORM) (CADR (CADDR FORM)) FORM)))
-		 ((AND (EQ (CAADR FORM) 'QUOTE)
-		       (MEMQ (CAADDR FORM) '(TYPEP DATA-TYPE))
-		       (NULL (CDDR (CADDR FORM))))
-		  (RETURN (EQ-TYPEP-1 (CADR (CADDR FORM)) (CADADR FORM) FORM)))))
-      (RETURN FORM)))
-
-(DEFUN EQ-TYPEP-1 (FORM TYPE TOPFORM)
-    (PROG (PRED)
-	  (SETQ PRED (OR (AND (MEMQ TYPE '(STRING :SYMBOL LIST))
-			      (GET TYPE 'TYPEP))
-			 (CAR (RASSOC TYPE TYPEP-ALIST))))
-	  (COND ((NUMBERP PRED)
-		 (RETURN `(= (%DATA-TYPE ,FORM) ,PRED)))
-		((SYMBOLP PRED) `(,PRED ,FORM)))
-	  (RETURN TOPFORM)))
-
-(ADD-OPTIMIZER TYPEP TYPEP-TWO-ARGS)
-
-(DEFUN TYPEP-TWO-ARGS (FORM)
-  (COND ((AND (CADDR FORM)
-	      (QUOTEP (CADDR FORM)))
-	 (LET ((TYPE (CADR (CADDR FORM))) PRED)
-	   (SETQ PRED (OR (GET TYPE 'TYPEP) (CAR (RASSOC TYPE TYPEP-ALIST))))
-	   (COND ((NUMBERP PRED)
-		  `(= (%DATA-TYPE ,(CADR FORM)) ,PRED))
-		 (PRED `(,PRED ,(CADR FORM)))
-		 ((CLASS-SYMBOLP TYPE)
-		  `(SUBINSTANCE-OF-CLASS-SYMBOL-P ,(CADR FORM) ',TYPE))
-		 (T FORM))))
-	(T FORM)))
-
-;;; modify signp to be (AND (NUMBERP <form>) (<op> <form>)) if form is an atom
-;;; and therefore can't have side effects
-(ADD-OPTIMIZER SIGNP SIGNP-EXPAND)
-(DEFUN SIGNP-EXPAND (X)
-  (LET ((OP (CADR X))
-	(OPND (CADDR X)))
-     (COND ((ATOM OPND)(SIGNP-OPTIMIZE OP OPND))		;IF ATOM, OPTIMIZE IT
-	   (T X))))
-
-(DEFUN SIGNP-OPTIMIZE (OPERATION OPERAND)
-  (PROG (NEW-FORM NOTP)
-    (SETQ NEW-FORM
-	  (LIST (COND ((SAMEPNAMEP OPERATION 'E) 'ZEROP)
-		      ((SAMEPNAMEP OPERATION 'N) (SETQ NOTP T) 'ZEROP)
-		      ((SAMEPNAMEP OPERATION 'L) 'MINUSP)
-		      ((SAMEPNAMEP OPERATION 'GE) (SETQ NOTP T) 'MINUSP)
-		      ((SAMEPNAMEP OPERATION 'G) 'PLUSP)
-		      ((SAMEPNAMEP OPERATION 'LE) (SETQ NOTP T) 'PLUSP)
-		      ((BARF OPERATION '|illegal SIGNP condition| 'DATA)))
-		OPERAND))
-    (AND NOTP (SETQ NEW-FORM (LIST 'NOT NEW-FORM)))
-   (RETURN `(AND (NUMBERP ,OPERAND) ,NEW-FORM))))
-
-(ADD-OPTIMIZER AREF AREF-EXPANDER)
-(DEFUN AREF-EXPANDER (FORM)
-    (SELECTQ (LENGTH FORM)
-       (3 (CONS 'AR-1 (CDR FORM)))
-       (4 (CONS 'AR-2 (CDR FORM)))
-       (5 (CONS 'AR-3 (CDR FORM)))
-       (OTHERWISE (AND (< (LENGTH FORM) 3) (BARF FORM "Not enough args - AREF" 'DATA))
-		  (CONS 'FUNCALL (CDR FORM)))))
-
-(ADD-OPTIMIZER ASET ASET-EXPANDER)
-(DEFUN ASET-EXPANDER (FORM)
-    (SELECTQ (LENGTH FORM)
-        (4 (CONS 'AS-1 (CDR FORM)))
-        (5 (CONS 'AS-2 (CDR FORM)))
-        (6 (CONS 'AS-3 (CDR FORM)))
-	(OTHERWISE (AND (< (LENGTH FORM) 4) (BARF FORM "Not enough args - ASET" 'DATA))
-		   (LIST 'STORE
-                         (CONS 'FUNCALL (CDDR FORM))
-                         (CADR FORM)))))
-
-(ADD-OPTIMIZER ALOC ALOC-EXPANDER)
-(DEFUN ALOC-EXPANDER (FORM)
-    (SELECTQ (LENGTH FORM)
-       (3 (CONS 'AP-1 (CDR FORM)))
-       (4 (CONS 'AP-2 (CDR FORM)))
-       (5 (CONS 'AP-3 (CDR FORM)))
-       (OTHERWISE  (AND (< (LENGTH FORM) 3) (BARF FORM "Not enough args - ALOC" 'DATA))
-		  `(GET-LOCATIVE-POINTER-INTO-ARRAY (FUNCALL . ,(CDR FORM))))))
-
-;Next two are here mainly to avoid getting an error message from GETARGDESC about random FSUBR.
-(ADD-OPTIMIZER COMMENT COMMENT-EXPAND)
-(ADD-OPTIMIZER DECLARE COMMENT-EXPAND)
-(DEFUN COMMENT-EXPAND (IGNORE) ''COMMENT)
-
-(ADD-OPTIMIZER DEFPROP DEFPROP-EXPAND)
-(DEFUN DEFPROP-EXPAND (X)
-       `(PUTPROP ',(CADR X) ',(CADDR X) ',(CADDDR X)))
-
-; Convert catches and throws
-(ADD-OPTIMIZER CATCH CATCH-*CATCH)
-(DEFUN CATCH-*CATCH (X)
-       `(*CATCH ',(CADDR X) ,(CADR X)))
-
-(ADD-OPTIMIZER THROW THROW-*THROW)
-(DEFUN THROW-*THROW (X)
-       `(*THROW ',(CADDR X) ,(CADR X)))
-
-;;; ERRSET and ERR are normally macros but in Maclisp LMMAC doesn't define
-;;; them to avoid messing up the Maclisp interpreter.
-
-(IF-FOR-MACLISP (PROGN 'COMPILE	;necessary kludge
-(SPECIAL SI:EH-ERRSET-STATUS SI:EH-ERRSET-PRINT-MSG) ;These colons aren't really colons
-
-(ADD-OPTIMIZER ERRSET ERRSET-*CATCH)
-(DEFUN ERRSET-*CATCH (X)
-    `(LET ((SI:EH-ERRSET-STATUS T)
-	   (SI:EH-ERRSET-PRINT-MSG ,(COND ((CDDR X)(CADDR X)) (T 'T))))
-	  (*CATCH 'SI:ERRSET-CATCH (LIST ,(CADR X)))))
-
-(ADD-OPTIMIZER ERR ERR-*THROW)
-(DEFUN ERR-*THROW (X)
-    (LET ((VALUE-FORM (CADR X))
-	  (FLAG (CADDR X)))
-      (COND (FLAG (ERROR '|ERR with two arguments is not implemented|))
-	    ((NULL VALUE-FORM) '(ERROR ""))
-	    (T `(COND (SI:EH-ERRSET-STATUS (*THROW 'SI:ERRSET-CATCH ,VALUE-FORM))
-		      (T (ERROR "")))))))
-
-(DEFPROP SI:EH-ERRSET-STATUS (SI EH-ERRSET-STATUS) MAGIC-PACKAGE-FLAG)
-(DEFPROP SI:EH-ERRSET-PRINT-MSG (SI EH-ERRSET-PRINT-MSG) MAGIC-PACKAGE-FLAG)
-(DEFPROP SI:ERRSET-CATCH (SI ERRSET-CATCH) MAGIC-PACKAGE-FLAG)
-)) ;END IF-FOR-MACLISP
-
-;Make PROGV work compiled.
-;The resulting code will only work in CAR/CDR of NIL = NIL mode.
-(ADD-OPTIMIZER PROGV PROGV-EXPAND)
-(DEFUN PROGV-EXPAND (FORM)
-   (LET ((VARNAMES (CADR FORM)) (VALS (CADDR FORM)) (BODY (CDDDR FORM)))
-	`(PROG ((PROGV-VARS ,VARNAMES) (PROGV-VALS ,VALS))
-	  LOOP (COND (PROGV-VARS
-		      (INHIBIT-STYLE-WARNINGS
-		         (BIND (INHIBIT-STYLE-WARNINGS (VALUE-CELL-LOCATION (CAR PROGV-VARS)))
-			       (CAR PROGV-VALS)))
-		      (SETQ PROGV-VARS (CDR PROGV-VARS))
-		      (SETQ PROGV-VALS (CDR PROGV-VALS))
-		      (GO LOOP)))
-	       (RETURN (PROGN . ,BODY)))))
-
-;Turn PROG1 into PROG2 since that is open-coded.
-(ADD-OPTIMIZER PROG1 PROG1-PROG2)
-(DEFUN PROG1-PROG2 (FORM)
-    `(PROG2 NIL . ,(CDR FORM)))
-
-(DEFPROP CONS (CONS-NCONS CONS-LIST) OPTIMIZERS)
-
-;Turn (CONS foo NIL) into (NCONS foo), saving one instruction.
-(DEFUN CONS-NCONS (FORM)
-    (COND ((MEMBER (CADDR FORM) '(NIL 'NIL))
-	   `(NCONS ,(CADR FORM)))
-	  (T FORM)))
-
-;Turn (CONS X (CONS Y NIL)) into (LIST X Y).  Doesn't change (CONS X NIL), though.
-;Perhaps we want a hairier criterion, for the sake of
-;those times when you create a list you are going to RPLACA
-;and don't want LIST to be used.
-(DEFUN CONS-LIST (FORM)
-    (COND ((ATOM (CADDR FORM)) FORM)
-	  ((EQ (CAADDR FORM) 'CONS)
-	   (LET ((TEM (CONS-LIST (CADDR FORM))))
-		(COND ((EQ (CAR TEM) 'LIST)
-		       `(LIST ,(CADR FORM) . ,(CDR TEM)))
-		      ((MEMBER (CADDR TEM) '(NIL 'NIL))
-		       `(LIST ,(CADR FORM) ,(CADR TEM)))
-		      (T FORM))))
-	  (T FORM)))
-
-;The following are here to make list-type structures work more efficiently.
-;It's easier to put the optimization in the compiler than in DEFSTRUCT.
-
-(ADD-OPTIMIZER NTH NTH-OPTIMIZE)
-(ADD-OPTIMIZER NTHCDR NTHCDR-OPTIMIZE)
-
-(DEFUN NTH-OPTIMIZE (X)
-  (LET ((TEM (ASSOC (CADR X) '((0 . CAR) (1 . CADR) (2 . CADDR) (3 . CADDDR)))))
-       (COND (TEM `(,(CDR TEM) ,(CADDR X)))
-	     (T X))))
-
-(DEFUN NTHCDR-OPTIMIZE (X)
-  (LET ((TEM (ASSOC (CADR X) '((1 . CDR) (2 . CDDR) (3 . CDDDR) (4 . CDDDDR)))))
-    (COND ((EQUAL (CADR X) 0) (CADDR X))
-	  (TEM `(,(CDR TEM) ,(CADDR X)))
-	  (T X))))
-
-
-(DEFUN *LEXPR FEXPR (L)
-  (DOLIST (X L)
-     (SETQ FUNCTIONS-DEFINED
-	   (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-                (CONS X FUNCTIONS-DEFINED)))
-     (PUTPROP X '((1005 (FEF-ARG-OPT FEF-QT-EVAL)))
-	      'ARGDESC)))
-
-(DEFUN *EXPR FEXPR (L)
-  (DOLIST (X L)
-     (SETQ FUNCTIONS-DEFINED
-	   (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-                (CONS X FUNCTIONS-DEFINED)))
-     (PUTPROP X '((1005 (FEF-ARG-OPT FEF-QT-EVAL)))
-	      'ARGDESC)))
-
-(DEFUN *FEXPR FEXPR (L)
-  (DOLIST (X L)
-    (SETQ FUNCTIONS-DEFINED
-	  (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-	       (CONS X FUNCTIONS-DEFINED)))
-    (PUTPROP X '((1005 (FEF-ARG-OPT FEF-QT-QT)))
-	     'ARGDESC)))
-
-;Style checkers are, unlike optimizers or macro definitions,
-;run only on user-supplied input, not the results of expansions.
-;Also, they are not expected to return any values.
-;They do not alter the input, merely print warnings if there
-;is anything ugly in it.
-
-;Style checkers are used to implement RUN-IN-MACLISP-SWITCH
-;and OBSOLETE-FUNCTION-WARNING-SWITCH.  They can also warn
-;about anything else that is ugly or frowned upon, though legal.
-
-(DEFPROP GETCHARN OBSOLETE STYLE-CHECKER)
-(DEFPROP GETCHAR OBSOLETE STYLE-CHECKER)
-(DEFPROP IMPLODE OBSOLETE STYLE-CHECKER)
-(DEFPROP MAKNAM OBSOLETE STYLE-CHECKER)
-(DEFPROP EXPLODE OBSOLETE STYLE-CHECKER)
-(DEFPROP EXPLODEC OBSOLETE STYLE-CHECKER)
-(DEFPROP EXPLODEN OBSOLETE STYLE-CHECKER)
-(DEFPROP STATUS OBSOLETE STYLE-CHECKER)
-(DEFPROP SSTATUS OBSOLETE STYLE-CHECKER)
-(DEFPROP SAMEPNAMEP OBSOLETE STYLE-CHECKER)
-
-(DEFUN OBSOLETE (FORM)
-    (AND OBSOLETE-FUNCTION-WARNING-SWITCH
-	 (NOT RUN-IN-MACLISP-SWITCH)
-	 (BARF (CAR FORM) '|obsolete function used| 'WARN)))
-
-;; I guess these have to be on SYSTEM for this to work.
-(DEFPROP MAKNUM UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP MUNKAM UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP *REARRAY UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP *FUNCTION UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP SUBRCALL UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP LSUBRCALL UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP PNGET UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP PNPUT UNIMPLEMENTED STYLE-CHECKER)
-(DEFPROP FSC UNIMPLEMENTED STYLE-CHECKER)
-
-(DEFUN UNIMPLEMENTED (FORM)
-    (BARF (CAR FORM) '|Maclisp function, not implemented in Lisp machine| 'WARN))
-
-(COMMENT
-;;; These are commented out because the style checker doesn't really manage
-;;; to operate only on the user's typed-in code, and
-;;; calls to these with one or zero args are generated by optimizers and macros, etc.
-  (DEFPROP OR NEED-TWO-ARGS STYLE-CHECKER)
-  (DEFPROP AND NEED-TWO-ARGS STYLE-CHECKER)
-  (DEFPROP PROGN NEED-TWO-ARGS STYLE-CHECKER))
-
-(DEFPROP PROG1 NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP PROG2 NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP + NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP * NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP PLUS NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP TIMES NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP QUOTIENT NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP DIFFERENCE NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP NCONC NEED-TWO-ARGS STYLE-CHECKER)
-(DEFPROP APPEND NEED-TWO-ARGS STYLE-CHECKER)
-(DEFUN NEED-TWO-ARGS (FORM)
-    (COND ((NULL (CDDR FORM))
-	   (BARF FORM '|Less than two arguments| 'WARN))))
-
-(DEFPROP SETQ NEED-AN-ARG STYLE-CHECKER)
-(DEFPROP PSETQ NEED-AN-ARG STYLE-CHECKER)
-;Note:  one arg will cause an error, so who needs a warning too?
-
-(DEFPROP COND NEED-AN-ARG STYLE-CHECKER)
-(DEFPROP - NEED-AN-ARG STYLE-CHECKER)
-(DEFPROP // NEED-AN-ARG STYLE-CHECKER)
-(DEFUN NEED-AN-ARG (FORM)
-    (OR (CDR FORM)
-	(BARF (CAR FORM) '|with no arguments| 'WARN)))
 
 ;ARGDESC properties for functions with hairy eval/quote argument patterns
 (DEFPROP ARRAY ((2 (FEF-ARG-REQ FEF-QT-QT)) (20 (FEF-ARG-OPT FEF-QT-EVAL))) ARGDESC)
-
-;;; Style-checkers for things that don't work in Maclisp.
-
-;These symbols don't exist in Maclisp, though they could, but they are likely losers.
-(DEFPROP LISTP NOT-MACLISP STYLE-CHECKER)
-(DEFPROP NLISTP NOT-MACLISP STYLE-CHECKER)
-(DEFPROP NSYMBOLP NOT-MACLISP STYLE-CHECKER)
-
-;These functions can't be added to Maclisp by a user.
-(DEFPROP *CATCH NOT-MACLISP STYLE-CHECKER)
-(DEFPROP *THROW NOT-MACLISP STYLE-CHECKER)
-(DEFPROP UNWIND-PROTECT NOT-MACLISP STYLE-CHECKER)
-(DEFPROP INTERN-LOCAL NOT-MACLISP STYLE-CHECKER)
-(DEFPROP INTERN-SOFT NOT-MACLISP STYLE-CHECKER)
-(DEFPROP INTERN-LOCAL-SOFT NOT-MACLISP STYLE-CHECKER)
-(DEFPROP MAKE-ARRAY NOT-MACLISP STYLE-CHECKER)
-(DEFPROP G-L-P NOT-MACLISP STYLE-CHECKER)
-(DEFPROP ARRAY-LEADER NOT-MACLISP STYLE-CHECKER)
-(DEFPROP STORE-ARRAY-LEADER NOT-MACLISP STYLE-CHECKER)
-(DEFPROP MULTIPLE-VALUE NOT-MACLISP STYLE-CHECKER)
-(DEFPROP MULTIPLE-VALUE-LIST NOT-MACLISP STYLE-CHECKER)
-(DEFPROP MULTIPLE-VALUE-RETURN NOT-MACLISP STYLE-CHECKER)
-(DEFPROP DO-NAMED NOT-MACLISP STYLE-CHECKER)
-(DEFPROP RETURN-FROM NOT-MACLISP STYLE-CHECKER)
-(DEFPROP RETURN-LIST NOT-MACLISP STYLE-CHECKER)
-(DEFPROP BIND NOT-MACLISP STYLE-CHECKER)
-(DEFPROP COMPILER-LET NOT-MACLISP STYLE-CHECKER)
-(DEFPROP LOCAL-DECLARE NOT-MACLISP STYLE-CHECKER)
-(DEFPROP CONS-IN-AREA NOT-MACLISP STYLE-CHECKER)
-(DEFPROP LIST-IN-AREA NOT-MACLISP STYLE-CHECKER)
-(DEFPROP NCONS-IN-AREA NOT-MACLISP STYLE-CHECKER)
-(DEFPROP VALUE-CELL-LOCATION NOT-MACLISP STYLE-CHECKER)
-(DEFPROP CAR-LOCATION NOT-MACLISP STYLE-CHECKER)
-(DEFPROP PROPERTY-CELL-LOCATION NOT-MACLISP STYLE-CHECKER)
-(DEFPROP FUNCTION-CELL-LOCATION NOT-MACLISP STYLE-CHECKER)
-(DEFPROP FSET NOT-MACLISP STYLE-CHECKER)
-(DEFPROP FBOUNDP NOT-MACLISP STYLE-CHECKER)
-(DEFPROP FSYMEVAL NOT-MACLISP STYLE-CHECKER)
-(DEFPROP CLOSURE NOT-MACLISP STYLE-CHECKER)
-
-(DEFUN NOT-MACLISP (FORM)
-    (AND RUN-IN-MACLISP-SWITCH
-	 (BARF (CAR FORM) '|does not exist in Maclisp| 'WARN)))
-
-;Return with more than one argument won't work in Maclisp.
-(DEFPROP RETURN RETURN-STYLE STYLE-CHECKER)
-(DEFUN RETURN-STYLE (FORM)
-    (AND RUN-IN-MACLISP-SWITCH
-	 (CDDR FORM)
-	 (BARF FORM '|returning multiple values doesn't work in Maclisp| 'WARN)))
-
-;Named PROGs don't work in Maclisp.  PROG variables can't be initialized.
-;Also, lots of tags and things like a GO to a RETURN are ugly.
-(DEFPROP PROG PROG-STYLE STYLE-CHECKER)
-(DEFUN PROG-STYLE (FORM)
-    (PROG (PROGNAME)
-	  (AND (ATOM (CADR FORM))
-	       (CADR FORM)
-	       (PROGN (SETQ PROGNAME (CADR FORM))
-		      (SETQ FORM (CDR FORM))))
-	  (COND (RUN-IN-MACLISP-SWITCH
-		 (AND PROGNAME
-                      (BARF PROGNAME '|PROG names won't work in Maclisp| 'WARN))
-		 (OR (EVERY (CADR FORM) (FUNCTION ATOM))
-		     (BARF (CADR FORM) '|PROG variables can't be initialized in Maclisp|
-			   'WARN))))))
-
-;; Check a LAMBDA for things that aren't allowed in Maclisp.
-;; Called only if RUN-IN-MACLISP-SWITCH is set.
-(DEFUN LAMBDA-STYLE (LAMBDA-EXP)
-    (COND ((EQ (CAR LAMBDA-EXP) 'NAMED-LAMBDA)
-	   (BARF 'NAMED-LAMBDA '|does not work in Maclisp| 'WARN)
-	   (POP LAMBDA-EXP)))
-    (DO ((VARLIST (CADR LAMBDA-EXP) (CDR VARLIST)) (KWDBARF)) ((NULL VARLIST))
-       (COND ((ATOM (CAR VARLIST))
-	      (AND (NOT KWDBARF)
-		   (MEMQ (CAR VARLIST) LAMBDA-LIST-KEYWORDS)
-		   (SETQ KWDBARF T)
-		   (BARF (CAR VARLIST)
-			 '|LAMBDA-list keywords aren't allowed in Maclisp| 'WARN)))
-	     (T (BARF (CAR VARLIST)
-		      '|LAMBDA variables can't have initializations in Maclisp|
-		      'WARN)))))
+   

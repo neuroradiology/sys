@@ -1,32 +1,9 @@
-;Definitions and specials for the Lisp machine Lisp compiler  -*-LISP-*-
+;Definitions and specials for the Lisp machine Lisp compiler -*-Mode:Lisp; Package:Compiler-*-
 
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;;     "This is insane.  What we clearly want to do is not completely
 ;;      clear, and is rooted in NCOMPLR."   -- BSG/Dissociated Press.
-
-(IF-FOR-MACLISP (DECLARE (GENPREFIX *COMP*)))
-(DECLARE (SETQ RUN-IN-MACLISP-SWITCH T))
-
-;MACLISP AND LISP-MACHINE-LISP
-; IT WOULD BE NICE IF THIS FILE COULD WIN IN ALL THE FOLLOWING DISTINCT MODES:
-;(1) READ IN IN MACLISP, RUN INTERPRETIVELY IN MACLISP.
-;(2) READ IN IN MACLISP, COMPILE WITH QCOMPL, RESULTING COMPILER RUNS IN MACLISP.
-
-;(3) READ IN IN MACLISP, COMPILE WITH QCMP, RESULTING COMPILER RUNS IN LM-LISP.
-
-;(4) READ IN IN LM-LISP, RUN INTERPRETIVELY IN LM-LISP.
-;(5) READ IN IN LM-LISP, COMPILE WITH QCMP, RESULTING COMPILER RUNS IN LM-LISP.
-
-;INCOMPATABILITIES
-;   THIS FILE IS ALMOST ENTIRELY SIMPLE-MINDED LISP WHICH IS COMPATABILE. HOWEVER,
-; (1) MACLISP STORES FUNCTIONS ON PROPERTY LISTS, LM-LISP IN FUNCTION CELLS  (GET-LOSSAGE).
-; (2) MACLISP HAS FEXPRS, LM-LISP &QUOTE &REST, ETC  (FEXPR-LOSSAGE).
-; (3) GIVEN A FUNCTION, PROCEEDURE FOR DETERMINING HOW MANY ARGS IT HAS, ETC,
-;     IS DIFFERENT.  THIS IS REFLECTED IN A COMPLETELY DIFFERENT GET-Q-ARG-DESC FUNCTION.
-; (4) CERTAIN FUNCTIONS ARE NOT DESIRED IN LM-LISP (MOSTLY BECAUSE THEY'RE ALREADY THERE).
-;     THEY PROBABLY SHOULDN'T BE IN THIS FILE AT ALL, BUT.
-; (5) ERRSET, CATCH AND THROW WORK SOMEWHAT DIFFERENTLY.  (ERRSET-LOSSAGE)
 
 (DECLARE (SPECIAL QC-ERROR-OUTPUT-FILE QC-BARF-P))
 
@@ -36,9 +13,9 @@
 ;; It is reset from time to time during the compilation.
 (DEFVAR QCOMPILE-TEMPORARY-AREA)
 
-;This is a function which is called on each broken-off function's compiled lap code.
-;Usually it is an entry point into lap.
-(DEFVAR QCOMPILE-POST-PROC)
+;;; This is a list of (function expr) to be compiled after main compilation,
+;;; it is used for breakoff functions.
+(DEFVAR QC-FUNCTIONS-TO-BE-TRANSLATED)
 
 ;This is T if the compiler is being used to generate macro-code
 ;which will be passed to the microcompiler.
@@ -88,6 +65,11 @@
 ;is bound by the LOCAL-DECLARE, so it uses FILE-LOCAL-DECLARATIONS instead.
 (DEFVAR FILE-LOCAL-DECLARATIONS NIL)
 
+;This is the intended lexical environment of the function being compiled.
+;For a top-level function in a file, it is NIL.
+;In general it is a list of VARS lists, to be scanned in the order listed.
+(DEFVAR COMPILER-LEXICAL-ENVIRONMENT)
+
 ;BARF-SPECIAL-LIST is a list of all variables automatically declared special
 ;by the compiler.  Those symbols are special merely by virtue of being on
 ;this list, which is bound for the duration of the compilation
@@ -97,8 +79,22 @@
 ; whack boundaries.
 (DEFVAR BARF-SPECIAL-LIST)
 
+;This is like BARF-SPECIAL-LIST but only lists those symbols
+;used in the function now being compiled.
+;If a variable used free is not on this list, it gets a new warning
+;even though it may already be special because it is on BARF-SPECIAL-LIST.
+;So there is a new warning for each function that uses the symbol.
+(DEFVAR THIS-FUNCTION-BARF-SPECIAL-LIST)
+
 ;SPECIAL-PKG-LIST is a list of packages all of whose symbols should be special.
 (DEFVAR SPECIAL-PKG-LIST (LIST (PKG-FIND-PACKAGE "FONTS")))
+
+;This is a list of lists; each element of each list
+;is a symbol which is a variable in the function being compiled.
+;When lap addresses are assigned, each variable which is not special
+;is RPLAC'd with NIL.
+;Further, each list is RPLACD'd with NIL after the last non-NIL element.
+(DEFVAR CLOBBER-NONSPECIAL-VARS-LISTS)
 
 ;BINDP on pass 1 is T if BIND is called in the current PROG.
 ;It is then consed into the internal form of the PROG, for pass 2's sake.
@@ -137,10 +133,6 @@
 ;On pass 2, "destinations" are used instead, with many more alternatives.
 (DEFVAR P1VALUE)
 
-;BINDS is set to T on pass 1 when a call to BIND is seen.
-;It is bound by each PROG.
-(DEFVAR BINDS)
-
 ;MACROLIST is an alist of macro definitions to be used only while compiling.
 ;While compiling a file, macros in the file get put on MACROLIST temporarily.
 (DEFVAR MACROLIST NIL)
@@ -160,10 +152,6 @@
 
 ;Compiler switches:  set these with (DECLARE (SETQ ...))
 ;These are initialized in QC-PROCESS-INITIALIZE
-
-;This controls which bound variables have their names saved for debugging.
-;I think it no longer has any effect, though, and all of them are saved.
-(DEFVAR RETAIN-VARIABLE-NAMES-SWITCH)
 
 ;This, if T, causes MAP, etc. to be open-coded.  It is normally T.
 (DEFVAR OPEN-CODE-MAP-SWITCH)
@@ -187,11 +175,57 @@
 ;This, if T, prevents warnings about a lot of stylistic losses.
 (DEFVAR INHIBIT-STYLE-WARNINGS-SWITCH)
 
+;Counter for breakoff functions
+(DEFVAR BREAKOFF-COUNT)
+
 ;If non-null, this is the name of an editor buffer in which warnings are saved
 (DEFVAR COMPILER-WARNINGS-BUFFER "Compiler Warnings")
 ;Switch to enable saving of all warnings.  Default is to flush buffer
 ;each time a new compilation is started.
-(DEFVAR CONCATENATE-COMPILER-WARNINGS-P NIL)
+(DEFVAR CONCATENATE-COMPILER-WARNINGS-P ':BY-FILE)
+
+;Flag when compiler warnings are being saved for a higher level, like MAKE-SYSTEM
+(DEFVAR COMPILER-WARNINGS-CONTEXT NIL)
+(DEFVAR COMPILER-WARNINGS-INTERVAL-STREAM)
+(DEFVAR COMPILING-WHOLE-FILE-P NIL)
+(IF-FOR-MACLISP-ELSE-LISPM
+
+ (DEFMACRO COMPILER-WARNINGS-CONTEXT-BIND (&BODY BODY)
+   `(LET ((FUNCTIONS-REFERENCED NIL)
+	  (FUNCTIONS-DEFINED NIL)
+	  (BARF-SPECIAL-LIST NIL))
+      . ,BODY))
+
+(DEFMACRO COMPILER-WARNINGS-CONTEXT-BIND (&BODY BODY)
+  (LET ((TOP-LEVEL-P-VAR (GENSYM)))
+    `(LET ((,TOP-LEVEL-P-VAR (NOT COMPILER-WARNINGS-CONTEXT)))
+       (LET-IF ,TOP-LEVEL-P-VAR
+	       ((COMPILER-WARNINGS-CONTEXT T)
+		(STANDARD-OUTPUT STANDARD-OUTPUT)
+		(COMPILER-WARNINGS-INTERVAL-STREAM NIL)
+		(FUNCTIONS-REFERENCED NIL)
+		(FUNCTIONS-DEFINED NIL)
+		(BARF-SPECIAL-LIST NIL))
+	  (AND ,TOP-LEVEL-P-VAR
+	       (ENTER-COMPILER-WARNINGS-CONTEXT))
+	  (PROG1 (PROGN . ,BODY)
+		 (AND ,TOP-LEVEL-P-VAR
+		      (PRINT-FUNCTIONS-REFERENCED-BUT-NOT-DEFINED)))))))
+
+  )
+
+;(ADD-OPTIMIZER FOO BAR) puts FOO on BAR's optimizers list if it isn't there already.
+;(ADD-OPTIMIZER FOO BAR BAR-1 BAR-2...) also remembers that BAR can be optimized
+; into BAR-1, BAR-2, etc. for the benefit of functions like WHO-CALLS.
+(DEFUN ADD-OPTIMIZER (&QUOTE TARGET-FUNCTION OPTIMIZER-NAME &REST OPTIMIZED-INTO)
+  (LET ((OPTS (GET TARGET-FUNCTION 'OPTIMIZERS)))
+    (OR (MEMQ OPTIMIZER-NAME OPTS)
+	(PUTPROP TARGET-FUNCTION (CONS OPTIMIZER-NAME OPTS) 'OPTIMIZERS)))
+  (LET ((OPTS (GET TARGET-FUNCTION 'OPTIMIZED-INTO)))
+    (DOLIST (INTO OPTIMIZED-INTO)
+      (OR (MEMQ INTO OPTS) (PUSH INTO OPTS)))
+    (AND OPTS
+	 (PUTPROP TARGET-FUNCTION OPTS 'OPTIMIZED-INTO))))
 
 ;;; Variables data bases:
 
@@ -224,6 +258,7 @@
 (DEFMACRO VAR-EVAL (VAR) `(CADDR (CDDDDR ,VAR)))
 (DEFMACRO VAR-MISC (VAR) `(CADDDR (CDDDDR ,VAR)))
 (DEFMACRO VAR-DECLARATIONS (VAR) `(CAR (CDDDDR (CDDDDR ,VAR))))
+(DEFMACRO VAR-OVERLAP-VAR (VAR) `(CADR (CDDDDR (CDDDDR ,VAR))))
 
 (DEFMACRO SETF-VAR-INIT (VAR VALUE) `(RPLACA (CDR (CDDDDR ,VAR)) ,VALUE))
 (DEFMACRO SETF-VAR-KIND (VAR VALUE) `(RPLACA (CDR ,VAR) ,VALUE))
@@ -255,6 +290,8 @@
 ;variables.
 (DEFVAR VARIABLE-DECLARATION-KEYS '(FIXNUM FLONUM NOTYPE))
 
+;VAR-OVERLAP-VAR is a pointer to the entry for another var whose slot
+;can be re-used for this variable.
 
 ;Ordinary arguments are allocated slots in the argument portion of the pdl frame.
 ;ARGN counts the number of them.
@@ -323,12 +360,10 @@
 (DEFMACRO GOTAG-PROG-TAG (GOTAG) `(CAR ,GOTAG))	;Name of prog-tag described.
 (DEFMACRO GOTAG-LAP-TAG (GOTAG) `(CADR ,GOTAG))	;Name of corresponding lap-tag.
 (DEFMACRO GOTAG-PDL-LEVEL (GOTAG) `(CADDR ,GOTAG))  ;Pdl level to pop back to when going there.
-(DEFMACRO GOTAG-PROG-NAME (GOTAG) `(CADDDR ,GOTAG)) ;Name of PROG this tag is in, or NIL.
+(DEFMACRO GOTAG-PROGDESC (GOTAG) `(CADDDR ,GOTAG))  ;Progdesc of that prog.
 
-;Mustn't use SETF either.
-(DEFMACRO SETF-GOTAG-PDL-LEVEL (GOTAG LEVEL) `(RPLACA (CDDR ,GOTAG) ,LEVEL))
-
-(DEFMACRO MAKE-GOTAG (&REST ARGS) `(LIST . ,ARGS))
+(DEFMACRO MAKE-GOTAG (&OPTIONAL PROG-TAG LAP-TAG PDL-LEVEL PROGDESC)
+  `(LIST ,PROG-TAG ,LAP-TAG ,PDL-LEVEL ,PROGDESC))
 
 ;PROGDESCS is a list of descriptors of PROGs which are active, on pass 2.
 ;Each descriptor looks like (progname rettag idest m-v-target pdl-level nbinds).

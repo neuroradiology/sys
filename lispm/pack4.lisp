@@ -7,7 +7,6 @@
 		  OBARRAY			;Old-style obarray.
 		  PKG-USER-PACKAGE		;initial package for type-in, keywords, etc.
 		  PKG-GLOBAL-PACKAGE		;initial package with global symbols
-		  PKG-FILE-PACKAGE		;Every loaded file is interned here.
 		  PKG-SYSTEM-PACKAGE		;Certain symbols shared by several
 						;internal system packages.
 		  PKG-SYSTEM-INTERNALS-PACKAGE	;Various Lisp system programs.
@@ -21,6 +20,9 @@
 						;Unknown file defaults to STRING of this
 						; unless this is unbound or NIL.
 		  PACKAGES-WHICH-MAGICALLY-GO-UNDER-SYSTEM
+		  PACKAGE			;The current package.
+						;If this declaration is losing
+						;in any way, contact RMS.
 		  ))
 
 ;;; These have to be created in advance, before reading in PKGDCL, because
@@ -29,20 +31,18 @@
 ;;; the package in the wrong place.
 ;;; This is a list of lists: (name size . nicknames)
 (SETQ PACKAGES-WHICH-MAGICALLY-GO-UNDER-SYSTEM
-	'( ("CADR" 1000)
+	'( ("CADR" 7000.)
 	   ("CHAOS" 2000)
-	   ("COLOR" 1000)
+#+XEROX	   ("ETHER" 2000. "ETH")
+	   ("COLOR" 400)
 	   ("COMPILER" 6000)
-	   ("FILE-SYSTEM" 300. "FS")
+	   ("FILE-SYSTEM" 600. "FS")
 	   ("QFASL-REL" 300.)
-	   ("TV" 5000.)
+	   ("METER" 200.)
+	   ("TV" 6000.)
 	   ("EH" 1000.)
 	   ("FED" 1000.)
-	   ("SYSTEM-INTERNALS" 12000 "SI") ))
-
-;WHO is it who thinks that putting this SPECIAL outside the DECLARE
-;makes some sort of difference?  Do you have any evidence for this?  -- RMS.
-(SPECIAL PACKAGE)				;Should be special for everybody!
+	   ("SYSTEM-INTERNALS" 5000. "SI") ))
 
 ;This defines the format of a PACKAGE.
 ;LMCONS;QF > knows about it!
@@ -88,31 +88,37 @@
 ;and is the function to call to do the work.  Applying FUNCALL to the
 ;element causes the work to be done.  The to-symbol must not exist for borrowings.
 
-(DEFUN PACKAGE (OP SELF &REST ARGS)
-    (COND ((EQ OP ':WHICH-OPERATIONS)
-	   '(:DESCRIBE :PRINT :PRINT-SELF))
-	  ((EQ OP ':DESCRIBE)
-	   (DESCRIBE-PACKAGE SELF))
-	  ((OR (EQ OP ':PRINT) (EQ OP ':PRINT-SELF))
-	   (LET ((STANDARD-OUTPUT (FIRST ARGS))
-                 (SLASHIFY-P (THIRD ARGS)))
-             (AND SLASHIFY-P (PRINC "#<Package "))
-             (PKG-MAP-REFNAMES (FUNCTION (LAMBDA (NAME CNT)
-                                             (PRINC NAME)
-                                             (OR (ZEROP CNT) (PRINC ":"))))
-                               SELF
-			       PACKAGE
-			       NIL)
-             (COND (SLASHIFY-P
-		    (TYO 40)
-		    (PRIN1 (%POINTER SELF))
-		    (PRINC ">")))))))
+(DEFUN (PACKAGE NAMED-STRUCTURE-INVOKE) (OP &OPTIONAL SELF &REST ARGS)
+  (COND ((EQ OP ':WHICH-OPERATIONS)
+	 '(:DESCRIBE :PRINT-SELF))
+	((EQ OP ':DESCRIBE)
+	 (DESCRIBE-PACKAGE SELF))
+	((EQ OP ':PRINT-SELF)
+	 (LET ((STANDARD-OUTPUT (FIRST ARGS))
+	       (SLASHIFY-P (THIRD ARGS)))
+	   (IF SLASHIFY-P
+	       (SI:PRINTING-RANDOM-OBJECT (SELF STANDARD-OUTPUT)
+		 (PRINC "Package ")
+		 (PKG-MAP-REFNAMES #'(LAMBDA (NAME CNT)
+				       (PRINC NAME)
+				       (OR (ZEROP CNT) (PRINC ":")))
+				   SELF PACKAGE NIL))
+	       (PKG-MAP-REFNAMES #'(LAMBDA (NAME CNT)
+				     (PRINC NAME)
+				     (OR (ZEROP CNT) (PRINC ":")))
+				 SELF PACKAGE NIL))))))
 
-(DEFMACRO PKG-PACKAGE-P (ARG) `(EQ (TYPEP ,ARG) 'PACKAGE))
+(DEFMACRO PKG-PACKAGE-P (ARG) `(TYPEP ,ARG 'PACKAGE))
 
-(DEFMACRO PKG-BIND (PKG &REST BODY)
-    `(LET ((PACKAGE (PKG-FIND-PACKAGE ,PKG)))
-	  ,@BODY))
+(DEFMACRO-DISPLACE PKG-BIND (PKG &BODY BODY)
+  (IF (MEMBER PKG '("" "USER"))
+      `(LET ((PACKAGE PKG-USER-PACKAGE))	;Optimize most common case.
+	 . ,BODY)
+      `(LET ((PACKAGE (PKG-FIND-PACKAGE ,PKG)))
+	 . ,BODY)))
+
+(DEFUN SYMBOL-PACKAGE (SYMBOL)
+  (CAR (PACKAGE-CELL-LOCATION SYMBOL)))
 
 ;Print a thorough description of a package (except for all the symbols in it).
 (DEFUN DESCRIBE-PACKAGE (PKG)
@@ -124,13 +130,14 @@
 	(FORMAT T ", under ~A" (PKG-NAME PKG-1)))
     (PRINC ".  ")
     (AND (PKG-LOCKED PKG) (PRINC "Locked.  "))
-    (SELECTQ (PKG-LOADED PKG)
-	     ((T) (PRINC "Loaded.  "))
-	     (:DEFS (PRINC "Definitions Loaded.  "))
-	     (NIL (PRINC "Not loaded.  ")))
-    (FORMAT T "~D symbols out of ~D.~%"
+;   (SELECTQ (PKG-LOADED PKG)
+;     ((T) (PRINC "Loaded."))
+;     (:DEFS (PRINC "Definitions Loaded."))
+;     (NIL (PRINC "Not loaded.")))
+    (FORMAT T "~&  ~D symbols out of ~D.  Hash modulus=~D.~%"
 	    (PKG-NUMBER-OF-SYMBOLS PKG)
-	    (PKG-MAX-NUMBER-OF-SYMBOLS PKG))
+	    (PKG-MAX-NUMBER-OF-SYMBOLS PKG)
+	    (ARRAY-DIMENSION-N 2 PKG))
     (COND ((PKG-REFNAME-ALIST PKG)
 	   (FORMAT T "Refname alist:~%")
 	   (DO L (PKG-REFNAME-ALIST PKG) (CDR L) (NULL L)
@@ -186,11 +193,11 @@
        (OR (BOUNDP 'PKG-AREA)
            (MAKE-AREA ':NAME 'PKG-AREA
 		      ':REPRESENTATION ':STRUCTURE
-		      ':GC ':STATIC))
+		      ':GC ':STATIC
+		      ':REGION-SIZE 200000))
        (RESET-TEMPORARY-AREA PKG-AREA)
        (SETQ PKG-GLOBAL-PACKAGE (PKG-CREATE-PACKAGE 'GLOBAL NIL 4000))
-       (SETQ PKG-USER-PACKAGE (PKG-CREATE-PACKAGE 'USER PKG-GLOBAL-PACKAGE 2000))
-       (SETQ PKG-FILE-PACKAGE (PKG-CREATE-PACKAGE 'FILES PKG-GLOBAL-PACKAGE 1000))
+       (SETQ PKG-USER-PACKAGE (PKG-CREATE-PACKAGE 'USER PKG-GLOBAL-PACKAGE 10000))
        (PKG-REF-1 PKG-GLOBAL-PACKAGE "" PKG-USER-PACKAGE)
        (SETQ PKG-SYSTEM-PACKAGE (PKG-CREATE-PACKAGE 'SYSTEM PKG-GLOBAL-PACKAGE 4000))
        (PKG-REF-1 PKG-GLOBAL-PACKAGE "SYS" PKG-SYSTEM-PACKAGE)
@@ -207,29 +214,18 @@
        ;(SETF (PKG-EXTERNAL-LIST PKG-USER-PACKAGE) T) ;Warn user if bashing system stuff
        (SETF (PKG-EXTERNAL-LIST PKG-SYSTEM-INTERNALS-PACKAGE) T)
 
-       ;; Read in LISPM2;GLOBAL >.  Find each symbol from the file in the old obarray
-       ;; and intern it in PKG-GLOBAL-PACKAGE.
+       ;; Read in GLOBAL and SYSTEM   Find each symbol from the file in the old obarray
+       ;; and intern it in PKG-GLOBAL-PACKAGE or PKG-SYSTEM-PACKAGE.
        ;; The file contains those atoms which should go in PKG-GLOBAL-PACKAGE.
        ;; It is assumed that we are using the MINI file system at this point.
-       (LET ((ISTREAM (MINI-OPEN-FILE "LISPM2;GLOBAL >" NIL)))
-	 (DO ((X))
-	     ((EQ PACKAGE (SETQ X (READ ISTREAM PACKAGE))))
-	   (RPLACA (PACKAGE-CELL-LOCATION X) NIL) ;Override pkg spec by cold-load
-	   (PKG-INTERN X PKG-GLOBAL-PACKAGE)))
-       ;; For now, put vital global keywords in global package.
-       (LET ((ISTREAM (MINI-OPEN-FILE "LISPM2;KWDPKG >" NIL)))
-	 (DO ((X))
-	     ((EQ PACKAGE (SETQ X (READ ISTREAM PACKAGE))))
-	   (OR (ARRAYP (CAR (PACKAGE-CELL-LOCATION X)))	;If not already interned,
-	       (RPLACA (PACKAGE-CELL-LOCATION X) NIL))	;override pkg spec by cold-load
-	   (PKG-INTERN X PKG-GLOBAL-PACKAGE)))
-       ;; Read symbols from LISPM2;SYSTEM into the SYSTEM package.
-       (LET ((ISTREAM (MINI-OPEN-FILE "LISPM2;SYSTEM >" NIL)))
-	 (DO ((X))
-	     ((EQ PACKAGE (SETQ X (READ ISTREAM PACKAGE))))
-	   (OR (ARRAYP (CAR (PACKAGE-CELL-LOCATION X)))	;If not already interned,
-	       (RPLACA (PACKAGE-CELL-LOCATION X) NIL))	;override pkg spec by cold-load
-	   (PKG-INTERN X PKG-SYSTEM-PACKAGE)))
+       (DOLIST (F GLOBAL-PACKAGE-FILE-ALIST)
+	 (LET ((PKG (PKG-FIND-PACKAGE (CADR F)))	;"GLOBAL" or "SYSTEM"
+	       (ISTREAM (MINI-OPEN-FILE (CAR F) (CADDR F))))
+	   (DO ((X))
+	       ((EQ PACKAGE (SETQ X (READ ISTREAM PACKAGE))))
+	     (OR (ARRAYP (CAR (PACKAGE-CELL-LOCATION X)))	;If not already interned,
+		 (RPLACA (PACKAGE-CELL-LOCATION X) NIL))	;Override pkg from cold-load
+	     (PKG-INTERN X PKG))))
        ;; Put system variables and system constants on the SYSTEM package.
        (LET ((PACKAGE PKG-SYSTEM-PACKAGE))
 	  (MAPC (FUNCTION (LAMBDA (SYMLIST-SYM)
@@ -279,7 +275,7 @@
 	     PROGRAM-NAME (STRING PROGRAM-NAME))
        ;; Find a good prime to use as the actual size of the table.
        (SETQ TABLE-SIZE (PKG-GOOD-SIZE SIZE))
-       (SETQ PKG (PKG-MAKE-PACKAGE MAKE-ARRAY (PKG-AREA 'ART-Q (LIST 2 TABLE-SIZE))
+       (SETQ PKG (PKG-MAKE-PACKAGE MAKE-ARRAY (:LENGTH (LIST 2 TABLE-SIZE) :AREA PKG-AREA)
 				   PKG-NAME NAME
 				   PKG-PROGRAM-NAME PROGRAM-NAME
 				   PKG-SUPER-PACKAGE SUPER
@@ -318,52 +314,53 @@
 ;Value 1 is the interned symbol.
 ;Value 2 is T if the symbol was already interned.
 ;Value 3 is the package that the symbol is actually present in.
-(DEFUN PKG-INTERN (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM LOCATION FOUND)
-    (PROG ()
-	  (OR (PKG-PACKAGE-P PKG) (SETQ PKG (PKG-FIND-PACKAGE PKG)))
-	  (SETQ HASH (PKG-HASH-STRING (STRING SYM)))
-	  ;; Prevent interrupts in case two people intern symbols with the same pname,
-	  ;; both find that there is no such symbol yet,
-	  ;; and both try to stick them in the obarray simultaneously.
-	  (WITHOUT-INTERRUPTS
-	    (AND (DO ((PKG PKG (PKG-SUPER-PACKAGE PKG)))
-		     ((NULL PKG) NIL)
-		   (MULTIPLE-VALUE (TEM FOUND)
-		     (PKG-INTERN-INTERNAL (STRING SYM) HASH PKG))
-		   (SETQ LOCATION PKG)
-		   (AND FOUND (RETURN FOUND)))
-		 (RETURN TEM T LOCATION))
-	    (COND ((NOT (SYMBOLP SYM))
-		   (SETQ SYM (MAKE-SYMBOL SYM T))))
-	    (OR (CAR (PACKAGE-CELL-LOCATION SYM))
-		(RPLACA (PACKAGE-CELL-LOCATION SYM) PKG))
-	    (PKG-INTERN-STORE HASH SYM PKG))
-	  (RETURN SYM NIL PKG)))
+(DEFUN PKG-INTERN (SYM &OPTIONAL PKG &AUX HASH STR TEM LOCATION FOUND)
+  (PROG ()
+	(COND ((NULL PKG) (SETQ PKG PACKAGE))
+	      ((NOT (PKG-PACKAGE-P PKG)) (SETQ PKG (PKG-FIND-PACKAGE PKG))))
+	(SETQ HASH (PKG-HASH-STRING (SETQ STR (STRING SYM))))
+	;; Prevent interrupts in case two people intern symbols with the same pname,
+	;; both find that there is no such symbol yet,
+	;; and both try to stick them in the obarray simultaneously.
+	(WITHOUT-INTERRUPTS
+	  (AND (DO ((PKG PKG (PKG-SUPER-PACKAGE PKG)))
+		   ((NULL PKG) NIL)
+		 (MULTIPLE-VALUE (TEM FOUND)
+		   (PKG-INTERN-INTERNAL STR HASH PKG))
+		 (SETQ LOCATION PKG)
+		 (AND FOUND (RETURN FOUND)))
+	       (RETURN TEM T LOCATION))
+	  (COND ((NOT (SYMBOLP SYM))
+		 (SETQ SYM (MAKE-SYMBOL SYM T))))
+	  (OR (CAR (PACKAGE-CELL-LOCATION SYM))
+	      (RPLACA (PACKAGE-CELL-LOCATION SYM) PKG))
+	  (PKG-INTERN-STORE HASH SYM PKG))
+	(RETURN SYM NIL PKG)))
 
 ;Find a symbol, if it is already interned, but don't intern it otherwise.
 ;The values are the same as for INTERN, except that for a symbol
 ;which is not found all three are NIL.
 ;Must lock out interrupts because otherwise someone might rehash the
 ;package while we are scanning through it.
-(DEFUN INTERN-SOFT (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND)
+(DEFUN INTERN-SOFT (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND STR)
     (OR (PKG-PACKAGE-P PKG) (SETQ PKG (PKG-FIND-PACKAGE PKG)))
-    (SETQ HASH (PKG-HASH-STRING (STRING SYM)))
+    (SETQ HASH (PKG-HASH-STRING (SETQ STR (STRING SYM))))
     (DO ((PKG PKG (PKG-SUPER-PACKAGE PKG))
 	 (INHIBIT-SCHEDULING-FLAG T))
 	((NULL PKG) NIL)
       (MULTIPLE-VALUE (TEM FOUND)
-	(PKG-INTERN-INTERNAL SYM HASH PKG))
+	(PKG-INTERN-INTERNAL STR HASH PKG))
       (AND FOUND (RETURN TEM T PKG))))
 
 ;Intern using the current or specified package only.
 ;The values match those of INTERN.
-(DEFUN INTERN-LOCAL (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND)
+(DEFUN INTERN-LOCAL (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND STR)
     (PROG ()
 	  (OR (PKG-PACKAGE-P PKG) (SETQ PKG (PKG-FIND-PACKAGE PKG)))
-	  (SETQ HASH (PKG-HASH-STRING (STRING SYM)))
+	  (SETQ HASH (PKG-HASH-STRING (SETQ STR (STRING SYM))))
 	  (WITHOUT-INTERRUPTS
 	    (MULTIPLE-VALUE (TEM FOUND)
-	      (PKG-INTERN-INTERNAL SYM HASH PKG))
+	      (PKG-INTERN-INTERNAL STR HASH PKG))
 	    (AND FOUND (RETURN TEM T PKG))
 	    (COND ((NOT (SYMBOLP SYM))
 		   (SETQ SYM (MAKE-SYMBOL SYM T))))
@@ -374,13 +371,13 @@
 
 ;Check whether a symbol is present in a given package (not inherited).
 ;The values match those of INTERN.
-(DEFUN INTERN-LOCAL-SOFT (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND)
+(DEFUN INTERN-LOCAL-SOFT (SYM &OPTIONAL (PKG PACKAGE) &AUX HASH TEM FOUND STR)
     (PROG ()
 	  (OR (PKG-PACKAGE-P PKG) (SETQ PKG (PKG-FIND-PACKAGE PKG)))
-	  (SETQ HASH (PKG-HASH-STRING (STRING SYM)))
+	  (SETQ HASH (PKG-HASH-STRING (SETQ STR (STRING SYM))))
 	  (WITHOUT-INTERRUPTS
 	    (MULTIPLE-VALUE (TEM FOUND)
-	      (PKG-INTERN-INTERNAL SYM HASH PKG)))
+	      (PKG-INTERN-INTERNAL STR HASH PKG)))
 	  (AND FOUND (RETURN TEM T PKG))))
 
 ;;; Internals of INTERN.
@@ -389,29 +386,23 @@
 ;If it is found, return it and the index it was at.
 ;Otherwise, return NIL NIL.
 (DEFUN PKG-INTERN-INTERNAL (STRING HASH PKG
-				   &AUX (LEN (ARRAY-DIMENSION-N 2 PKG))
-				        (ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON T))
-    (PROG (X)
-       (DO ((I (\ HASH LEN) (\ (1+ I) LEN)))
-	   ((NULL (SETQ X (AR-2 PKG 0 I)))
-	    NIL)
-	   (AND (NUMBERP X)
-		(= HASH X)
-		(STRING-EQUAL STRING (AR-2 PKG 1 I))
-		(SETQ X I)
-		(RETURN I)))
-       (AND X (RETURN (AR-2 PKG 1 X) X))))
+			    &AUX X Y (LEN (ARRAY-DIMENSION-N 2 PKG))
+				 (ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON T))
+  (DO ((I (\ HASH LEN) (\ (1+ I) LEN)))
+      ((NULL (SETQ X (AR-2 PKG 0 I)))
+       NIL)
+    (AND (EQ HASH X)				;EQ not =, could be a T here
+	 (%STRING-EQUAL STRING 0 (GET-PNAME (SETQ Y (AR-2 PKG 1 I))) 0 NIL)
+	 (RETURN Y I))))
 
-(DEFUN PKG-HASH-STRING (STRING &OPTIONAL (HASH 0)
-			       &AUX TEM CHAR)
-    (SETQ TEM (ARRAY-ACTIVE-LENGTH STRING))
-    (DO ((I 0 (1+ I)))
-	((= I TEM)
-	 (COND ((MINUSP HASH)
-		(LOGXOR HASH -37777777))		;-37777777 = 40000001
-	       (T HASH)))
-	(AND (< (SETQ CHAR (AR-1 STRING I)) 240)
-	     (SETQ HASH (ROT (LOGXOR HASH CHAR) 7)))))
+(DEFUN PKG-HASH-STRING (STRING &OPTIONAL (HASH 0))
+  (DO ((I 0 (1+ I))
+       (LEN (ARRAY-ACTIVE-LENGTH STRING)))
+      (( I LEN)
+       (COND ((MINUSP HASH)
+	      (LOGXOR HASH -37777777))		;-37777777 = 40000001
+	     (T HASH)))
+    (SETQ HASH (ROT (LOGXOR HASH (AREF STRING I)) 7))))
 
 ;Store the symbol SYM into the package PKG, given a precomputed hash,
 ;assuming that no symbol with that pname is present in the package.
@@ -450,13 +441,13 @@
 ;is uninterned.  If the user then interns it someplace else, its package
 ;cell will then be set to that as it should be.
 ;Returns T if the symbol was previously interned on that package, NIL if not.
-(DEFUN REMOB (SYM &OPTIONAL (PKG (CAR (PACKAGE-CELL-LOCATION SYM))) &AUX HASH TEM)
+(DEFUN REMOB (SYM &OPTIONAL (PKG (CAR (PACKAGE-CELL-LOCATION SYM))) &AUX HASH TEM STR)
   (COND ((NOT (NULL PKG))
 	 (OR (PKG-PACKAGE-P PKG) (SETQ PKG (PKG-FIND-PACKAGE PKG)))
-	 (SETQ HASH (PKG-HASH-STRING (STRING SYM)))
+	 (SETQ HASH (PKG-HASH-STRING (SETQ STR (STRING SYM))))
 	 (WITHOUT-INTERRUPTS
 	   (MULTIPLE-VALUE (SYM TEM)
-	     (PKG-INTERN-INTERNAL SYM HASH PKG))
+	     (PKG-INTERN-INTERNAL STR HASH PKG))
 	   (COND (TEM
 		  (AND (EQ (CAR (PACKAGE-CELL-LOCATION SYM)) PKG)
 		       (RPLACA (PACKAGE-CELL-LOCATION SYM) NIL))
@@ -485,8 +476,8 @@
 (DEFUN PKG-REHASH (PKG &OPTIONAL (SIZE (* 2 (PKG-MAX-NUMBER-OF-SYMBOLS PKG)))
 		       &AUX NEW-PKG)
        (SETQ NEW-PKG
-	     (PKG-MAKE-PACKAGE MAKE-ARRAY (PKG-AREA 'ART-Q
-						    (LIST 2 (PKG-GOOD-SIZE SIZE)))))
+	     (PKG-MAKE-PACKAGE MAKE-ARRAY (:LENGTH (LIST 2 (PKG-GOOD-SIZE SIZE))
+					   :AREA PKG-AREA)))
        (DO I (1- (ARRAY-LEADER-LENGTH PKG)) (1- I) (MINUSP I)
 	   (STORE-ARRAY-LEADER (ARRAY-LEADER PKG I) NEW-PKG I))
        (SETF (PKG-NUMBER-OF-SYMBOLS NEW-PKG) 0)
@@ -525,8 +516,9 @@
 			 ((EQ CREATE-P ':FIND)
 			  NIL)
 			 ((AND (EQ CREATE-P ':ASK)
-			       (NOT (Y-OR-N-P
-				      (FORMAT NIL "Package ~A not found.  Create?" THING))))
+			       (NOT (FQUERY FORMAT:YES-OR-NO-P-OPTIONS
+					    "~&Package ~A not found.  Create? (Yes or No) "
+					    THING)))
 			  (CERROR T NIL NIL
 			       "Please load package ~A declaration file then continue" THING)
 			  (PKG-FIND-PACKAGE THING CREATE-P UNDER-PKG))
@@ -546,6 +538,12 @@
 ;; this one which must be processed.
 ;; P is the package being printed, PAKAJE is the package in which
 ;; the stuff will be read in, PKG is the one being considered at the moment.
+;; Warning: ABBREVIATE-MODE is not what it says it is.  The printed representation
+;; of a package object sets it to NIL, and PKG-PREFIX (the only other caller)
+;; sets it to T.  The effect of the code as it is now is that packages print
+;; themselves with their longest name, while package prefixes on symbols in printed
+;; output and in QFASL files are the shortest name for the package.  This
+;; may not be the most desirable thing.
 (DEFUN PKG-MAP-REFNAMES (FCN P PAKAJE ABBREVIATE-P &OPTIONAL (CNT 0) &AUX TEM GOOD)
       (DO ((PKG PAKAJE (PKG-SUPER-PACKAGE PKG)))
 	  ((NULL PKG)
@@ -554,7 +552,7 @@
 	   (FUNCALL FCN (PKG-NAME P) CNT))
 	;; If not abbreviate mode, try very hard to get the package's real name
 	;; as the name, since otherwise renaming a package takes a long time
-	;; and many recompilations.  Non-abbreviate mode is used in fasl files.
+	;; and many recompilations.
 	(AND (NOT ABBREVIATE-P)
 	     (SETQ TEM (ASSOC (PKG-NAME P) (PKG-REFNAME-ALIST PKG)))
 	     (EQ (CADR TEM) P)
@@ -576,9 +574,11 @@
   (LET ((PKG (CAR (PACKAGE-CELL-LOCATION SYM))))
     (COND ((NULL PKG) )                 ;If uninterned, no prefix
           ((EQ PKG PAKAJE) )            ;If in current package, no prefix
+	  ((NULL PAKAJE)		;In prefix-all mode, single-component prefix
+	   (PKG-MAP-REFNAMES FCN PKG PKG-GLOBAL-PACKAGE T))
           ((DO ((P (PKG-SUPER-PACKAGE PAKAJE) (PKG-SUPER-PACKAGE P)))
-               ((NULL P) T)             ;If not superior to current, must have prefix
-             (AND (EQ P PKG) (RETURN NIL)))
+	       ((NULL P) T)		;If not superior to current, must have prefix
+	     (AND (EQ P PKG) (RETURN NIL)))
            (PKG-MAP-REFNAMES FCN PKG PAKAJE T))
           ((NEQ (INTERN-SOFT SYM PAKAJE) SYM)   ;Else must actually intern and see if same
            (PKG-MAP-REFNAMES FCN PKG PAKAJE T)))))	;Hmm, shadowed, give prefix
@@ -600,199 +600,6 @@
 (DEFUN PKG-REF (REFNAME &OPTIONAL (TO-PKG REFNAME))
        (PKG-REF-1 PACKAGE REFNAME TO-PKG))
 
-;Compile and/or load some or all of the files that make up a package.
-;Optionally do the same for all of the packages it refers to
-;(including its superpackages).
-;Keywords are:
-;  :NOCONFIRM, meaning don't ask for confirmation;
-;  :COMPILE, meaning compile files before loading;
-;  :NOLOAD, meaning don't load (but compile, if that was specified);
-;  :SELECTIVE, meaning ask about each file;
-;  :COMPLETE, meaning don't ask about each file;
-;  :RELOAD, meaning load files already loaded recently;
-;  :RECURSIVE, meaning also process packages this one refers to;
-;  :DEFS, meaning process only DEFS files.
-(DEFUN PKG-LOAD (PKG &OPTIONAL KEYLIST
-		     &AUX (DONT-ASK-INDIVIDUALLY T) DONT-CARE-IF-LOADED PKGS FILES
-		          DONT-ASK-FOR-CONFIRMATION RECURSIVE (LOAD T) COMPILE DEFS-ONLY)
-  (SETQ PKG (PKG-FIND-PACKAGE PKG))
-    ;; Now process the specified keywords, setting the flags as they say.
-  (OR (NULL KEYLIST) (LISTP KEYLIST) (SETQ KEYLIST (LIST KEYLIST)))
-  (DO L KEYLIST (CDR L) (NULL L)
-      (SELECTQ (CAR L)
-	(:CONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION NIL))
-	(:NOCONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION T))
-	(:RELOAD (SETQ DONT-CARE-IF-LOADED T))
-	(:NORELOAD (SETQ DONT-CARE-IF-LOADED NIL))
-	(:SELECTIVE (SETQ DONT-ASK-INDIVIDUALLY NIL))
-	(:COMPLETE (SETQ DONT-ASK-INDIVIDUALLY T))
-	(:DEFS (SETQ DEFS-ONLY T))
-	(:COMPILE (SETQ COMPILE T))
-	(:NOCOMPILE (SETQ COMPILE NIL))
-	(:LOAD (SETQ LOAD T))
-	(:NOLOAD (SETQ LOAD NIL))
-	(:RECURSIVE (SETQ RECURSIVE T))
-	(OTHERWISE (FERROR NIL "~S is not a recognized keyword" (CAR L)))))
-    ;; Make the file-alist to compile or load.
-  (SETQ FILES (MAPCAN #'(LAMBDA (X)
-			  (AND (OR (NOT DEFS-ONLY) (MEM #'STRING-EQUAL "DEFS" (CDR X)))
-			       (LIST (LIST (CAR X)))))
-		      (PKG-FILE-ALIST PKG)))
-    ;; Compile if desired.
-  (COND (COMPILE
-	  (COND ((AND (BOUNDP 'COMPILER-WARNINGS-BUFFER)
-		      (NOT CONCATENATE-COMPILER-WARNINGS-P)
-		      COMPILER-WARNINGS-BUFFER)
-		 (LET ((BUFFER (ZWEI:FIND-BUFFER-NAMED COMPILER-WARNINGS-BUFFER T)))
-		   (ZWEI:DELETE-INTERVAL BUFFER))))
-	  (LET ((CONCATENATE-COMPILER-WARNINGS-P T))
-	    ;; But first make sure all needed DEFS files are present.
-	    (OR DEFS-ONLY
-		(PKG-LOAD PKG `(:DEFS :COMPILE :RECURSIVE . ,(REMQ ':NOLOAD KEYLIST))))
-	    (COMPILE-FILE-ALIST
-	      FILES
-	      DONT-ASK-INDIVIDUALLY
-	      DONT-CARE-IF-LOADED
-	      DONT-ASK-FOR-CONFIRMATION
-	      PKG))))
-    ;; Load if not inhibited.
-  (COND ((NULL FILES))  ;Don't set PKG-LOADED if package has no files.
-	(LOAD
-	  (LET ((PACKAGE PKG))
-	    (LOAD-FILE-ALIST
-	      FILES
-	      DONT-ASK-INDIVIDUALLY
-	      DONT-CARE-IF-LOADED
-	      DONT-ASK-FOR-CONFIRMATION
-	      PKG))
-	  (OR (EQ (PKG-LOADED PKG) T)
-	      (SETF (PKG-LOADED PKG)
-		    (COND (DEFS-ONLY ':DEFS) (T T))))))
-    ;; Now consider packages this package uses, if desired.
-  (COND (RECURSIVE
-	  ;; Put on PKGS all the packages we superpackages use, recursively,
-	  ;; asking the user whether to include each one.
-	  (SETQ PKGS (PKG-FIND-USED-PACKAGES PKG DEFS-ONLY))
-	  ;; Then load them.
-	  (MAPC (FUNCTION (LAMBDA (PKG-1)
-			    (PKG-LOAD PKG-1 (DELQ ':RECURSIVE KEYLIST))))
-		PKGS))))
-
-;Similar to PKG-LOAD, but takes FILE-LIST in form identical to PKG-FILE-ALIST.
-(DEFUN LOAD-FILE-LIST (FILE-LIST &OPTIONAL KEYLIST
-		     &AUX (DONT-ASK-INDIVIDUALLY T) DONT-CARE-IF-LOADED FILES
-		          DONT-ASK-FOR-CONFIRMATION (LOAD T) COMPILE DEFS-ONLY)
-    ;; Now process the specified keywords, setting the flags as they say.
-  (OR (NULL KEYLIST) (LISTP KEYLIST)
-      (SETQ KEYLIST (LIST KEYLIST)))
-  (DO L KEYLIST (CDR L) (NULL L)
-      (SELECTQ (CAR L)
-	(:CONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION NIL))
-	(:NOCONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION T))
-	(:RELOAD (SETQ DONT-CARE-IF-LOADED T))
-	(:NORELOAD (SETQ DONT-CARE-IF-LOADED NIL))
-	(:SELECTIVE (SETQ DONT-ASK-INDIVIDUALLY NIL))
-	(:COMPLETE (SETQ DONT-ASK-INDIVIDUALLY T))
-	(:DEFS (SETQ DEFS-ONLY T))
-	(:COMPILE (SETQ COMPILE T))
-	(:NOCOMPILE (SETQ COMPILE NIL))
-	(:LOAD (SETQ LOAD T))
-	(:NOLOAD (SETQ LOAD NIL))
-	(OTHERWISE (FERROR NIL "~S is not a recognized keyword" (CAR L)))))
-    ;; Make the file-alist to compile or load.
-  (SETQ FILES (MAPCAN #'(LAMBDA (X)
-			  (AND (OR (NOT DEFS-ONLY) (MEM #'STRING-EQUAL "DEFS" (CDR X)))
-			       (LIST (LIST (CAR X)))))
-		      FILE-LIST))
-    ;; Compile if desired.
-  (COND (COMPILE
-	  (COND ((AND (NOT CONCATENATE-COMPILER-WARNINGS-P)
-		      COMPILER-WARNINGS-BUFFER)
-		 (LET ((BUFFER (ZWEI:FIND-BUFFER-NAMED COMPILER-WARNINGS-BUFFER T)))
-		   (ZWEI:DELETE-INTERVAL BUFFER))))
-	  (LET ((CONCATENATE-COMPILER-WARNINGS-P T))
-	    ;; But first make sure all needed DEFS files are present.
-	    (OR DEFS-ONLY
-		(LOAD-FILE-LIST FILE-LIST `(:DEFS :COMPILE . ,(REMQ ':NOLOAD KEYLIST))))
-	    (COMPILE-FILE-ALIST
-	      FILES
-	      DONT-ASK-INDIVIDUALLY
-	      DONT-CARE-IF-LOADED
-	      DONT-ASK-FOR-CONFIRMATION))))
-    ;; Load if not inhibited.
-  (COND ((NULL FILES))
-	(LOAD
-	  (LOAD-FILE-ALIST
-	    FILES
-	    DONT-ASK-INDIVIDUALLY
-	    DONT-CARE-IF-LOADED
-	    DONT-ASK-FOR-CONFIRMATION)))
-)
-
-;Like PKG-LOAD, but takes a functional arg and calls it instead of loading
-; or compiling anything.  Actually, function is just passed thru to
-; COMPILE-FILE-ALIST-MAP or LOAD-FILE-ALIST-MAP.
-(DEFUN PKG-LOAD-MAP (FCTN PKG &OPTIONAL KEYLIST
-		     &AUX (DONT-ASK-INDIVIDUALLY T) DONT-CARE-IF-LOADED PKGS FILES
-		          DONT-ASK-FOR-CONFIRMATION RECURSIVE (LOAD T) COMPILE DEFS-ONLY)
-    (SETQ PKG (PKG-FIND-PACKAGE PKG))
-    ;; Now process the specified keywords, setting the flags as they say.
-    (OR (LISTP KEYLIST) (SETQ KEYLIST (LIST KEYLIST)))
-    (DO L KEYLIST (CDR L) (NULL L)
-	(SELECTQ (CAR L)
-	  (:CONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION NIL))
-	  (:NOCONFIRM (SETQ DONT-ASK-FOR-CONFIRMATION T))
-	  (:RELOAD (SETQ DONT-CARE-IF-LOADED T))
-	  (:NORELOAD (SETQ DONT-CARE-IF-LOADED NIL))
-	  (:SELECTIVE (SETQ DONT-ASK-INDIVIDUALLY NIL))
-	  (:COMPLETE (SETQ DONT-ASK-INDIVIDUALLY T))
-	  (:DEFS (SETQ DEFS-ONLY T))
-	  (:COMPILE (SETQ COMPILE T))
-	  (:NOCOMPILE (SETQ COMPILE NIL))
-	  (:LOAD (SETQ LOAD T))
-	  (:NOLOAD (SETQ LOAD NIL))
-	  (:RECURSIVE (SETQ RECURSIVE T))
-	  (OTHERWISE (FERROR NIL "~S is not a recognized keyword" (CAR L)))))
-    ;; Make the file-alist to compile or load.
-    (SETQ FILES (MAPCAN #'(LAMBDA (X)
-			    (AND (OR (NOT DEFS-ONLY) (MEM #'STRING-EQUAL "DEFS" (CDR X)))
-				 (LIST (LIST (CAR X)))))
-			(PKG-FILE-ALIST PKG)))
-    ;; Compile if desired.
-    (COND (COMPILE
-	    ;; But first make sure all needed DEFS files are present.
-	    (OR DEFS-ONLY
-		(PKG-LOAD-MAP FCTN PKG
-			      `(:DEFS :COMPILE :RECURSIVE . ,(REMQ ':NOLOAD KEYLIST))))
-	    (COMPILER:COMPILE-FILE-ALIST-MAP FCTN
-	       FILES
-	       DONT-ASK-INDIVIDUALLY
-	       DONT-CARE-IF-LOADED
-	       DONT-ASK-FOR-CONFIRMATION
-	       PKG)))
-    ;; Load if not inhibited.
-    (COND ((NULL FILES))  ;Don't set PKG-LOADED if package has no files.
-	  (LOAD
-	   (LET ((PACKAGE PKG))
-	      (LOAD-FILE-ALIST-MAP FCTN
-	         FILES
-		 DONT-ASK-INDIVIDUALLY
-		 DONT-CARE-IF-LOADED
-		 DONT-ASK-FOR-CONFIRMATION
-                 PKG))
-	   (OR (EQ (PKG-LOADED PKG) T)
-	       (SETF (PKG-LOADED PKG)
-		     (COND (DEFS-ONLY ':DEFS) (T T))))))
-    ;; Now consider packages this package uses, if desired.
-    (COND (RECURSIVE
-	    ;; Put on PKGS all the packages we superpackages use, recursively,
-	    ;; asking the user whether to include each one.
-	    (SETQ PKGS (PKG-FIND-USED-PACKAGES PKG DEFS-ONLY))
-	    ;; Then load them.
-	    (MAPC (FUNCTION (LAMBDA (PKG-1)
-		      (PKG-LOAD-MAP FCTN PKG-1 (DELQ ':RECURSIVE KEYLIST))))
-		  PKGS))))
-
 ;Get a list of all the packages USEd by a given package.
 ;DEFS-ONLY says to ignore a package which has no DEFS files in it.
 ;Otherwise, ask the user about each package, and then consider
@@ -878,15 +685,23 @@
     (AND (PKG-SUBPACKAGES PACKAGE) FILE-ALIST
 	 (FERROR NIL "Attempt to make the nonterminal package ~A contain files." PACKAGE))
     (SETF (PKG-FILE-ALIST PACKAGE) FILE-ALIST)
-    ;; Make sure that each file has a symbol interned for it,
-    ;; which knows what package the file is in.
-    (MAPC (FUNCTION (LAMBDA (FILE-DESC &AUX FILE-SYMBOL)
-	      (MULTIPLE-VALUE (NIL FILE-SYMBOL)
-			      (GET-FILE-SYMBOLS (CAR FILE-DESC)))
-	      (OR (GET FILE-SYMBOL ':PACKAGE) ;Unless package already known, default
-		  (PUTPROP FILE-SYMBOL
-			   (INTERN (PKG-NAME PACKAGE) PKG-USER-PACKAGE)
-			   ':PACKAGE))))	; package of file
+    ;; Make sure that each file knows what package it is in.    
+    (MAPC (IF (NOT (FBOUNDP 'FS:PARSE-PATHNAME))
+	      ;; While using MINI, build data structure for when pathnames exist.
+	      #'(LAMBDA (FILE-DESC &AUX ELEM PLIST)
+		  (OR (SETQ ELEM (ASSOC (CAR FILE-DESC) *COLD-LOADED-FILE-PROPERTY-LISTS*))
+		      (PUSH (SETQ ELEM (LIST (CAR FILE-DESC) NIL NIL))
+			    *COLD-LOADED-FILE-PROPERTY-LISTS*))
+		  (SETQ PLIST (LOCF (THIRD ELEM)))
+		  (OR (GET PLIST ':PACKAGE)
+		      (PUTPROP PLIST (INTERN (PKG-NAME PACKAGE) PKG-USER-PACKAGE) ':PACKAGE)))
+	      #'(LAMBDA (FILE-DESC &AUX PATHNAME)
+		  (SETQ PATHNAME (FUNCALL (FS:PARSE-PATHNAME (CAR FILE-DESC))
+					  ':GENERIC-PATHNAME))
+		  (OR (FUNCALL PATHNAME ':GET ':PACKAGE)
+		      (FUNCALL PATHNAME ':PUTPROP
+			       (INTERN (PKG-NAME PACKAGE) PKG-USER-PACKAGE)
+			       ':PACKAGE))))
 	  FILE-ALIST)
     ;; Process the body only if this is the first time this package is declared.
     (COND ((NOT (PKG-DECLARED PACKAGE))
@@ -1087,7 +902,8 @@
 
 (declare (special globalize-fn-pkg globalize-val-pkg))
 
-;Given one or more symbols, moves those symbols into the GLOBAL package.
+;Given a symbol, moves it into the GLOBAL package, or to whatever package
+;is specified, from all packages under that one.
 ;All symbols with those names in other packages are forwarded.
 ;Values, properties and function definitions are all merged from
 ;those other symbols into these ones.  Multiple values or function
@@ -1095,33 +911,35 @@
 
 ;Given a string instead of a symbol,
 ;it takes the symbol from USER (in case it is a keyword), or creates a new one.
-(defun globalize (&rest strings &aux globalize-fn-pkg globalize-val-pkg sys)
-  (dolist (s strings)
-    (and (stringp s)
-	 (intern-soft s pkg-user-package)
-	 (setq s (intern-soft s pkg-user-package)))
-    (globalize-1 (setq sys (intern s pkg-global-package))
-		 pkg-global-package)
-    (rplacd (package-cell-location sys) pkg-global-package)))
+(defun globalize (string &optional (into-package "GLOBAL")
+			 &aux globalize-fn-pkg globalize-val-pkg sys)
+  (setq into-package (pkg-find-package into-package))
+  (and (stringp string) (eq into-package pkg-global-package)
+       (intern-soft string pkg-user-package)
+       (setq string (intern-soft string pkg-user-package)))
+  (globalize-1 (setq sys (intern string into-package))
+	       into-package)
+  (setf (symbol-package sys) into-package))
 
 ;Given a newly created symbol in GLOBAL, makes all symbols
 ;down below with that name forward to it, after merging in
 ;their definitions (barfing at multiple definitions).
 (defun globalize-1 (global package &aux local)
     (cond ((and (setq local (intern-local-soft global package))
-		(neq local global))
+		(neq local global)
+		( (%p-ldb-offset %%q-data-type local 3) dtp-one-q-forward))
 	   (cond ((boundp local)
 		  (and (boundp global)
 		       (neq (symeval local) (symeval global))
 		       (ferror nil "Multiple values for ~S, in ~A and ~A"
-			       global globalize-val-pkg))
+			       global (symbol-package global) (symbol-package local)))
 		  (setq globalize-val-pkg package)
 		  (set global (symeval local))))
 	   (cond ((fboundp local)
 		  (and (fboundp global)
 		       (neq (fsymeval local) (fsymeval global))
-		       (ferror nil "Multiple function definitions for ~S"
-			       global globalize-fn-pkg))			       
+		       (ferror nil "Multiple function definitions for ~S, in ~A and ~A"
+			       global (symbol-package global) (symbol-package local)))
 		  (setq globalize-fn-pkg package)
 		  (fset global (fsymeval local))))
 	   (do ((plist (plist local) (cddr plist))) ((null plist))
@@ -1135,9 +953,15 @@
 					 (%make-pointer-offset dtp-locative global i)))))
     (mapc (function globalize-1) (circular-list global) (pkg-subpackages package)))
 
-;Find all symbols with a given pname, which packages they are in, and
-;which packages they are accessible from.
-(DEFUN WHERE-IS (PNAME &OPTIONAL (UNDER-PKG PKG-GLOBAL-PACKAGE) &AUX FOUND-IN-PKG FROM-PKGS)
+;;;missing in original tape :-(
+;;;Find all symbols with a given pn
+;;  RETURN-LIST)
+
+(DEFUN WHERE-IS (PNAME &OPTIONAL (UNDER-PKG PKG-GLOBAL-PACKAGE)
+		 &AUX FOUND-IN-PKG FROM-PKGS RETURN-LIST)
+  "Find all symbols with a given pname, which packages they are in,
+and which packages they are accessible from."
+  (DECLARE (SPECIAL RETURN-LIST))
   ;; Given a string, it should probably be uppercased.  But given a symbol copy it exactly.
   (SETQ PNAME (IF (STRINGP PNAME) (STRING-UPCASE PNAME) (STRING PNAME)))
   (FORMAT T "~&")
@@ -1153,14 +977,20 @@
 					TABLE)
 				#'STRING-LESSP))
 	  (FORMAT T "~A:~A is accessible from package~P ~{~<~%~10X~2:;~A~>~^, ~}~%"
-		      (PKG-NAME FOUND-IN-PKG) PNAME (LENGTH FROM-PKGS) FROM-PKGS)))))
+		      (PKG-NAME FOUND-IN-PKG) PNAME (LENGTH FROM-PKGS) FROM-PKGS))))
+  RETURN-LIST)
 
 (DEFUN WHERE-IS-INTERNAL (PNAME PKG TABLE)
-  (MULTIPLE-VALUE-BIND (IGNORE FOUND FOUND-IN-PKG) (INTERN-SOFT PNAME PKG)
-    (AND FOUND (PUSH (LIST PKG FOUND-IN-PKG) TABLE)))
+  (DECLARE (SPECIAL RETURN-LIST))
+  (MULTIPLE-VALUE-BIND (SYM FOUND FOUND-IN-PKG) (INTERN-SOFT PNAME PKG)
+    (COND (FOUND
+	   (PUSH (LIST PKG FOUND-IN-PKG) TABLE)
+	   (OR (MEMQ SYM RETURN-LIST) (PUSH SYM RETURN-LIST)))))
   (DOLIST (SUBPKG (PKG-SUBPACKAGES PKG))
     (SETQ TABLE (WHERE-IS-INTERNAL PNAME SUBPKG TABLE)))
   TABLE)
+;;? from original tape :-(
+;;);end LOCAL-DECLARE
 
 ;; Make a new package like an old one, but suitable for debugging
 ;; since its externals will be inhibited and will not clobber anything "installed".

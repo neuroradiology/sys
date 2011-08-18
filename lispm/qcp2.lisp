@@ -14,7 +14,7 @@
 		(LOAD '(LMMAC > DSK LISPM2))
 		(INCLUDE |LISPM; QCDEFS >|))))
 
-(DECLARE (SETQ RUN-IN-MACLISP-SWITCH T))
+;(DECLARE (SETQ RUN-IN-MACLISP-SWITCH T))   ;not a chance!
 
 (DECLARE (*EXPR QCOMPILE0 MEMQL LOGAND LOGLDB BARF))
 
@@ -91,8 +91,12 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 ;FIRSTN of a number and a list returns the first that many elements of the list.
 ;If the list isn't that long, it is extended with NILs.  Like Take in APL.
 (DEFUN FIRSTN (N LIST)
-    (COND ((ZEROP N) NIL)
-	  (T (CONS (CAR LIST) (FIRSTN (1- N) (CDR LIST))))))
+  (LET ((NEW-LIST (MAKE-LIST N)))
+    (DO ((LIST LIST (CDR LIST))
+	 (NEW-LIST NEW-LIST (CDR NEW-LIST)))
+	((OR (NULL LIST) (NULL NEW-LIST)))
+      (RPLACA NEW-LIST (CAR LIST)))
+    NEW-LIST))
 
 ;Compile code to compute FORM and leave the result on the PDL.
 (DEFUN P2PUSH (FORM) (P2 FORM 'D-PDL))
@@ -118,7 +122,9 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	 (OR GENERATING-MICRO-COMPILER-INPUT-P
 	     (AND (EQ DEST 'D-NEXT)
 		  (SETQ DEST 'D-PDL)))
-	 (COND ((ATOM FORM)
+	 (COND ((ADRREFP FORM)
+		(P2 FORM DEST))
+	       ((EQ (CAR FORM) 'LEXICAL-REF)
 		(P2 FORM DEST))
 	       ((EQ (CAR FORM) '%POP)
 		(P2 FORM DEST))
@@ -139,7 +145,11 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	     (SETQ DEST 'D-PDL)))
     (COND ((ADRREFP FORM)
 	   (OR (EQ DEST 'D-IGNORE)
-	       (OUTI `(MOVE ,DEST ,(MVADR FORM)))))
+	       (OUTI `(MOVE ,DEST ,(P2-SOURCE FORM DEST)))))
+	  ((EQ (CAR FORM) 'LEXICAL-REF)
+	   (OR (EQ DEST 'D-IGNORE)
+	       (PROGN (P2PUSH-CONSTANT (CADR FORM))
+		      (OUTI `(MISC ,DEST %LOAD-FROM-HIGHER-CONTEXT)))))
 	  ((EQ (CAR FORM) '%POP)      ;Must check for this before calling P2F
 	   (SETQ PDLLVL (1- PDLLVL))  ;so that we can decrement PDLLVL.
 	   (MOVE-RESULT-FROM-PDL DEST))
@@ -243,7 +253,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 (MAPC (FUNCTION (LAMBDA (FN MISC)
 	  (PUTPROP FN 'P2COMPAR 'P2)
 	  (PUTPROP FN MISC 'MISC-INSN)))
-      '(= EQ > <)
+      '(= EQ INTERNAL-> INTERNAL-<)
       '(M-= M-EQ M-> M-<))
 
 (DEFUN P2COMPAR (ARGL DEST)
@@ -255,7 +265,15 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 
 (DEFPROP FUNCTION P2FUNCTION P2)
 (DEFUN P2FUNCTION (ARGL DEST)
-    (OUTI `(MOVE ,DEST ,(MVADR `(FUNCTION ,(CAR ARGL))))))
+    (OUTI `(MOVE ,DEST (QUOTE-VECTOR (FUNCTION ,(CAR ARGL))))))
+
+(DEFPROP BREAKOFF-FUNCTION P2BREAKOFF-FUNCTION P2)
+(DEFUN P2BREAKOFF-FUNCTION (ARGL DEST)
+    (OUTI `(MOVE ,DEST (QUOTE-VECTOR (BREAKOFF-FUNCTION ,(CAR ARGL))))))
+
+(DEFUN (LEXICAL-CLOSURE P2) (ARGL DEST)
+  (P2PUSH-CONSTANT (CADR (VAR-LAP-ADDRESS (CAR ARGL))))
+  (OUTI `(MISC ,DEST %MAKE-LEXICAL-CLOSURE)))
 
 (DEFPROP FUNCALL P2FUNCALL P2)
 (DEFUN P2FUNCALL (ARGL DEST)
@@ -277,45 +295,64 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		 DEST
 		 NIL)))
 
-(DEFPROP LIST P2LIST P2)
-(DEFPROP LIST-IN-AREA P2LIST P2)
-(DEFUN P2LIST (ARGL DEST)
-    (AND (>= (LENGTH ARGL) 100)
-	 (BARF `(LIST . ,ARGL) '|Too many arguments - implementation limit| 'DATA))
-    (COND ((EQ P2FN 'LIST-IN-AREA)
-	   (P2PUSH (CAR ARGL))
-	   (SETQ ARGL (CDR ARGL))
-	   (OUTI1 (LIST 'MISC
-			DEST
-			'LIST-IN-AREA
-			(LENGTH ARGL))))
-	  (T (OUTI1 `(MISC ,DEST LIST ,(LENGTH ARGL)))))
-    (MKPDLLVL (+ 3 PDLLVL))
-    (DO ((L ARGL (CDR L))) ((NULL L))
-	(P2 (CAR L) 'D-NEXT-LIST))
-    (AND (EQ DEST 'D-RETURN)
-	 (TAKE-DELAYED-TRANSFER)))
+;The D-NEXT-LIST stuff is no longer used.  LIST and variants are now plain
+;functions, implemented in microcode.  Some day recycle the instructions
+;to start making a list to instead make a list out of what is on the stack,
+;and reinstate an appropriately-revised version of this code.
+;(DEFPROP LIST P2LIST P2)
+;(DEFPROP LIST-IN-AREA P2LIST P2)
+;(DEFUN P2LIST (ARGL DEST)
+;    (AND (>= (LENGTH ARGL) 100)
+;	 (BARF `(LIST . ,ARGL) '|Too many arguments - implementation limit| 'DATA))
+;    (COND ((EQ P2FN 'LIST-IN-AREA)
+;	   (P2PUSH (CAR ARGL))
+;	   (SETQ ARGL (CDR ARGL))
+;	   (OUTI1 (LIST 'MISC
+;			DEST
+;			'LIST-IN-AREA
+;			(LENGTH ARGL))))
+;	  (T (OUTI1 `(MISC ,DEST LIST ,(LENGTH ARGL)))))
+;    (MKPDLLVL (+ 3 PDLLVL))
+;    (DO ((L ARGL (CDR L))) ((NULL L))
+;	(P2 (CAR L) 'D-NEXT-LIST))
+;    (AND (EQ DEST 'D-RETURN)
+;	 (TAKE-DELAYED-TRANSFER)))
 
 (DEFPROP VALUE-CELL-LOCATION P2VALUE-CELL-LOCATION P2)
 (DEFUN P2VALUE-CELL-LOCATION (ARGL DEST)
-    (COND ((AND (NOT (ATOM (CAR ARGL)))   ;AVOID POSSIBLE CAR OF NON-NIL SYMBOL
-		(EQ (CAAR ARGL) 'QUOTE)   ; WHEN THIS IS CHANGED TO LISTP, BE SURE
-		(ASSQ (CADAR ARGL) VARS)) ; TO DEFINE LISTP IN MACLISP,ETC
-	   (OUTI (LIST 'PUSH-E 0 (MADR (CADAR ARGL))))
-	   (NEEDPDL 1)
-	   (MOVE-RESULT-FROM-PDL DEST))
+    (COND ((AND (LISTP (CAR ARGL))
+		(EQ (CAAR ARGL) 'QUOTE)
+		(LISTP (CADAR ARGL)))
+	   (SELECTQ (CAADAR ARGL)
+	     (LOCAL-REF (OUTI `(PUSH-E 0 ,(VAR-LAP-ADDRESS (CADR (CADAR ARGL)))))
+			(NEEDPDL 1)
+			(MOVE-RESULT-FROM-PDL DEST))
+	     (LEXICAL-REF (P2PUSH-CONSTANT (CADR (CADAR ARGL)))
+			  (NEEDPDL 1)
+			  (OUTI `(MISC ,DEST %LOCATE-IN-HIGHER-CONTEXT)))))
 	  (T (P2MISC 'VALUE-CELL-LOCATION ARGL DEST 1))))
 
 (DEFPROP COMPILER-LET-INTERNAL P2COMPILER-LET-INTERNAL P2)
 (DEFUN P2COMPILER-LET-INTERNAL (ARGL DEST)
     (COND ((NULL (CAR ARGL))
-	   (P2BRANCH (COND ((CDDR ARGL) (CONS 'PROGN (CDR ARGL)))
-			   (T (CADR ARGL)))
-		     DEST BDEST))
+	   (P2F (CONS 'PROGN (CDR ARGL)) DEST))
 	  (T
 	   (PROGV (LIST (CAAAR ARGL)) (LIST (EVAL (CADAAR ARGL)))
-		  (P2BRANCH `(COMPILER-LET-INTERNAL ,(CDAR ARGL) . ,(CDR ARGL))
-			    DEST BDEST)))))
+		  (P2F `(COMPILER-LET-INTERNAL ,(CDAR ARGL) . ,(CDR ARGL))
+		       DEST)))))
+
+;;; %ACTIVATE-OPEN-CALL-BLOCK must ignore its apparent destination and
+;;; instead compile to D-IGNORE (microcode depends on this).
+;;; This fails to let the compiler know that the pdl is popped and a delayed
+;;; transfer may be taken, but then it didn't know the pdl was pushed either.
+(DEFPROP %ACTIVATE-OPEN-CALL-BLOCK P2%ACTIVATE-OPEN-CALL-BLOCK P2)
+(DEFUN P2%ACTIVATE-OPEN-CALL-BLOCK (IGNORE IGNORE)
+  (OUTI '(MISC D-IGNORE %ACTIVATE-OPEN-CALL-BLOCK)))
+
+;;; Don't actually call %PUSH, just push its argument
+(DEFPROP %PUSH P2%PUSH P2)
+(DEFUN P2%PUSH (ARGL IGNORE)
+  (P2 (CAR ARGL) 'D-PDL))
 
 (DEFPROP SETQ P2SETQ P2)
 (DEFUN P2SETQ (ARGL DEST)
@@ -332,19 +369,22 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 (DEFUN P2SETQ-1 (VAR VALUE DEST)
        (COND ((MEMQ VAR '(NIL T))
 	      NIL)
+	     ((AND (LISTP VAR) (EQ (CAR VAR) 'LEXICAL-REF))
+	      (P2PUSH VALUE)
+	      (MOVEM-AND-MOVE-TO-DEST VAR DEST))
 	     ((MEMBER VALUE '('0 'NIL))
               (OUTI `(,(CDR (ASSQ (CADR VALUE)
                                   '((0 . SETZERO) (NIL . SETNIL))))
                       0
-                      ,(MADR VAR)))
+		      ,(P2-SOURCE VAR 'D-PDL)))
               (OR (MEMQ DEST '(D-IGNORE D-INDS))
                   (P2 VALUE DEST)))
              ((AND (NOT (ATOM VALUE))
                    (CDR VALUE)
-                   (EQ (CADR VALUE) VAR)
+                   (EQUAL (CADR VALUE) VAR)
                    (MEMQ (CAR VALUE) '(CDR CDDR 1+ 1-))
                    (MEMQ DEST '(D-IGNORE D-INDS)))
-              (OUTI `(SETE ,(CAR VALUE) ,(MADR VAR))))
+              (OUTI `(SETE ,(CAR VALUE) ,(P2-SOURCE VAR 'D-PDL))))
              (T
               (P2PUSH VALUE)
               (MOVEM-AND-MOVE-TO-DEST VAR DEST)))
@@ -353,11 +393,20 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 ;Move the quantity on the top of the stack to the value of a variable
 ;and also move it to the specified destination.
 (DEFUN MOVEM-AND-MOVE-TO-DEST (VAR DEST)
-    (COND ((OR (EQ DEST 'D-IGNORE)
-	       (EQ DEST 'D-INDS))
-           (OUTI `(POP 0 ,(MADR VAR))))
-          (T (OUTI `(MOVEM 0 ,(MADR VAR)))
-             (MOVE-RESULT-FROM-PDL DEST))))
+  (COND ((ATOM VAR)
+	 (IF (MEMQ DEST '(D-IGNORE D-INDS))
+	     (OUTI `(POP 0 (SPECIAL ,VAR)))
+	     (OUTI `(MOVEM 0 (SPECIAL ,VAR)))
+	     (MOVE-RESULT-FROM-PDL DEST)))
+	((EQ (CAR VAR) 'LOCAL-REF)
+	 (IF (MEMQ DEST '(D-IGNORE D-INDS))
+	     (OUTI `(POP 0 ,(VAR-LAP-ADDRESS (CADR VAR))))
+	     (OUTI `(MOVEM 0 ,(VAR-LAP-ADDRESS (CADR VAR))))
+	     (MOVE-RESULT-FROM-PDL DEST)))
+	((EQ (CAR VAR) 'LEXICAL-REF)
+	 (P2PUSH-CONSTANT (CADR VAR))
+	 (NEEDPDL 1)
+	 (OUTI `(MISC ,DEST %STORE-IN-HIGHER-CONTEXT)))))
 
 (DEFUN MOVE-RESULT-FROM-PDL (DEST)
   (COND ((NOT (EQ DEST 'D-PDL))
@@ -375,51 +424,44 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 ;N says which arg is to be returned as the value of the PROGN or PROG2
 ;(equals the length of ARGL for PROGN, or 2 for PROG2, etc.).
 (DEFUN P2PROG12N (N DEST ARGL)
-       (PROG (IDEST RESULT-NOT-LAST)
-	     (SETQ IDEST DEST)
-	     (COND ((AND (NOT (EQ DEST 'D-IGNORE))
-			 (NOT (= N (LENGTH ARGL))))
-		    (SETQ IDEST 'D-PDL)))  ;MIGHT COMPILE TEST ON RESULT INDICATORS
-	L1   (COND ((NULL ARGL)
-		    (BARF NIL
-			  '|PROGN, PROG1 or PROG2 with no arguments|
-			  'WARN)
-                    (SETQ ARGL '('NIL))
-		    (GO L2))
-		   ((= 0 (SETQ N (1- N))) (GO L2)))
-	     ;; Compile an arg before the one whose value we want.
-	     (P2 (CAR ARGL) 'D-IGNORE)
-	     (SETQ ARGL (CDR ARGL))
-	     (GO L1)
-        L2
-	     ;; Compile the arg whose value we want.
-	     ;; If it's the last arg (this is PROGN),
-	     ;; make sure to pass along any multiple value target that the PROGN has,
-	     ;; and to report back how many args were actually pushed.
-	     (COND ((NULL (CDR ARGL))
-		    (COND (M-V-TARGET
-			    (COND ((P2MV (CAR ARGL) IDEST M-V-TARGET)
-				   (INCPDLLVL))
-				  ((NUMBERP M-V-TARGET)
-				   (MKPDLLVL (+ PDLLVL M-V-TARGET))
-				   (SETQ M-V-TARGET NIL))
-				  (T (INCPDLLVL)   ;MULTIPLE-VALUE-LIST was the target.
-				     (SETQ M-V-TARGET NIL))))
-			  (T (P2 (CAR ARGL) DEST)
-			     (INCPDLLVL))))
-		   (T (P2 (CAR ARGL) IDEST)
-		      (COND ((EQ IDEST 'D-PDL) (INCPDLLVL)))))
-	     ;; Compile the remaining args.
-	L3   (SETQ ARGL (CDR ARGL))
-	     (COND ((NULL ARGL) (GO L4)))
-	     (P2 (CAR ARGL) 'D-IGNORE)
-	     (SETQ RESULT-NOT-LAST T)
-             (GO L3)
-	L4   (COND ((NOT (EQ IDEST DEST))
-                    (MOVE-RESULT-FROM-PDL DEST))
-                   ((AND RESULT-NOT-LAST (NOT (EQ DEST 'D-IGNORE)))
-                    (OUTF '(MOVE D-PDL (LPDL 77))))) ;Make sure it's really in indicators
-	     (RETURN NIL)))         		     ; if IDEST and DEST both D-PDL
+  (PROG ((IDEST DEST))
+	(COND ((AND (NOT (EQ DEST 'D-IGNORE))
+		    (< N (LENGTH ARGL)))
+	       (SETQ IDEST 'D-PDL)))		;MIGHT COMPILE TEST ON RESULT INDICATORS
+	(SETQ N (1- N))				;Convert to origin 0.
+	;; Compile the args before the one whose value we want.
+	(DOTIMES (I N)
+	  (P2 (OR (CAR ARGL) ''NIL) 'D-IGNORE)
+	  (POP ARGL))
+	;; Compile the arg whose value we want.
+	;; If it's the last arg (this is PROGN),
+	;; make sure to pass along any multiple value target that the PROGN has,
+	;; and to report back how many args were actually pushed.
+	(COND ((AND (NULL (CDR ARGL)) M-V-TARGET)
+	       (COND ((P2MV (OR (CAR ARGL) ''NIL) IDEST M-V-TARGET)
+		      (INCPDLLVL))
+		     ((NUMBERP M-V-TARGET)
+		      (MKPDLLVL (+ PDLLVL M-V-TARGET))
+		      (SETQ M-V-TARGET NIL))
+		     (T (INCPDLLVL)		;MULTIPLE-VALUE-LIST was the target.
+			(SETQ M-V-TARGET NIL))))
+	      ((AND (NULL (CDR ARGL)) BDEST)
+	       (P2BRANCH (OR (CAR ARGL) ''NIL) IDEST BDEST)
+	       (SETQ BDEST NIL)
+	       (COND ((EQ IDEST 'D-PDL) (INCPDLLVL))))
+	      (T (P2 (OR (CAR ARGL) ''NIL) IDEST)
+		 (COND ((EQ IDEST 'D-PDL) (INCPDLLVL)))))
+	(OR (CDR ARGL) (RETURN NIL))
+	;; Compile the remaining args.
+	(DOLIST (ARG (CDR ARGL))
+	  (P2 ARG 'D-IGNORE))
+	(COND ((NOT (EQ IDEST DEST))
+	       (MOVE-RESULT-FROM-PDL DEST))
+	      ((NOT (EQ DEST 'D-IGNORE))
+	       (OUTF '(MOVE D-PDL (LPDL 77)))))))	;Make sure it's really in indicators
+         		     ; if IDEST and DEST both D-PDL
+
+;Functions to gobble multiple values.
 
 (DEFPROP MULTIPLE-VALUE-BIND P2MULTIPLE-VALUE-BIND P2)
 (DEFUN P2MULTIPLE-VALUE-BIND (TAIL DEST)
@@ -442,18 +484,19 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 
 (DEFPROP MULTIPLE-VALUE P2MULTIPLE-VALUE P2)
 (DEFUN P2MULTIPLE-VALUE (TAIL DEST)
-  (LET ((VARIABLES (CAR TAIL))
-	(DEST1 (COND ((EQ DEST 'D-IGNORE) 'D-IGNORE) (T 'D-PDL))))
+  (LET* ((VARIABLES (CAR TAIL))
+	 (DEST1 (COND ((AND (EQ DEST 'D-IGNORE) (NULL (CAR VARIABLES))) 'D-IGNORE)
+		      (T 'D-PDL))))
     (PROG ()
       (COND ((P2MV (CADR TAIL) DEST1 (LENGTH VARIABLES)) ; NIL if it actually pushes N values.
 	     ;; It didn't push them.  Set the other variables to NIL.
 	     (DOLIST (VAR (CDR VARIABLES))
-		 (AND VAR (OUTF `(SETNIL 0 ,(MADR VAR)))))
+		 (AND VAR (P2SETQ-1 VAR 'NIL 'D-IGNORE)))
 	     ;; If the single value was discarded, nothing remains to be done.
 	     (AND (EQ DEST1 'D-IGNORE) (RETURN NIL)))
 	    (T ;; It really did push N values on the stack.  Pop all but the first off.
 	     (DOLIST (VAR (REVERSE (CDR VARIABLES)))
-	       (COND (VAR (OUTF `(POP 0 ,(MADR VAR))))
+	       (COND (VAR (MOVEM-AND-MOVE-TO-DEST VAR 'D-IGNORE))
 		     (T (OUTF '(MOVE D-IGNORE (LPDL 77))))))))
       ;; Now there is only one thing on the stack, which is the value
       ;; of the first variable, and the value to be returned by
@@ -470,6 +513,91 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
   (COND ((P2MV (CAR TAIL) 'D-PDL 'MULTIPLE-VALUE-LIST)
 	 (OUTF `(MISC ,DEST NCONS)))
 	(T (MOVE-RESULT-FROM-PDL DEST))))
+
+;Functions to generate multiple values.
+
+(DEFPROP VALUES P2VALUES P2)
+(DEFUN P2VALUES (ARGL DEST)
+ (PROG ()
+     ;; Handle returning from the top level of a function.
+     (COND ((EQ DEST 'D-RETURN)
+	    (LET ((NARGS (LENGTH ARGL)))
+	      (COND ((= NARGS 1)
+		     (P2 (CAR ARGL) 'D-RETURN)
+		     (RETURN)))
+	      (ARGLOAD ARGL 'D-PDL)
+	      (COND ((= NARGS 2) (OUTI '(MISC D-IGNORE %RETURN-2)))
+		    ((= NARGS 3) (OUTI '(MISC D-IGNORE %RETURN-3)))
+		    ((ZEROP NARGS)
+		     (P2VALUES-LIST '('NIL) DEST))
+		    (T (P2PUSH-CONSTANT NARGS)
+		       (OUTI '(MISC D-IGNORE %RETURN-N))))
+	      (SETQ DROPTHRU NIL)	;Above MISC RETURN instructions return
+	      (RETURN NIL))))
+     (COND ((NUMBERP M-V-TARGET)
+	    ;; If we want N values on the stack,
+	    ;; then eval all the args to return
+	    ;; and save exactly N things on the stack.
+	    (DO ((VALS ARGL (CDR VALS)) (I 0 (1+ I)))
+		((AND (NULL VALS) ( I M-V-TARGET)))
+	      (P2 (OR (CAR VALS) ''NIL)
+		  (COND (( I M-V-TARGET) 'D-IGNORE) (T 'D-PDL)))))
+	   ((EQ M-V-TARGET 'MULTIPLE-VALUE-LIST)
+	    (P2 `(LIST . ,ARGL) DEST))
+	   ((NULL M-V-TARGET)
+	    (LET ((PDLLVL PDLLVL)) (P2PROG12N 1 DEST ARGL))))
+     (SETQ M-V-TARGET NIL)))
+
+(DEFPROP VALUES-LIST P2VALUES-LIST P2)
+(DEFUN P2VALUES-LIST (ARGL DEST)
+  (PROG (ARG)
+     (SETQ ARG (CAR ARGL))
+     (COND ((AND (LISTP ARG) (EQ (CAR ARG) 'MULTIPLE-VALUE-LIST))
+	    (RETURN (SETQ M-V-TARGET (P2MV (CADR ARG) DEST M-V-TARGET))))
+	   ((AND (LISTP ARG) (EQ (CAR ARG) 'LIST))
+	    (RETURN (P2VALUES (CDR ARG) DEST)))
+	   ((EQ DEST 'D-RETURN)
+	    (P2MISC 'RETURN-LIST ARGL 'D-RETURN 1))
+	   ((NULL M-V-TARGET)
+	    (P2 `(CAR ,ARG) DEST))
+	   ((EQ M-V-TARGET 'MULTIPLE-VALUE-LIST)
+	    (P2 ARG DEST))
+	   ((NUMBERP M-V-TARGET)
+	    (NEEDPDL 2)
+	    (P2PUSH ARG)
+	    (OUTF `(MOVE D-PDL (QUOTE-VECTOR ',M-V-TARGET)))
+	    (OUTF '(MISC D-PDL %SPREAD-N))))
+     (SETQ M-V-TARGET NIL)))
+
+;;; This version doesn't try to do internal multiple values.  Doing so is
+;;; difficult because it would require some sort of new instruction to
+;;; shuffle the stack in the appropriate fashion.  This does do external
+;;; multiple-values, i.e. an UNWIND-PROTECT to D-RETURN will pass back
+;;; multiple values from the body.
+(DEFUN (UNWIND-PROTECT P2) (FORMS DEST)
+  (AND M-V-TARGET
+       (BARF (CONS 'UNWIND-PROTECT FORMS) "Internal multiple values not implemented" 'BARF))
+  (LET ((RESTART-TAG (GENSYM))
+	(PDLLVL0 PDLLVL))
+    (LET ((CALL-BLOCK-PDL-LEVELS CALL-BLOCK-PDL-LEVELS))
+      ;; Open a multiple-value call to *CATCH with four values expected.
+      (OUTI1 `(ADI-CALL CALL D-IGNORE (QUOTE-VECTOR (FUNCTION *CATCH))
+			(RESTART-PC (QUOTE-VECTOR (TAG ,RESTART-TAG))
+			 BIND-STACK-LEVEL NIL
+			 MULTIPLE-VALUE (QUOTE-VECTOR (QUOTE 4)))))
+      (MKPDLLVL (+ PDLLVL 10.))			;4 multiple value words, 6 ADI words
+      (PUSH PDLLVL CALL-BLOCK-PDL-LEVELS)
+      (MKPDLLVL (+ 4 PDLLVL))			;4 words of call block
+      (OUTI `(MOVE D-PDL (QUOTE-VECTOR (QUOTE T))))	;Catch tag is T
+      (INCPDLLVL)
+      (P2 (CAR FORMS) (IF (EQ DEST 'D-RETURN) DEST 'D-LAST))
+      (SETQ PDLLVL (+ PDLLVL0 4))		;Now have just 4 multiple values on stack
+      (SETQ DROPTHRU T)
+      (OUTF `(RESTART-TAG ,RESTART-TAG)))
+    (DOLIST (FORM (CDR FORMS))		;Cleanup forms
+      (P2 FORM 'D-IGNORE))
+    (SETQ PDLLVL PDLLVL0)
+    (OUTI `(MISC ,DEST %UNWIND-PROTECT-CONTINUE))))	;Continue according to stuff on stack
 
 ;Compile the body of a PROG.  The variable binding has already been done
 ;by P1PBIND or P1SBIND, which returned the number of special bindings made
@@ -492,14 +620,8 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		   (COND ((NUMBERP M-V-TARGET) M-V-TARGET)
 			 ((EQ IPROGDEST 'D-PDL) 1)
 			 (T 0)))
-	     ;; Set the GOTAG-PDL-LEVEL of each of this prog's tags.
-	     ;; The first one is the return tag, which is different from the rest
-	     ;; because its pdllvl should include the values we want to leave stacked.
+	     ;; The first GOTAG is the prog's return tag.
 	     (SETQ RETTAG (GOTAG-PROG-TAG (CAR GOTAGS)))
-	     (SETF-GOTAG-PDL-LEVEL (CAR GOTAGS) (+ PDLLVL NVALUES))
-	     (DO ((NGS (CDR GOTAGS) (CDR NGS))) ((NULL NGS))
-		 (SETF-GOTAG-PDL-LEVEL (CAR NGS) PDLLVL))
-             (SETQ GOTAGS (APPEND GOTAGS OLDGOTAGS))
 	     ;; Remember this prog's general environment.
 	     (PUSH (MAKE-PROGDESC PROGNAME RETTAG IPROGDEST M-V-TARGET PDLLVL
 				  (COND ((AND IBINDP (NEQ PROGDEST 'D-RETURN))
@@ -507,6 +629,15 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 					(T NBINDS)))
 		   PROGDESCS)
 	     (OR (EQ PROGNAME T) (SETQ RETPROGDESC (CAR PROGDESCS)))
+	     ;; Set the GOTAG-PDL-LEVEL of each of this prog's tags.
+	     ;; The return tag is different from the rest
+	     ;; because its pdllvl should include the values we want to leave stacked.
+	     (SETF (GOTAG-PROGDESC (CAR GOTAGS)) (CAR PROGDESCS))
+	     (SETF (GOTAG-PDL-LEVEL (CAR GOTAGS)) (+ PDLLVL NVALUES))
+	     (DOLIST (GOTAG (CDR GOTAGS))
+	       (SETF (GOTAG-PROGDESC GOTAG) (CAR PROGDESCS))
+	       (SETF (GOTAG-PDL-LEVEL GOTAG) PDLLVL))
+             (SETQ GOTAGS (APPEND GOTAGS OLDGOTAGS))
 	L    (COND ((NULL BDY) (GO X1))
 		   ((ATOM (CAR BDY))
                     (OR DROPTHRU (OUTF '(NO-DROP-THROUGH)))
@@ -527,7 +658,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		    (COND ((NUMBERP M-V-TARGET)
 			   (DOTIMES (I M-V-TARGET)
 			     (OUTI '(MISC D-PDL FALSE))))
-			  (M-V-TARGET (P2RETURN NIL NIL))
+			  (M-V-TARGET (P2RETURN '('NIL) NIL))
 			  (T (OUTI (LIST 'MISC IPROGDEST 'FALSE))))))
 	     ;; If this is a top-level PROG, we just went to D-RETURN,
 	     ;; and nobody will use the RETTAG, so we are done.
@@ -547,95 +678,33 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	     ;; If we were supposed to produce multiple values, we did.
 	     (SETQ M-V-TARGET NIL))))
 
-;; Various types of RETURN.
+;; GO and various types of RETURN.
+
+(DEFPROP GO P2GO P2)
+(DEFUN P2GO (ARGL IGNORE)
+       (COND ((NULL PROGDESCS)
+	      (BARF `(GO ,ARGL) '|GO not inside a PROG| 'DATA))
+	     ((ATOM (CAR ARGL))
+	      (OUTB1 (CAR ARGL)))
+	     (T (BARF `(GO ,ARGL) '|computed GO not implemented| 'DATA)) ))
 
 (DEFPROP RETURN P2RETURN P2)
-(DEFUN P2RETURN (X IGNORE)
- (PROG (NVALUES IPROGDEST MVTARGET)
-     (COND ((NULL RETPROGDESC)
-	    (RETURN (BARF X '|RETURN not inside a PROG| 'DATA))))
-     (SETQ IPROGDEST (PROGDESC-IDEST RETPROGDESC))
-     (SETQ MVTARGET (PROGDESC-M-V-TARGET RETPROGDESC))
-     (OR X (SETQ X '('NIL)))
-     ;; Handle returning from a PROG at the top level of a function.
-     (COND ((EQ IPROGDEST 'D-RETURN)
-	    (LET ((NARGS (LENGTH X)))
-	      (COND ((= NARGS 1)
-		     (P2 (CAR X) 'D-RETURN)
-		     (RETURN)))
-	      (ARGLOAD X 'D-PDL)
-	      (COND ((= NARGS 2) (OUTI '(MISC D-IGNORE %RETURN-2)))
-		    ((= NARGS 3) (OUTI '(MISC D-IGNORE %RETURN-3)))
-		    (T (OUTI (LIST 'MOVE 'D-PDL (MVADR (LIST 'QUOTE NARGS))))
-		       (OUTI '(MISC D-IGNORE %RETURN-N))))
-	      (RETURN NIL))))
-     (COND ((NUMBERP MVTARGET)
-	    ;; If we want N values on the stack,
-	    ;; then eval all the args to return
-	    ;; and save exactly N things on the stack.
-	    (DO ((VALS X (CDR VALS)) (I 0 (1+ I)))
-		((AND (NULL VALS) ( I MVTARGET)))
-	      (P2 (OR (CAR VALS) ''NIL)
-		  (COND (( I MVTARGET) 'D-IGNORE) (T 'D-PDL)))))
-	   ((EQ MVTARGET 'MULTIPLE-VALUE-LIST)
-	    (P2 `(LIST . ,X) IPROGDEST))
-	   ((NULL MVTARGET)
-	    (LET ((PDLLVL PDLLVL)) (P2PROG12N 1 IPROGDEST X))))
-     (SETQ NVALUES
-	   (COND ((NUMBERP MVTARGET) MVTARGET)
-		 ((EQ IPROGDEST 'D-PDL) 1)
-		 (T 0)))
-     ;; Adjust PDLLVL for the values we are leaving on the pdl.
-     (OR (ZEROP NVALUES) (MKPDLLVL (+ PDLLVL NVALUES)))
-     ;; Maybe we can avoid a branch to .+1 now.
-     (AND (= PDLLVL (PROGDESC-PDL-LEVEL RETPROGDESC))
-	  (EQ (CADDR BDEST) 'RETURN)
-	  (EQ (CAR (CDDDDR BDEST)) (PROGDESC-RETTAG RETPROGDESC))
-	  (RETURN (SETQ PROG-RETURN-DROPTHRU T)))
-     (OUTBRET (PROGDESC-RETTAG RETPROGDESC) RETPROGDESC NVALUES)))
+(DEFPROP MULTIPLE-VALUE-RETURN P2RETURN P2)
+(DEFUN P2RETURN (ARGL IGNORE)
+  (P2RETURN1 ARGL NIL))
 
-(DEFPROP RETURN-LIST P2RETURN-LIST P2)
-(DEFUN P2RETURN-LIST (ARGL DEST)
-  DEST
-  (PROG (IPROGDEST MVTARGET ARG NVALUES)
-     (SETQ ARG (CAR ARGL))
-     (COND ((NULL RETPROGDESC)
-	    (RETURN (BARF `(RETURN-LIST ,ARG) '|RETURN-LIST not inside a PROG| 'DATA))))
-     (SETQ IPROGDEST (PROGDESC-IDEST RETPROGDESC))
-     (SETQ MVTARGET (PROGDESC-M-V-TARGET RETPROGDESC))
-     (COND ((EQ IPROGDEST 'D-RETURN)
-	    (COND ((AND (NOT (ATOM ARG)) (EQ (CAR ARG) 'MULTIPLE-VALUE-LIST))
-		   (P2 `(MULTIPLE-VALUE-RETURN ,(CADR ARG)) 'D-RETURN))
-		  (T
-		   (P2MISC 'RETURN-LIST ARGL 'D-RETURN 1)))
-	    (RETURN NIL))
-	   ((NULL MVTARGET)
-	    (P2 `(CAR ,ARG) IPROGDEST))
-	   ((EQ MVTARGET 'MULTIPLE-VALUE-LIST)
-	    (P2 ARG IPROGDEST))
-	   ((NUMBERP MVTARGET)
-	    (NEEDPDL 2)
-	    (P2PUSH ARG)
-	    (OUTF `(MOVE D-PDL (QUOTE-VECTOR ',MVTARGET)))
-	    (OUTF '(MISC D-PDL %SPREAD-N))))
-     (SETQ NVALUES
-	   (COND ((NUMBERP MVTARGET) MVTARGET)
-		 ((EQ IPROGDEST 'D-PDL) 1)
-		 (T 0)))
-     (OR (ZEROP NVALUES) (MKPDLLVL (+ NVALUES PDLLVL)))
-     (OUTBRET (PROGDESC-RETTAG RETPROGDESC) RETPROGDESC NVALUES)))
-
-;(MULTIPLE-VALUE-RETURN ...) means (RETURN-LIST (MULTIPLE-VALUE-LIST ...)).
-;That is, return from the PROG whatever ... returns.
-(DEFPROP MULTIPLE-VALUE-RETURN P2MULTIPLE-VALUE-RETURN P2)
-(DEFUN P2MULTIPLE-VALUE-RETURN (ARGL DEST)
-  DEST
-  (PROG (IPROGDEST MVTARGET ARG LOSE NVALUES)
-	(COND ((NULL RETPROGDESC)
-	       (RETURN (BARF ARG '|MULTIPLE-VALUE-RETURN not inside a PROG| 'DATA))))
-	(SETQ ARG (CAR ARGL))
-	(SETQ IPROGDEST (PROGDESC-IDEST RETPROGDESC))
-	(SETQ MVTARGET (PROGDESC-M-V-TARGET RETPROGDESC))
+(DEFUN P2RETURN1 (ARGL PROGNAME)
+  (PROG ((RPDESC RETPROGDESC) IPROGDEST MVTARGET ARG LOSE NVALUES)
+	(IF PROGNAME (SETQ RPDESC (ASSQ PROGNAME PROGDESCS)))
+	(OR RPDESC
+	    (RETURN
+	      (IF PROGNAME (BARF `(RETURN-FROM ,PROGNAME . ,ARGL) '|unseen PROG name| 'WARN)
+		  (BARF `(RETURN . ,ARGL) "not inside a PROG" 'WARN))))
+	(COND ((= (LENGTH ARGL) 1)
+	       (SETQ ARG (CAR ARGL)))
+	      (T (SETQ ARG `(VALUES . ,ARGL))))
+	(SETQ IPROGDEST (PROGDESC-IDEST RPDESC))
+	(SETQ MVTARGET (PROGDESC-M-V-TARGET RPDESC))
 	;; Compile the arg with same destination and m-v-target
 	;; that the PROG we are returning from had.
 	(SETQ LOSE (P2MV ARG IPROGDEST MVTARGET))
@@ -656,66 +725,21 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	;; Note how many things we have pushed.
 	(AND (EQ IPROGDEST 'D-PDL)
 	     (MKPDLLVL (+ PDLLVL NVALUES)))
-	(OUTBRET (PROGDESC-RETTAG RETPROGDESC) RETPROGDESC NVALUES)))
-
+	(OUTBRET (PROGDESC-RETTAG RPDESC) RPDESC NVALUES)))
+
+(DEFPROP RETURN-LIST P2RETURN-LIST P2)
+(DEFUN P2RETURN-LIST (ARGL DEST)
+  (P2RETURN `((VALUES-LIST ,(CAR ARGL))) DEST))
+
 ;Handle (RETURN-FROM <progname> <value>...) by binding RETPROGDESC to the spec'd prog.
 (DEFPROP RETURN-FROM P2RETURN-FROM P2)
 (DEFUN P2RETURN-FROM (ARGL IGNORE)
-    (LET ((RETPROGDESC (ASSQ (CAR ARGL) PROGDESCS)))
-	 (OR RETPROGDESC (BARF `(RETURN-FROM . ,ARGL) '|unseen PROG name| 'DATA))
-	 (P2RETURN (CDR ARGL) 'IGNORE)))
+  (P2RETURN1 (CDR ARGL) (CAR ARGL)))
 
-;(RETURN-FROM-T <value>) is like (RETURN-FROM T <value>) except that
-;any RETURNs, etc. inside <value> go to the place they would normally go,
-;rather than to the PROG named T.  Only if <value> actually returns a value
-;does it go to the PROG named T.  To accomplish this, we bind and use a local
-;variable RPDESC instead of binding RETPROGDESC.
+;(RETURN-FROM-T <value>) is like (RETURN-FROM T <value>).
 (DEFPROP RETURN-FROM-T P2RETURN-FROM-T P2)
-(DEFUN P2RETURN-FROM-T (X IGNORE)
- (PROG (IPROGDEST RETTAG RPDESC)
-     (SETQ RPDESC (ASSQ T PROGDESCS))
-     (COND ((NULL RPDESC)
-	    (RETURN (BARF X '|RETURN-FROM-T not inside a PROG T| 'DATA))))
-     (SETQ IPROGDEST (PROGDESC-IDEST RPDESC))
-     (OR X (SETQ X '('NIL)))
-     (COND ((= PDLLVL (PROGDESC-PDL-LEVEL RPDESC))
-            (SETQ RETTAG (PROGDESC-RETTAG RPDESC))
-	    (COND ((AND (EQ (CADDR BDEST) 'RETURN)
-			(EQ (CAR (CDDDDR BDEST)) RETTAG))
-		   (P2 (CAR X) IPROGDEST)
-		   (SETQ PROG-RETURN-DROPTHRU T))
-		  (T (P2BRANCH (CAR X) IPROGDEST `(BRANCH ALWAYS NIL NIL ,RETTAG))))
-	    (RETURN NIL))
-	   (T (P2 (CAR X) IPROGDEST)))
-     ;; If IDEST is D-PDL, must take account of it in PDLLVL
-     ;; so that the branch to the rettag will realize how much pushing or popping is needed.
-     (AND (EQ IPROGDEST 'D-PDL)
-	  (INCPDLLVL))
-     (COND ((NOT (EQ IPROGDEST 'D-RETURN))
-	    (OUTBRET (PROGDESC-RETTAG RPDESC) RPDESC (IF (EQ IPROGDEST 'D-PDL) 1 0))))
-     (RETURN NIL)
-))
-
-(DEFPROP GO P2GO P2)
-(DEFUN P2GO (ARGL IGNORE)
-       (COND ((NULL PROGDESCS)
-	      (BARF `(GO ,ARGL) '|GO not inside a PROG| 'DATA))
-	     ((ATOM (CAR ARGL))
-	      (OUTB1 (CAR ARGL)))
-	     (T (BARF `(GO ,ARGL) '|computed GO not implemented| 'DATA)) ))
-
-;;; %ACTIVATE-OPEN-CALL-BLOCK must ignore its apparent destination and
-;;; instead compile to D-IGNORE (microcode depends on this).
-;;; This fails to let the compiler know that the pdl is popped and a delayed
-;;; transfer may be taken, but then it didn't know the pdl was pushed either.
-(DEFPROP %ACTIVATE-OPEN-CALL-BLOCK P2%ACTIVATE-OPEN-CALL-BLOCK P2)
-(DEFUN P2%ACTIVATE-OPEN-CALL-BLOCK (IGNORE IGNORE)
-  (OUTI '(MISC D-IGNORE %ACTIVATE-OPEN-CALL-BLOCK)))
-
-;;; Don't actually call %PUSH, just push its argument
-(DEFPROP %PUSH P2%PUSH P2)
-(DEFUN P2%PUSH (ARGL IGNORE)
-  (P2 (CAR ARGL) 'D-PDL))
+(DEFUN P2RETURN-FROM-T (ARGL IGNORE)
+  (P2RETURN1 ARGL T))
 
 ;Unbind NBINDS special variables, unless IDEST is D-RETURN.
 (DEFUN UNBIND (IDEST NBINDS)
@@ -736,30 +760,28 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 ;DEST is significant only if it is D-IGNORE, in which case
 ;we compile code to compute and ignore the value.  What we return then is irrelevant.
 (DEFUN P2-SOURCE (FORM DEST)
-    (COND ((ADRREFP FORM) (MVADR FORM))
-          (T (LET (BDEST M-V-TARGET)
-		  (P2F FORM (COND ((EQ DEST 'D-IGNORE) 'D-IGNORE) (T 'D-PDL)))
-                  '(LPDL 77)))))
+  (COND ((ATOM FORM)
+	 `(SPECIAL ,FORM))
+	((EQ (CAR FORM) 'LOCAL-REF)
+	 (VAR-LAP-ADDRESS (CADR FORM)))
+	((EQ (CAR FORM) 'LEXICAL-REF)
+	 (COND ((NEQ DEST 'D-IGNORE)
+		(P2PUSH-CONSTANT (CADR FORM))
+		(OUTI '(MISC D-PDL %LOAD-FROM-HIGHER-CONTEXT))))
+	 '(LPDL 77))
+	((OR (EQ (CAR FORM) 'QUOTE) (EQ (CAR FORM) 'FUNCTION)
+	     (EQ (CAR FORM) 'BREAKOFF-FUNCTION))
+	 `(QUOTE-VECTOR ,FORM))
+	(T (LET (BDEST M-V-TARGET)
+	     (P2F FORM (COND ((EQ DEST 'D-IGNORE) 'D-IGNORE) (T 'D-PDL)))
+	     '(LPDL 77)))))
 
-(DEFUN MVADR (X)
-       (COND ((ATOM X) (MADR X))
-	     ((MEMQ (CAR X) '(QUOTE FUNCTION TAG))
-	      (LIST 'QUOTE-VECTOR X))
-	     (T (BARF X 'LOSE-AT-MVADR 'BARF))))
-
-;Given a variable X, return the lap expression to refer to that variable
-;in the current context.  Either refer to the value cell for a special variable,
-;or refer to the appropriate pdl slot for a nonspecial one.
-(DEFUN MADR (X)
-  (PROG (TM)
-     (COND ((NULL (SETQ TM (ASSQ X VARS)))
-	    (AND (MEMQ X FREEVARS)
-		 (RETURN `(SPECIAL ,X)))
-	    (BARF X '|Variable on pass 2 not seen on pass 1| 'BARF))
-	   (T (RETURN (VAR-LAP-ADDRESS TM))))))
+(DEFUN P2PUSH-CONSTANT (NUMBER)
+  (OUTI `(MOVE D-PDL (QUOTE-VECTOR (QUOTE ,NUMBER)))))
 
 (DEFUN ADRREFP (EXP) 			       ;PREDICATE T IF CAN BE REF BY ADR ONLY
-       (OR (ATOM EXP) (EQ (CAR EXP) 'QUOTE) (EQ (CAR EXP) 'FUNCTION)))
+  (OR (ATOM EXP)
+      (MEMQ (CAR EXP) '(QUOTE FUNCTION BREAKOFF-FUNCTION LOCAL-REF))))
 
 (DEFUN MKPDLLVL (X)
        (COND ((> (SETQ PDLLVL X) MAXPDLLVL) (SETQ MAXPDLLVL PDLLVL))))
@@ -806,14 +828,14 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		   ((NUMBERP MVTARGET)
 		    ;; MVTARGET is a number => it is number of values,
 		    ;; just leave them on the stack.
-		    (SETQ ADI-LIST `(MULTIPLE-VALUE ,(MVADR `',MVTARGET) . ,ADI-LIST)
+		    (SETQ ADI-LIST `(MULTIPLE-VALUE (QUOTE-VECTOR ',MVTARGET) . ,ADI-LIST)
 			  TDEST 'D-IGNORE LDEST 'D-PDL)))
 	     (SETQ AG1 ARGL)
 	     (SETQ DSC1 DESC)
 	     (COND ((EQ FCTN '*CATCH)
 			(SETQ ADI-LIST
 			  (CONS 'RESTART-PC
-			    (CONS (MVADR (LIST 'TAG (SETQ RESTART-PC (GENSYM))))
+			    (CONS `(QUOTE-VECTOR (TAG ,(SETQ RESTART-PC (GENSYM))))
 				   (CONS 'BIND-STACK-LEVEL
 					(CONS NIL ADI-LIST)))))
 			(COND ((NULL MVTARGET)
@@ -830,7 +852,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 				(CONS NIL ADI-LIST)))))
 	     (COND ((NOT (SYMBOLP FCTN))
 		    (SETQ TM FCTN))	 ;NON-SYMBOLIC FCTN, ITS ADDRESS FOR CALL
-	           (T (SETQ TM (MVADR (LIST 'FUNCTION TARGET)))))
+	           (T (SETQ TM `(QUOTE-VECTOR (FUNCTION ,TARGET)))))
 	     (COND ((NULL ADI-LIST)
 		      (OUTI (LIST CALLI TDEST TM)))
 		   (T (OUTI1 (LIST 'ADI-CALL CALLI TDEST TM ADI-LIST))
@@ -855,9 +877,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		      (GO OFEXPR))	  ;DO THIS EVEN IF ARG LIST IS NULL
 		   ((NULL AG1) (GO RET))  ;OUT OF ARG LIST
 		   ((MEMQ 'FEF-QT-QT TOKEN-LIST)
-		    (OUTI (LIST 'MOVE
-				IDEST
-				(MVADR (LIST 'QUOTE (CAR AG1))))))
+		    (OUTI `(MOVE ,IDEST (QUOTE-VECTOR (QUOTE ,(CAR AG1))))))
 		   ((MEMQL '(FEF-QT-EVAL FEF-QT-DONTCARE) TOKEN-LIST)
 		    (COND ((AND (EQ IDEST 'D-LAST)
 				(MEMQ 'LEXPR-FUNCALL TOKEN-LIST))
@@ -887,30 +907,40 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	     (RETURN NIL)
 
 	OFEXPR
-	     (OUTI (LIST 'MOVE 'D-LAST (MVADR (LIST 'QUOTE AG1))))
+	     (OUTI `(MOVE D-LAST (QUOTE-VECTOR (QUOTE ,AG1))))
 	     (GO RET)
 )))
 
 ;Bind a list of variables, computing initializations and binding sequentially.
+;VARS are the VARS outside of this binding environment.
+;NEWVARS are the VARS inside of it, starting with the variables in X in reverse order,
+;except there may be additional entries for optional-specified-flags; each one
+;will be on NEWVARS just before its corresponding main variable.
+;We have to install these variables one at a time as we go, using successive tails.
 (DEFUN P2SBIND (X NEWVARS VARS)
-  (LET ((NBINDS 0))
-    (DO ((X X (CDR X)))
+  (LET ((NBINDS 0)			;Number of (internal-aux) special bindings
+	(NNEWVARS (LOOP FOR L ON NEWVARS UNTIL (EQ L VARS) COUNT T)))
+    (DO ((X X (CDR X)) (HOME))
         ((NULL X))
-      (AND (P2LMB (CAR X) NEWVARS) (SETQ NBINDS (1+ NBINDS)))
-      ;; Set VARS to the tail of NEWVARS starting at the variable we just handled.
-      (DO ((V NEWVARS (CDR V)) (XV (COND ((ATOM (CAR X)) (CAR X)) (T (CAAR X)))))
-	  ((EQ (CAAR V) XV) (SETQ VARS V))))
+      (SETQ HOME (NTH (1- NNEWVARS) NEWVARS))
+      (AND (P2LMB (CAR X) HOME) (SETQ NBINDS (1+ NBINDS)))
+      ;; Set VARS to the tail of NEWVARS starting at the variable we just handled
+      ;; or its optional-specified-flag.
+      (SETQ NNEWVARS (1- NNEWVARS))
+      (AND (CDDR (VAR-INIT HOME)) (SETQ NNEWVARS (1- NNEWVARS)))
+      (SETQ VARS (NTHCDR NNEWVARS NEWVARS)))
+    (OR (ZEROP NNEWVARS) (BARF X "VARS screwed up by this binding" 'BARF))
     NBINDS))
 
-;Output code for binding the var VARNAME as specified in its home in NEWVARS.
+;Output code for binding the var VARNAME as specified in its HOME.
 ;Return T if a BINDPOP or BINDNIL instruction was output.
-(DEFUN P2LMB (VARNAME NEWVARS)
-       (PROG (HOME INTCODE INITFORM)
+(DEFUN P2LMB (VARNAME HOME)
+       (PROG (INTCODE INITFORM)
 	     (COND ((NOT (ATOM VARNAME))
 		    (SETQ INITFORM (CADR VARNAME))
 		    (SETQ VARNAME (CAR VARNAME))))
-	     (COND ((NULL (SETQ HOME (ASSQ VARNAME NEWVARS)))
-		    (BARF VARNAME 'NOT-ON-VARS 'BARF)))
+	     (COND ((NOT (EQ (VAR-NAME HOME) VARNAME))
+		    (BARF VARNAME "wrong home in P2LMB" 'BARF)))
 	     (SETQ INTCODE (VAR-INIT HOME))
 	     ;; If this variable's binding is fully taken care of by function entry,
 	     ;; we have nothing to do here.
@@ -931,7 +961,8 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	     (COND ((MEMBER INITFORM '(NIL 'NIL))
                     ;; if initting to NIL, then if no tags output so far (TAGOUT is NIL)
                     ;; we can assume it is still NIL from function entry time.
-		    (COND ((OR TAGOUT (MEMQ (VAR-TYPE HOME) '(FEF-SPECIAL FEF-REMOTE)))
+		    (COND ((OR TAGOUT (MEMQ (VAR-TYPE HOME) '(FEF-SPECIAL FEF-REMOTE))
+			       (VAR-OVERLAP-VAR HOME))
 			   (OUTIV 'SETNIL HOME))))
 		   ;; Initting var to itself;  do nothing.
 		   ((AND (EQ (VAR-TYPE HOME) 'FEF-REMOTE)
@@ -993,7 +1024,8 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		    (RETURN (1+ NBINDS))))
 	     (COND ((MEMBER INITFORM '(NIL 'NIL))
 		    (SETQ NBINDS (P2PBIND VARNAMES NEWVARS))
-		    (COND ((OR TAGOUT (MEMQ (VAR-TYPE HOME) '(FEF-SPECIAL FEF-REMOTE)))
+		    (COND ((OR TAGOUT (MEMQ (VAR-TYPE HOME) '(FEF-SPECIAL FEF-REMOTE))
+			       (VAR-OVERLAP-VAR HOME))
 			   (OUTIV 'SETNIL HOME))))
 		   ;; Special vars bound at function entry and wanting to be
 		   ;; initted to themselves, need not be set at all.
@@ -1071,10 +1103,12 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	   (SETQ BDEST NIL))
           ((ADRREFP FORM)
 	   (OR (EQ DEST 'D-IGNORE)
-	       (OUTI `(MOVE ,DEST ,(MVADR FORM)))))
+	       (OUTI `(MOVE ,DEST ,(P2-SOURCE FORM DEST)))))
+	  ((EQ (CAR FORM) 'LEXICAL-REF)
+	   (P2 FORM DEST))
 	  ((EQ (CAR FORM) '%POP)
 	   (P2 FORM DEST))
-	  (T (P2F FORM DEST)))
+	  (T (LET (M-V-TARGET) (P2F FORM DEST))))
     (AND BDEST (OUTB BDEST)))
 
 (DEFPROP ATOM P2ATOM P2)
@@ -1119,10 +1153,17 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	     (AND (EQ (CADR BDEST) 'ALWAYS)
 		  (EQ (CADDR BDEST) 'RETURN)
 		  (SETQ BDEST NIL))
-	     ;; T as arg in an AND is ignorable.
-	     (SETQ ARGL (DELETE (COND ((EQ SENSE 'TRUE) '(QUOTE T))
-				      (T '(QUOTE NIL)))
-				ARGL))
+	     ;; Any non-null constant as arg in an AND is ignorable unless it is last.
+	     ;; NIL as arg in an OR is always ignorable.
+	     (SETQ ARGL (COND ((EQ SENSE 'FALSE) (DELETE '(QUOTE NIL) ARGL))
+			      ((NULL ARGL) ARGL)
+			      (T (NREVERSE (CONS (CAR (LAST ARGL))
+						 (DEL #'(LAMBDA (IGNORE X)
+							  (AND (NOT (ATOM X))
+							       (EQ (CAR X) 'QUOTE)
+							       (CADR X)))
+						      NIL
+						      (CDR (NREVERSE ARGL))))))))
 	     (OR ARGL (RETURN (PROG1 (P2BRANCH `',(EQ SENSE 'TRUE) DEST BDEST)
 				     (SETQ BDEST NIL))))
 	     ;; If we are going to jump somewhere unconditionally after the AND,
@@ -1241,133 +1282,154 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 
 (DEFPROP COND P2COND P2)
 (DEFUN P2COND (ARGL DEST)
-       (PROG (CL TAG TAG1 TAG2 VALF CLL TM IDEST PRED NOFALLTHRU
-	      LASTPAIR IDEST-TO-DEST-XFER-NEEDED DROPOFF-NIL-NEEDED
-	      EFFECTIVELY-LAST-PAIR TO-IDEST-P DROP-INTO-TAG)
+       (PROG (CLAUSE TAG TAG1 TAG2 VALF CLAUSE-LENGTH TM IDEST PRED NOFALLTHRU
+	      LAST-CLAUSE-FLAG IDEST-USED)
 	     (SETQ TAG2 (GENSYM))	;TAG TO GO TO WITH VALUE OF COND IN DEST
 	     (SETQ TAG (GENSYM))	;TAG TO GO TO WITH VALUE OF COND IN IDEST
+	     ;; Choose an intermediate destination, depending on ultimate destination.
+	     ;; The intermediate destination can match the ultimate one
+	     ;; if they are D-IGNORE, D-INDS or D-PDL.
+	     ;; Each COND clause can compile its value to IDEST and go to TAG
+	     ;; or compile its value to DEST and go to TAG2.
+
+	     ;; Use of TAG and IDEST assumes that multiple values were NOT generated
+	     ;; whereas TAG2 and DEST assumes that they were if they are supposed to be.
+
+	     ;; For microcompiler input, we always use TAG and IDEST unless IDEST=DEST.
+	     ;; Otherwise, we usually use DEST except for clauses that are just predicates.
+
+	     ;; IDEST-USED is T if a clause has compiled its result to IDEST.
+	     ;; The code to move the value is only generated if IDEST/TAG has been used.
+	     (AND M-V-TARGET (SETQ DEST 'D-PDL))
 	     (SETQ IDEST 'D-IGNORE)
 	     (COND ((NOT (EQ DEST 'D-IGNORE))
 		    (SETQ VALF T)
 		    (SETQ IDEST 'D-PDL)))
 	     (COND ((EQ DEST 'D-INDS) (SETQ IDEST 'D-INDS)))
-	L1   (COND ((NULL (CDR ARGL)) (SETQ LASTPAIR T)))
-	     (SETQ CL (CAR ARGL))
+
+	     ;; Compile next clause.
+	L1   (COND ((NULL (CDR ARGL)) (SETQ LAST-CLAUSE-FLAG T)))
+	     (SETQ CLAUSE (CAR ARGL))
+	     (AND LAST-CLAUSE-FLAG (NULL (CDR CLAUSE))
+		  (SETQ CLAUSE (CONS ''T CLAUSE)))
 	     (SETQ TAG1 (GENSYM))
-	     (SETQ PRED (CAR CL))
+	     (SETQ PRED (CAR CLAUSE))
 	     (COND ((AND (NOT (ATOM PRED))
 			 (EQ (CAR PRED) 'QUOTE))
 		    (COND ((NULL (CADR PRED))	;IS THE NULL CONDITION?
-			   (GO L5))	;YEP.  CAN HAPPEN AS RESULT OF DO EXPANSION.
-		          (T (SETQ NOFALLTHRU T)))))       ;THIS ONE WONT BE FALLING THRU
-	     (SETQ CLL (LENGTH CL))
-	L2   (COND ((AND VALF (= 1 CLL))
-		    (COND (LASTPAIR (SETQ NOFALLTHRU T)))  ;ONE TUPLE IN LASTPAIR IS
-		    (P2 PRED IDEST)		   ;LIKE (T (MUMBLE))
-		    (COND (NOFALLTHRU
-			    (SETQ DROP-INTO-TAG T)	   ;DID COMPILE SOMETHING
-			    (GO L5)))		   	   ;TO IDEST
-							   ;THIS LAST CODE THAT CAN
-		    (OUTB (LIST 'BRANCH			   ;BE REACHED SO NO NEED
-				'NILIND			   ;TO JUMP AROUND
+			   (AND (NOT LAST-CLAUSE-FLAG)
+				(GO L5)))	;YEP.  CAN HAPPEN AS RESULT OF DO EXPANSION.
+		          ((CDR ARGL)		;condition always true?
+			   (SETQ LAST-CLAUSE-FLAG T)	;If so, discard any remaining clauses
+			   (SETQ NOFALLTHRU T)	;after a warning about them.
+			   (BARF (CDR ARGL)
+				 '|unreachable COND clauses|
+				 'WARN)
+			   (SETQ ARGL (LIST CLAUSE)))
+			  (T (SETQ NOFALLTHRU T)))))
+	     (SETQ CLAUSE-LENGTH (LENGTH CLAUSE))
+	     ;; Handle certain special cases of clauses.
+	     (COND ((AND VALF (= 1 CLAUSE-LENGTH))
+		    ;; Clause containing only one element, compiled for value.
+		    ;; value of condition is also value of clause.
+		    (P2 PRED IDEST)
+		    (SETQ IDEST-USED T)
+		    (OUTB (LIST 'BRANCH
+				'NILIND
 				'FALSE
-				(EQ IDEST 'D-PDL)	   ;IF SOMETHING PUSHED, POP IF
-				TAG)))			   ; THE BRANCH IS NOT TAKEN
-		   ((= 1 CLL) (BOOL1 PRED 'FALSE TAG) (GO L5))
-		   ((AND (NOT NOFALLTHRU)		;((PRED ..) (GO MUMBLE))
-			 (= 2 CLL)
-			 (NOT (ATOM (CADR CL)))
-			 (EQ (CAADR CL) 'GO)
-			 (= PDLLVL (GPDLLVL (CADADR CL))))
-		    (BOOL1 PRED 'FALSE (GTAG (CADADR CL))))
+				(EQ IDEST 'D-PDL)	;IF SOMETHING PUSHED, POP IF
+				TAG))		; THE BRANCH IS NOT TAKEN
+		    (GO L5))
+		   ;; Clause of one element, if value is not wanted.
+		   ((= 1 CLAUSE-LENGTH) (BOOL1 PRED 'FALSE TAG) (GO L5))
+		   ;; Clause is just condition followed by a GO.
+		   ((AND (= 2 CLAUSE-LENGTH)
+			 (SIMPLEGOP (CADR CLAUSE)))
+		    (BOOL1 PRED 'FALSE (GTAG (CADADR CLAUSE)))
+		    (GO L5))
+		   ;; Clause after this one is (T (GO ...)).
+		   ;; Can get special handling only if the GO
+		   ;; requires no pdl adjustment.
 		   ((AND (NOT NOFALLTHRU)		;ISOLATE CASE OF
-			 (NOT LASTPAIR)			;((P1 A1) (T (GO X)))
+			 (NOT LAST-CLAUSE-FLAG)			;((P1 A1) (T (GO X)))
 			 (NOT (ATOM (CAR (SETQ TM (CADR ARGL)))))
-			 (NOT (ATOM (CAR TM)))
 			 (EQ (CAAR TM) 'QUOTE)
 			 (CADAR TM)
 			 (= 2 (LENGTH TM))
-			 (NOT (ATOM (CADR TM)))
-			 (EQ (CAADR TM) 'GO)		;NEXT PAIR IS (T(GO X))
-			 (= PDLLVL (GPDLLVL (CADADR TM))))
+			 (SIMPLEGOP (CADR TM)))
+		    ;; In effect, we turn this into (COND ((NOT P1) (GO X)) (T A1))
 		    (BOOL1 PRED 'TRUE (GTAG (CADADR TM)))  ;GO X DIRECTLY IF P1 FALSE
-		    (SETQ ARGL (CONS (CAR ARGL) (CDDR ARGL)))
-		    (SETQ LASTPAIR T)
-		    (GO L3))
-		   ((NOT NOFALLTHRU)			;NORMAL COND PAIR
-		    (BOOL1 PRED 'TRUE TAG1)
-		    (GO L3))
-		   (T (GO L3)))				;(T ...)
-	L5   (OUTTAG TAG1)				;PROCEED TO NEXT PAIR
-	     (COND ((SETQ ARGL (CDR ARGL)) (GO L6)))
-	L7   (SETQ IDEST-TO-DEST-XFER-NEEDED
-		   (AND (OR DROP-INTO-TAG (GET TAG 'USED))
-			(NOT (MEMQ DEST '(D-PDL D-IGNORE D-INDS)))))
-	     (COND ((AND VALF 				;THRU WITH ALL PAIRS
-			 (NOT NOFALLTHRU))
-		    (OUTI (LIST 'MISC
-				(COND (IDEST-TO-DEST-XFER-NEEDED IDEST)
-				      (T DEST))
-				'FALSE))))	       ;NIL FOR DROP OFF CASE
+		    (SETQ ARGL (CONS (CONS ''T (CDR CLAUSE)) (CDDR ARGL)))
+		    (GO L1))
+		   ((NOT NOFALLTHRU)		;Normal COND clause.
+		    (BOOL1 PRED 'TRUE TAG1)))	;Jump around clause if predicate fails.
+
+	     ;; If the COND will have to return NIL if this clause's
+	     ;; condition is false, then generate a clause to return the nil.
+	     (COND ((AND VALF LAST-CLAUSE-FLAG (NOT NOFALLTHRU))
+		    (SETQ ARGL (LIST CLAUSE '('T 'NIL)))
+		    (SETQ LAST-CLAUSE-FLAG NIL)))
+
+	     ;; Compile the actions of the cond clause, except for the last.
+	     (DO ((ACTIONS (CDR CLAUSE) (CDR ACTIONS)))
+		 ((NULL (CDR ACTIONS))
+		  (SETQ CLAUSE ACTIONS))
+	       (P2 (CAR ACTIONS) 'D-IGNORE))
+
+	     ;; Compile last action of cond clause (the value).
+	     (LET ((TO-IDEST-P
+		     ;; Send value of last clause to IDEST rather than DEST
+		     ;; if that means we can avoid a branch to TAG2
+		     ;; that would otherwise be necessary.
+		     ;; Send values of all clauses to IDEST for microcompiler input.
+		     (OR (AND LAST-CLAUSE-FLAG
+			      IDEST-USED
+			      (NEQ DEST IDEST)
+			      ;; Don't do this optimization if mult values wanted
+			      ;; because only compilation to DEST can accept them.
+			      (NULL M-V-TARGET)
+			      ;; If D-RETURN, don't optimize, so it can propagate
+			      ;; multiple values if there are any.
+			      (NEQ DEST 'D-RETURN))
+			 (AND GENERATING-MICRO-COMPILER-INPUT-P
+			      (NOT (EQ DEST IDEST))))))
+	       (COND (TO-IDEST-P (P2 (CAR CLAUSE) IDEST))
+		     ((P2MV (CAR CLAUSE) DEST M-V-TARGET)
+		      ;; If value fails to generate mult vals,
+		      ;; we must make TAG generate them and go there.
+		      (SETQ TO-IDEST-P T)))
+	       (COND ((NULL TO-IDEST-P)
+		      (COND ((OR (NULL LAST-CLAUSE-FLAG)
+				 ;; If last clause, and TAG isn't the same as TAG2,
+				 ;; we must still branch to TAG2.
+				 (AND IDEST-USED (OR M-V-TARGET (NEQ DEST IDEST))))
+			     (OUTB (LIST 'BRANCH 'ALWAYS NIL NIL TAG2)))))
+		     (T
+		      (SETQ IDEST-USED T)
+		      (COND ((NULL LAST-CLAUSE-FLAG)
+			     (OUTB (LIST 'BRANCH 'ALWAYS NIL NIL TAG)))) )))
+
+	     ;; Here at end of cond-clause.
+	L5   (OUTTAG TAG1)			;Output tag for jumps from failing predicate.
+	     (COND ((SETQ ARGL (CDR ARGL))	;If there are more clauses, process them.
+		    (GO L1)))
+
+	     ;; There are no more cond clauses!
 	     (OUTTAG TAG)
-	     (COND (IDEST-TO-DEST-XFER-NEEDED
-		      (MOVE-RESULT-FROM-PDL DEST)))
+	     (AND IDEST-USED 
+		  (COND ((NUMBERP M-V-TARGET)
+			 (DOTIMES (I (1- M-V-TARGET))
+			   (OUTI '(MISC D-PDL FALSE))))
+			((EQ M-V-TARGET 'MULTIPLE-VALUE-LIST)
+			 (OUTI '(MISC D-PDL NCONS)))
+			((NEQ DEST IDEST)
+			 (MOVE-RESULT-FROM-PDL DEST))))
+	     ;; We have generated multiple values if necessary.
+	     (SETQ M-V-TARGET NIL)
 	     (OUTTAG TAG2)
 	     (RETURN NIL)
 
-	L3   (COND ((NULL (SETQ CL (CDR CL)))		;COMPILE ACTION LIST
-		    (BARF ARGL 'LOSE-AT-P2COND 'BARF)))
-	L4   (COND ((NULL (CDR CL))				;LOOP UNTIL LAST ACTION
-;GET HERE WHEN READY TO COMPILE LAST ACTION.
-;  FIRST DECIDE WHETHER TO COMPILE IT DIRECTLY TO THE FINAL DESTINATION (DEST)
-;  AND GENERATE A TRANSFER TO TAG2, OR TO THE INTERMEDIATE DESTINATION (IDEST)
-;  AND GENERATE A TRANSFER TO TAG.  GENERALLY IT COSTS NO MORE TO GO TO THE
-;  FINAL DESTINATION DIRECTLY.  HOWEVER, IF THIS IS THE LAST COND PAIR,
-;  A "DROPOFF" NIL IS NOT NEEDED, AND WE ARE GOING TO HAVE TO GENERATE
-;  A INSTRUCTION TO MOVE FROM IDEST TO DEST ANYWAY, WE CAN SAVE THE BRANCH
-;  BY COMPILING TO IDEST AND FALLING IN. 
-;	ANOTHER CONSIDERATION IS THAT WHEN GENERATING OUTPUT INTENDED FOR
-;  THE MICROCOMPILER, GOING DIRECTLY TO DEST CAN LEAD TO INEFFICIENT CODE
-;  OR CONFUSE THE MICRO-COMPILER.  SPECIFICALLY, HAVING EACH ACTION STORE
-;  IN D-RETURN OR D-NEXT-LIST WILL PRODUCE INEFFICIENT CODE COMPARED WITH
-;  DOING ONLY ONE STORE IN THOSE DESTINATIONS AT THE END OF THE COND.
-;  EACH ACTION STORING IN D-LAST NOT ONLY WOULD PRODUCE VERY INEFFICIENT CODE,
-;  BUT IT DOESNT BOTHER TO WORK AT ALL ANYWAY.
-		    (SETQ IDEST-TO-DEST-XFER-NEEDED
-				(OR IDEST-TO-DEST-XFER-NEEDED
-				   (AND (OR DROP-INTO-TAG (GET TAG 'USED))
-					(NOT (MEMQ DEST '(D-PDL D-IGNORE D-INDS))))))
-		    (SETQ DROPOFF-NIL-NEEDED
-			  (AND VALF (NOT NOFALLTHRU)))  ;NIL NEEDED IN CASE LAST PRED
-							;FALSE
-		    (SETQ EFFECTIVELY-LAST-PAIR
-			  (AND (NULL DROPOFF-NIL-NEEDED)	;DROPOFF IS "LAST PAIR"
-			       (OR LASTPAIR NOFALLTHRU)))	;IF PRESENT
-		    (SETQ TO-IDEST-P
-			  (OR (AND EFFECTIVELY-LAST-PAIR
-				   IDEST-TO-DEST-XFER-NEEDED)
-			      (AND GENERATING-MICRO-COMPILER-INPUT-P
-				   (NOT (MEMQ DEST '(D-PDL D-IGNORE D-INDS))))))
-		    (COND ((NULL TO-IDEST-P)
-			   (P2 (CAR CL) DEST)
-			   (COND ((OR (NULL EFFECTIVELY-LAST-PAIR)
-				      IDEST-TO-DEST-XFER-NEEDED)
-				   (OUTB (LIST 'BRANCH 'ALWAYS NIL NIL TAG2)))))
-			  (T
-			   (P2 (CAR CL) IDEST)
-			   (COND ((NULL EFFECTIVELY-LAST-PAIR)
-				   (OUTB (LIST 'BRANCH 'ALWAYS NIL NIL TAG)))
-				 (T (SETQ DROP-INTO-TAG T))) ))	;GOING TO DROP INTO TAG
-								;INSTEAD OF XFER
-		    (GO L5)))
-	     (P2 (CAR CL) 'D-IGNORE)
-             (SETQ CL (CDR CL))
-	     (GO L4)
-	L6   (COND (NOFALLTHRU (BARF ARGL
-				     '|unreachable COND clause|
-				     'WARN)
-			       (GO L7))
-		   (T (GO L1)))))
+))
 
 (DEFUN GOTAGS-SEARCH (TAG) (OR (ASSQ TAG GOTAGS) (BARF TAG '|Unknown GO-tag| 'DATA)))
 
@@ -1390,25 +1452,28 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 ;the number of things on the top of the stack which are being left
 ;there as values to return from the prog.
 (DEFUN OUTBRET (TAG PROGDESC NVALUES)
-    (PROG (TM)
+    (PROG (TM (EXITPROGDESC PROGDESC))
 	  (SETQ TM (GOTAGS-SEARCH TAG))
-	  (AND PROGDESC
-	       (LET ((N-UNBINDS 0) LAST-VARIABLE-UNBIND-PDL-LEVEL)
-		 (DO ((L PROGDESCS (CDR L)))
-		     ((EQ (CAR L) PROGDESC))
-		   (COND ((LISTP (PROGDESC-NBINDS (CAR L)))
-			  (SETQ N-UNBINDS (CAR (PROGDESC-NBINDS (CAR L))))
-			  (SETQ LAST-VARIABLE-UNBIND-PDL-LEVEL (PROGDESC-PDL-LEVEL (CAR L))))
-			 (T (SETQ N-UNBINDS (+ N-UNBINDS (PROGDESC-NBINDS (CAR L)))))))
-		 ;; LAST-VARIABLE-UNBIND-PDL-LEVEL is the level at start of PROG body,
-		 ;; and does not include the values we want to return.
-		 ;; PDLLVL at all times includes those values
-		 ;; since they are already on the stack.
-		 (COND (LAST-VARIABLE-UNBIND-PDL-LEVEL
-			 (POPPDL NVALUES (- PDLLVL NVALUES LAST-VARIABLE-UNBIND-PDL-LEVEL))
-			 (OUTPUT-UNBIND-TO-INDEX NVALUES)
-			 (MKPDLLVL (+ LAST-VARIABLE-UNBIND-PDL-LEVEL NVALUES -1))))
-		 (UNBIND 'D-IGNORE N-UNBINDS)))
+	  ;; If this is GO, set EXITPROGDESC to the progdesc of its containing PROG
+	  (OR PROGDESC (SETQ EXITPROGDESC (GOTAG-PROGDESC TM)))
+	  ;; If we are exiting any PROGs, unwind stacks to their levels.
+	  ;; Does not include the prog whose desc is EXITPROGDESC.
+	  (LET ((N-UNBINDS 0) LAST-VARIABLE-UNBIND-PDL-LEVEL)
+	    (DO ((L PROGDESCS (CDR L)))
+		((EQ (CAR L) EXITPROGDESC))
+	      (COND ((LISTP (PROGDESC-NBINDS (CAR L)))
+		     (SETQ N-UNBINDS (CAR (PROGDESC-NBINDS (CAR L))))
+		     (SETQ LAST-VARIABLE-UNBIND-PDL-LEVEL (PROGDESC-PDL-LEVEL (CAR L))))
+		    (T (SETQ N-UNBINDS (+ N-UNBINDS (PROGDESC-NBINDS (CAR L)))))))
+	    ;; LAST-VARIABLE-UNBIND-PDL-LEVEL is the level at start of PROG body,
+	    ;; and does not include the values we want to return.
+	    ;; PDLLVL at all times includes those values
+	    ;; since they are already on the stack.
+	    (COND (LAST-VARIABLE-UNBIND-PDL-LEVEL
+		   (POPPDL NVALUES (- PDLLVL NVALUES LAST-VARIABLE-UNBIND-PDL-LEVEL))
+		   (OUTPUT-UNBIND-TO-INDEX NVALUES)
+		   (MKPDLLVL (+ LAST-VARIABLE-UNBIND-PDL-LEVEL NVALUES -1))))
+	    (UNBIND 'D-IGNORE N-UNBINDS))
 	  ;; For a prog rettag, the pdl level should include
 	  ;; the number of values desired on the stack.
 	  (POPPDL NVALUES (- PDLLVL (GOTAG-PDL-LEVEL TM)))
@@ -1435,7 +1500,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		(OUTI '(MISC D-IGNORE POP-M-FROM-UNDER-N)))
 	       ((= NVALUES 1)
 		(OUTI `(MOVE D-PDL (QUOTE-VECTOR ',NPOPS)))
-		(OUTI '(MISC D-IGNORE SHRINK-PDL-SAVE-TOP)))
+		(OUTI '(MISC D-PDL SHRINK-PDL-SAVE-TOP)))
 	       (T
 		 (DO ((N 17 (+ N 17)))
 		     ;; N is number of pops we would have done if we now do
@@ -1465,7 +1530,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 		    (SETQ DROPTHRU NIL)))
 	     (OUTF X)))
 
-(DEFUN OUTI1 (X)			;USE THIS FOR OUTTPUTING INSTRUCTIONS
+(DEFUN OUTI1 (X)			;USE THIS FOR OUTPUTING INSTRUCTIONS
   (PROG NIL				;KNOWN TO TAKE DELAYED TRANSFERRS
 	(COND ((NULL DROPTHRU)
 		(RETURN (OUTF (LIST 'COMMENT X)))))
@@ -1562,6 +1627,14 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 				((EQ (CAR TEM) 'NAMED-LAMBDA)
 				 (GET-ARGDESC-PROP-FROM-LAMBDA-LIST (CADDR TEM)))
 				(T '((1005 (FEF-ARG-OPT FEF-QT-EVAL))))))
+			 ((AND (TYPEP TEM ':COMPILED-FUNCTION)
+			       (SETQ TEM (GET-MACRO-ARG-DESC-POINTER TEM)))
+			  ;; Use ADL in preference to %ARGS-INFO so that we
+			  ;; find things like FEF-ARG-FUNCTIONAL.
+			  ;; The only reason we would have an ADL if the
+			  ;; %ARGS-INFO would otherwise be correct
+			  ;; is if things like FEF-ARG-FUNCTIONAL are present.
+			  (GET-ARGDESC-PROP-FROM-ADL TEM))
 			 (T
 			  (SETQ TEM (%ARGS-INFO X))
 			  (COND ((BIT-TEST %ARG-DESC-INTERPRETED TEM)
@@ -1575,7 +1648,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 (DEFUN GET-ARGDESC-PROP-FROM-Q-ARGS-PROP (ARG-PROP FN-NAME)
   (PROG (ANS MIN-ARGS OPT-ARGS)
 	(COND ((NOT (= 0 (LOGAND %ARG-DESC-FEF-QUOTE-HAIR ARG-PROP)))
-	       (BARF FN-NAME '|Quoted argument pattern not grokked by compiler; you need an ARGDESC property.| 'WARN)))
+	       (GET-ARGDESC-PROP-FROM-ADL (GET-MACRO-ARG-DESC-POINTER (FSYMEVAL FN-NAME)))))
 	(COND ((NOT (= 0 (SETQ MIN-ARGS (#M LOGLDB #Q LDB %%ARG-DESC-MIN-ARGS ARG-PROP))))
 		(SETQ ANS (NCONC ANS (LIST (CONS MIN-ARGS '((FEF-ARG-REQ FEF-QT-EVAL))))))))
 	(COND ((NOT (= 0 (SETQ OPT-ARGS (- (#M LOGLDB #Q LDB %%ARG-DESC-MAX-ARGS ARG-PROP) MIN-ARGS))))
@@ -1601,7 +1674,7 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 	      ((MEMQ NEXT-ELEMENT '(&EVAL &QUOTE &QUOTE-DONTCARE))
 		(SETQ QUOTE-STATUS NEXT-ELEMENT)
 		(GO L1))
-	      ((EQ NEXT-ELEMENT '&REST)
+	      ((OR (EQ NEXT-ELEMENT '&REST) (EQ NEXT-ELEMENT '&KEY))
 		(SETQ REST-FLAG T)
 		(GO L1))
 	      ((MEMQ NEXT-ELEMENT LAMBDA-LIST-KEYWORDS)
@@ -1618,49 +1691,34 @@ L 	(COND ((NULL (CDR X)) (RETURN RTN)))
 			      (LIST 1 TOKEN-LIST))))
 	(COND (REST-FLAG (RETURN ANS)))
 	(GO L0)))
+
+(DEFUN GET-ARGDESC-PROP-FROM-ADL (ADL)
+  (LET (ARGDESC)
+    (DO ((L ADL (CDR L))
+	 ITEM
+	 SYNTAX
+	 QUOTE)
+	((NULL L) (NREVERSE ARGDESC))
+      (SETQ ITEM (CAR L))
+      (AND (BIT-TEST %FEF-NAME-PRESENT ITEM) (SETQ L (CDR L)))
+      (SETQ SYNTAX (MASK-FIELD %%FEF-INIT-OPTION ITEM))	;SKIP EXTRA INIT Q
+      (OR (= SYNTAX FEF-INI-NONE) (= SYNTAX FEF-INI-NIL) (= SYNTAX FEF-INI-SELF)
+	  (SETQ L (CDR L)))
+      (SETQ SYNTAX (MASK-FIELD %%FEF-ARG-SYNTAX ITEM))
+      (SETQ QUOTE
+	    (COND ((> (MASK-FIELD %%FEF-QUOTE-STATUS ITEM) FEF-QT-EVAL)
+		   '(FEF-QT-QT))
+		  (T '(FEF-QT-EVAL))))
+      (AND (BIT-TEST FEF-FUNCTIONAL-ARG ITEM) (PUSH 'FEF-FUNCTIONAL-ARG QUOTE))
+      (COND ((> SYNTAX FEF-ARG-REST)
+	     (RETURN (NREVERSE ARGDESC)))
+	    ((= SYNTAX FEF-ARG-REST)
+	     (RETURN (NRECONC ARGDESC `((1 (FEF-ARG-REST . ,QUOTE))))))
+	    ((= SYNTAX FEF-ARG-OPT)
+	     (PUSH `(1 (FEF-ARG-OPT . ,QUOTE)) ARGDESC))
+	    (T (PUSH `(1 (FEF-ARG-REQ . ,QUOTE)) ARGDESC))))))
 
 ;;;Testing functions
-
-;;; (CL FOO) compiles FOO, printing the compiled code on the terminal
-;;; instead of sending it to LAP.
-
-(IF-FOR-MACLISP
-;indent this so EDFN groups both definitions of CL as "one function".
- (DEFUN CL FEXPR (X) 		;RANDOM FCTN FOR TESTING COMPILER BY HAND
-       (PROG (Y HOLDPROG QCOMPILE-POST-PROC BARF-SPECIAL-LIST FUNCTIONS-DEFINED)
-	     (COND ((SETQ HOLDPROG (CADDR X))
-		    (SETQ QCMP-OUTPUT NIL)))
-	     (SETQ QCOMPILE-POST-PROC (FUNCTION (LAMBDA ()
-			(TERPRI) (PRINC '-------) (TERPRI))))
-	     (COND ((NULL X) (BARF X 'NOT-FCTN 'BARF))
-		   ((NULL (SETQ Y (GETL (CAR X) '(FEXPR EXPR))))
-		    (BARF X 'NO-FCTN-PROP 'BARF))
-		   (T (QCOMPILE0 (CADR Y) (CAR X) (CADR X))
-                      (AND HOLDPROG PEEP-ENABLE
-                           (PEEP QCMP-OUTPUT)))))) )
-
-(IF-FOR-LISPM
-(DEFUN CL (&QUOTE FUNCTION-BEING-PROCESSED &OPTIONAL &EVAL MICRO-COMPILE-P HOLDPROG)
-    (PKG-BIND "COMPILER"
-       (PROG (L-EXP QCOMPILE-POST-PROC TEM BARF-SPECIAL-LIST FUNCTIONS-DEFINED
-              (LAST-ERROR-FUNCTION FUNCTION-BEING-PROCESSED))
-	    (RESET-TEMPORARY-AREA FASD-TEMPORARY-AREA)
-	    (COND (HOLDPROG (SETQ QCMP-OUTPUT NIL)
-                            (COND ((NOT (FBOUNDP 'QCMP-OUTPUT))
-                                   (FSET 'QCMP-OUTPUT
-                                         (MAKE-ARRAY WORKING-STORAGE-AREA 'ART-Q-LIST 1000 NIL '(0))))
-                                  (T (STORE-ARRAY-LEADER 0 (FUNCTION QCMP-OUTPUT) 0)))))
-	    (SETQ QCOMPILE-POST-PROC (FUNCTION (LAMBDA ()
-			(TERPRI) (PRINC '-------) (TERPRI))))
-	    (COND ((AND (FBOUNDP FUNCTION-BEING-PROCESSED)
-			(LISTP (FSYMEVAL FUNCTION-BEING-PROCESSED)))
-		   (SETQ L-EXP (FSYMEVAL FUNCTION-BEING-PROCESSED)))
-		  ((SETQ TEM (GET FUNCTION-BEING-PROCESSED 'COMPILED-SEXP))
-		   (SETQ L-EXP TEM))
-		  (T (FERROR NIL "Can't find LAMBDA expression for ~S" FUNCTION-BEING-PROCESSED)))
-	    (QCOMPILE0 L-EXP FUNCTION-BEING-PROCESSED MICRO-COMPILE-P)
-            (AND HOLDPROG PEEP-ENABLE (PEEP (G-L-P (FUNCTION QCMP-OUTPUT))))))))
-	    
 
 ;Given the lap address of a variable, print out the name of the variable in a comment.
 ;Used when compiling a function and printing the lap code on the terminal.

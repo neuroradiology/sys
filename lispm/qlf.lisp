@@ -43,6 +43,14 @@
 				;pointers to which live in the FEF starting here.
 ;Lap pass 1 inserts things to define the quoted constants in the list here.
 ;(ENDLIST)			;Put CDR-NIL in last constant pointer.
+;(BREAKOFFS ('(:INTERNAL fnname 0) '(:INTERNAL fnname 1) ...))
+				;List quoted constants that ought to be
+				;replaced by pointers to FEFs somehow.
+				;On pass 2, each '(:internal ...) is rplaca'd
+				;with the fef index of where the internal fef ptr will go.
+				;The list structure is shared with the debugging-info
+				;entry INTERNAL-FEF-OFFSETS; this is how that entry
+				;gets the data it is supposed to have.
 ;(DEBUG-INFO debugging info)	;Optionally, specify the debugging information ALIST.
 ;				;The defined entry type now is (ARGLIST <arglist>), as in
 ;				;(DEBUG-INFO (ARGLIST (X &OPTIONAL Y)))
@@ -80,37 +88,24 @@
 ;		offset of the invisible pointer in the FEF with respect to
 ;		the first such invisible pointer.
 ;(QUOTE-VECTOR <s-exp>)   s-exp  placed in quote vector of FEF, and operand ref's it.
-
-
-(DECLARE (COND ((STATUS FEATURE LISPM))
-	       ((NULL (MEMQ 'NEWIO (STATUS FEATURES)))
-		(BREAK 'YOU-HAVE-TO-COMPILE-THIS-WITH-QCOMPL T))
-	       ((NULL (GET 'IF-FOR-MACLISP 'MACRO))
-		(LOAD '(MACROS > DSK LISPM))
-		(LOAD '(DEFMAC FASL DSK LISPM2))
-		(LOAD '(LMMAC > DSK LISPM2))
-		(LOAD '(QCDEFS > DSK LISPM))
-		(MACROS T))))	;SEND OVER THE REST OF THE MACROS IN THIS FILE
-
-(IF-FOR-MACLISP
-(DECLARE (FIXNUM (FASD-TABLE-ENTER NOTYPE NOTYPE))
-	 (NOTYPE (FASD-START-GROUP NOTYPE FIXNUM FIXNUM)
-		 (FASD-FIXED FIXNUM)
-		 (FASD-INITIALIZE-ARRAY FIXNUM NOTYPE)
-		 (FASD-INDEX FIXNUM)
-		 (FASD-EVAL FIXNUM)
-		 (FASD-NIBBLE FIXNUM)))
-)
+;		s-exp should have one of these forms:
+;		  (QUOTE object)            The object is stored in the FEF
+;		  (FUNCTION symbol)	    A fwding ptr to the fn cell is stored
+;		  (BREAKOFF-FUNCTION name)  The name is stored,
+;					    but the offset of this q is put into
+;					    the INTERNAL-FEF-OFFSETS debugging info item.
+;					    When (:INTERNAL thisfn n) is defined,
+;					    its definition replaces the name.
 
 (DECLARE (SPECIAL ADR SYMPTR SYMTAB QLP-A-D-L-DONE ADL-ORIGIN A-D-L-NEEDED-P
-  SPECVARS SPECVARS-BIND-COUNT LOW-HALF-Q LAP-DEBUG ;N-SVS
+  SPECVARS SPECVARS-BIND-COUNT LOW-HALF-Q BREAKOFF-FUNCTION-OFFSETS ;N-SVS
   MAX-ARGS MIN-ARGS SM-ARGS-NOT-EVALD REST-ARG HAIRY-INIT-FLAG S-V-BITMAP-ACTIVE 
   DATA-TYPE-CHECKING-FLAG LENGTH-OF-PROG PROG-ORG FCTN-NAME LAP-OUTPUT-AREA 
   BIND-CONS-AREA %FEF-HEADER-LENGTH FEF-NAME-PRESENT FEF-SV-BIT FEF-DES-DT 
   FEF-DES-EVALAGE FEF-ARG-SYNTAX FEF-INIT-OPTION LAP-MODE FASD-GROUP-LENGTH 
   %FEFH-NO-ADL %FEFH-FAST-ARG %FEFH-SV-BIND LAP-ADL-NOSTORE %FEFHI-SVM-ACTIVE
   LAP-NO-ADL LAP-LASTQ-MODIFIER FASL-OP-FRAME FASL-OP-STOREIN-FUNCTION-CELL 
-  LAP-FASD-NIBBLE-COUNT QUOTE-LIST CONSTANTS-PAGE QFEFHI-FAST-ARG-OPT-OPERATIVE
+  LAP-FASD-NIBBLE-COUNT QUOTE-LIST QUOTE-COUNT CONSTANTS-PAGE QFEFHI-FAST-ARG-OPT-OPERATIVE
   %ARG-DESC-FEF-QUOTE-HAIR %ARG-DESC-FEF-BIND-HAIR
   %ARG-DESC-QUOTED-REST %ARG-DESC-EVALED-REST 
   LAP-OUTPUT-BLOCK LAP-OUTPUT-BLOCK-LENGTH LAP-STORE-POINTER LAP-MACRO-FLAG
@@ -122,17 +117,20 @@
 
 (DECLARE (SPECIAL FUNCTIONS-REFERENCED))  ;LIST OF ALL FUNCTIONS REFERENCED & NOT DEFINED
 
-;LAP-MODE MAY BE QFASL, REL, OR COMPILE-TO-CORE.
+;LAP-MODE MAY BE QFASL, QFASL-NO-FDEFINE, REL, OR COMPILE-TO-CORE.
+;FOR QFASL-NO-FDEFINE, RETURNS FASL-TABLE INDEX OF FEF
 (DEFUN QLAPP (FCTN LAP-MODE)
   (PROG (SYMTAB ADR NBR SYMPTR QLP-A-D-L-DONE SPECVARS SPECVARS-BIND-COUNT LOW-HALF-Q
 	 MAX-ARGS MIN-ARGS SM-ARGS-NOT-EVALD REST-ARG HAIRY-INIT-FLAG
 	 DATA-TYPE-CHECKING-FLAG LENGTH-OF-PROG PROG-ORG FCTN-NAME 
 	 LAP-OUTPUT-AREA TEM LAP-NO-ADL LAP-LASTQ-MODIFIER ADL-ORIGIN A-D-L-NEEDED-P
-	 QUOTE-LIST S-V-BITMAP-ACTIVE ALLVARS FREEVARS QLP-DEBUG-INFO-PRESENT
-	 LAP-OUTPUT-BLOCK LAP-OUTPUT-BLOCK-LENGTH LAP-STORE-POINTER LAP-MACRO-FLAG)
+	 QUOTE-LIST QUOTE-COUNT S-V-BITMAP-ACTIVE ALLVARS FREEVARS QLP-DEBUG-INFO-PRESENT
+	 LAP-OUTPUT-BLOCK LAP-OUTPUT-BLOCK-LENGTH LAP-STORE-POINTER LAP-MACRO-FLAG
+	 BREAKOFF-FUNCTION-OFFSETS)
 	(SETQ LAP-OUTPUT-AREA 'MACRO-COMPILED-PROGRAM)
 	(SETQ MAX-ARGS (SETQ MIN-ARGS 0))
 	(SETQ SYMTAB (LIST NIL))
+	(SETQ QUOTE-COUNT 0)
 	(SETQ ADR 0)
 	(SETQ QLP-DEBUG-INFO-PRESENT 0)
 	(SETQ ALLVARS (CADDDR (CAR QCMP-OUTPUT))
@@ -150,41 +148,58 @@
 	(SETQ NBR (QLAP-ADJUST-SYMTAB))	;NUMBER BRANCHES TAKING EXTRA WD
 	(SETQ LENGTH-OF-PROG (+ ADR (+ NBR (* 2 (LENGTH QUOTE-LIST)))))
 	(SETQ SYMPTR SYMTAB)
+	(SETQ QUOTE-COUNT 0)
 	(SETQ ADR 0)
 	(SETQ ADL-ORIGIN (OR QLP-A-D-L-DONE 0))
 	(SETQ QLP-A-D-L-DONE NIL)
 	(QLAP-PASS2 FCTN)
-	(COND ((OR LOW-HALF-Q 
-		   (AND (EQ LAP-MODE 'QFASL)
-			(NOT (= 0 (LOGAND ADR 1)))))
-	       (LAP-OUTPUT-WORD 0)))
-	(COND (LAP-DEBUG (RETURN NIL))
-	      ((EQ LAP-MODE 'QFASL)
-	   #Q  (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))
-	   #M  (SETQ TEM (FASD-TABLE-ENTER 'FRAME-POINTER FCTN-NAME))
-	       (COND ((NOT (= 0 LAP-FASD-NIBBLE-COUNT))
-		      (BARF LAP-FASD-NIBBLE-COUNT 
-			    'LAP-FASD-NIBBLE-COUNT 
-			    'BARF)))
-		;; If this function is supposed to be a macro,
-		;; dump directions to cons MACRO onto the fef.
-	   #Q  (COND (LAP-MACRO-FLAG
-		       (FASD-START-GROUP T 1 FASL-OP-LIST)
-		       (FASD-NIBBLE 2)
-		       (FASD-CONSTANT 'MACRO)
-		       (FASD-START-GROUP NIL 1 FASL-OP-INDEX)
-		       (FASD-NIBBLE TEM)
-		       (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))))
-	       (FASD-STOREIN-FUNCTION-CELL FCTN-NAME TEM)
-	       (FASD-FUNCTION-END)
-	       (RETURN NIL))
-	   #Q ((EQ LAP-MODE 'COMPILE-TO-CORE)
-	       (FSET-CAREFULLY FCTN-NAME
-			       (COND (LAP-MACRO-FLAG (CONS 'MACRO LAP-OUTPUT-BLOCK))
-				     (T LAP-OUTPUT-BLOCK))))
-	   #Q ((EQ LAP-MODE 'REL)
-	       (QFASL-REL:DUMP-LAP-FSET FCTN-NAME LAP-OUTPUT-BLOCK))
-	   (T (FERROR NIL "~S is a bad lap mode" LAP-MODE)) )
+	;Don't call FASD with the temporary area in effect
+	(LET-IF QC-FILE-IN-PROGRESS ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))
+	  (COND ((OR LOW-HALF-Q 
+		     (AND (OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
+			  (NOT (= 0 (LOGAND ADR 1)))))
+		 (LAP-OUTPUT-WORD 0)))
+	  (COND ((EQ LAP-MODE 'QFASL)
+		 (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))
+		 (COND ((NOT (= 0 LAP-FASD-NIBBLE-COUNT))
+			(BARF LAP-FASD-NIBBLE-COUNT 
+			      'LAP-FASD-NIBBLE-COUNT 
+			      'BARF)))
+		  ;; If this function is supposed to be a macro,
+		  ;; dump directions to cons MACRO onto the fef.
+		 (COND (LAP-MACRO-FLAG
+			 (FASD-START-GROUP T 1 FASL-OP-LIST)
+			 (FASD-NIBBLE 2)
+			 (FASD-CONSTANT 'MACRO)
+			 (FASD-START-GROUP NIL 1 FASL-OP-INDEX)
+			 (FASD-NIBBLE TEM)
+			 (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))))
+		 (FASD-STOREIN-FUNCTION-CELL FCTN-NAME TEM)
+		 (FASD-FUNCTION-END)
+		 (RETURN NIL))
+		((EQ LAP-MODE 'QFASL-NO-FDEFINE)
+		 (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))
+		 (COND ((NOT (= 0 LAP-FASD-NIBBLE-COUNT))
+			(BARF LAP-FASD-NIBBLE-COUNT 
+			      'LAP-FASD-NIBBLE-COUNT 
+			      'BARF)))
+		  ;; If this function is supposed to be a macro,
+		  ;; dump directions to cons MACRO onto the fef.
+		 (COND (LAP-MACRO-FLAG
+			 (FASD-START-GROUP T 1 FASL-OP-LIST)
+			 (FASD-NIBBLE 2)
+			 (FASD-CONSTANT 'MACRO)
+			 (FASD-START-GROUP NIL 1 FASL-OP-INDEX)
+			 (FASD-NIBBLE TEM)
+			 (SETQ TEM (FASD-TABLE-ADD (NCONS NIL)))))
+		 (RETURN TEM))
+		((EQ LAP-MODE 'COMPILE-TO-CORE)
+		 (FSET-CAREFULLY FCTN-NAME
+				 (COND (LAP-MACRO-FLAG (CONS 'MACRO LAP-OUTPUT-BLOCK))
+				       (T LAP-OUTPUT-BLOCK))))
+		((EQ LAP-MODE 'REL)
+		 (QFASL-REL:DUMP-LAP-FSET FCTN-NAME LAP-OUTPUT-BLOCK))
+	     (T (FERROR NIL "~S is a bad lap mode" LAP-MODE)) ))
 )) 
 
 (DEFUN QLAP-PASS1 (PNTR)
@@ -219,10 +234,6 @@
        (DO ((P PNTR (CDR P))) ((NULL P))
 	 (QLP2-U (CAR P)))))
 
-(DEFUN LAP-STORE (Q)			;GETS HERE ONLY IN COLD MODE
-  (COND (LAP-DEBUG (PRINT Q))
-	(T (STOREQ LAP-OUTPUT-AREA Q))))
-
 (DEFUN LAP-D-OUT (S-EXP)
   (LAP-Q-OUT NIL NIL NIL S-EXP))
 
@@ -235,51 +246,34 @@
 ;OFFSET is added to the Q.  It is useful for making pointers to
 ;  value cells or function cells of symbols.
 (DEFUN LAP-Q-OUT (FLAG INVZ-P OFFSET S-EXP)
-  (PROG (TEM TEM1)
-	(COND (LAP-LASTQ-MODIFIER (LAP-MODIFY-LASTQ LAP-LASTQ-MODIFIER)))
-	(COND ((AND (NULL LAP-DEBUG)
-		    (EQ LAP-MODE 'QFASL))
-	       (FASD-CONSTANT S-EXP)
-	       (GO X1))
-    #Q	      ((AND (NULL LAP-DEBUG)
-		    (OR (EQ LAP-MODE 'COMPILE-TO-CORE)
-			(EQ LAP-MODE 'REL)))
-	       (COND ((>= LAP-STORE-POINTER LAP-OUTPUT-BLOCK-LENGTH)
-		      (BARF S-EXP 'DOESNT-FIT-IN-ALLOCATED-BLOCK 'BARF)))
-	       ;; Compiling to code => copy all lists to avoid temp area lossage.
-	       (SETQ S-EXP (SUBST NIL NIL S-EXP))
-	       (%P-STORE-CONTENTS-OFFSET S-EXP LAP-OUTPUT-BLOCK LAP-STORE-POINTER)
-	       (SETQ LAP-STORE-POINTER (1+ LAP-STORE-POINTER))
-	       (GO X1)))
-	(SETQ TEM (LIST 'NXTCDR))
-	(COND (FLAG (SETQ TEM (NCONC TEM (LIST FLAG)))))
-	(COND (INVZ-P (SETQ TEM (NCONC TEM (LIST INVZ-P)))))
-	(COND (OFFSET (SETQ TEM (NCONC TEM (LIST OFFSET)))))
-	(COND (LAP-DEBUG 
-		(SETQ TEM (NCONC TEM (LIST S-EXP))))
-	      (T (SETQ TEM1 (MAKE-Q-LIST 'INIT-LIST-AREA S-EXP))
-		 (COND (INVZ-P (SETQ TEM1 (CDR TEM1))))	;FLUSH OTHER DATA-TYPE
-		 (SETQ TEM (NCONC TEM TEM1))))
-	(RETURN (LAP-STORE TEM))
-     X1	(SETQ LAP-LASTQ-MODIFIER 
-	      (+ 300	;NXTCDR
-		 (+ (FAKE-QCOMPL (COND (FLAG 40) (T 0)))
-		    (+ (FAKE-QCOMPL 
-			 (COND ((NULL INVZ-P) 0)
-			       ((EQ INVZ-P 'QZEVCP) 20)
-			       ((EQ INVZ-P 'QZLOC) 400)
-			       (T (BARF INVZ-P 'LAP-Q-OUT 'BARF))) )
-		       (FAKE-QCOMPL (COND (OFFSET OFFSET) (T 0)) ) ))))
-	(RETURN NIL)
-	))
-
-(DEFUN FAKE-QCOMPL (X) X)	;WITHOUT THIS, QCOMPL GETS INTO INFINITE LOOP IN LAST FROM
-				; NUMTYPEP
+  (COND (LAP-LASTQ-MODIFIER (LAP-MODIFY-LASTQ LAP-LASTQ-MODIFIER)))
+  (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
+	 ;Don't call FASD with the temporary area in effect
+	 (LET-IF QC-FILE-IN-PROGRESS ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))
+	   (FASD-CONSTANT S-EXP)))
+	((OR (EQ LAP-MODE 'COMPILE-TO-CORE) (EQ LAP-MODE 'REL))
+	 (COND ((>= LAP-STORE-POINTER LAP-OUTPUT-BLOCK-LENGTH)
+		(BARF S-EXP 'DOESNT-FIT-IN-ALLOCATED-BLOCK 'BARF)))
+	 ;QC-TRANSLATE-FUNCTION may have consed some lists which end up here,
+	 ;such as the function's debug info, in the temporary area even though
+	 ;QC-FILE-LOAD-FLAG is set, so copy them out.
+	 (IF (EQ (%AREA-NUMBER S-EXP) QCOMPILE-TEMPORARY-AREA)
+	     (SETQ S-EXP (COPYTREE S-EXP)))
+	 (%P-STORE-CONTENTS-OFFSET S-EXP LAP-OUTPUT-BLOCK LAP-STORE-POINTER)
+	 (SETQ LAP-STORE-POINTER (1+ LAP-STORE-POINTER))))
+  (SETQ LAP-LASTQ-MODIFIER 
+	(+ 300					;NXTCDR
+	   (+ (COND (FLAG 40) (T 0))
+	      (+ (COND ((NULL INVZ-P) 0)
+		       ((EQ INVZ-P 'QZEVCP) 20)
+		       ((EQ INVZ-P 'QZLOC) 400)
+		       (T (BARF INVZ-P 'LAP-Q-OUT 'BARF)))
+		 (COND (OFFSET OFFSET) (T 0)) )))))
 
 (DEFUN LAP-MODIFY-LASTQ (CODE)
-  (COND ((EQ LAP-MODE 'QFASL)
+  (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
 	 (LAP-FASD-NIBBLE CODE))
-   #Q   (T
+	(T
 	 (LET ((OFFSET (LOGAND CODE 17))
 	       (IDX (1- LAP-STORE-POINTER)))
 	   (%P-DPB-OFFSET (LSH CODE -6) %%Q-CDR-CODE LAP-OUTPUT-BLOCK IDX)
@@ -300,41 +294,36 @@
 				 LAP-OUTPUT-BLOCK IDX))) ))))
 
 (DEFUN LAP-OUTPUT-WORD (WD)
-  (COND ((EQ LAP-MODE 'QFASL)
-	 (COND (LAP-DEBUG (PRINT WD))
-	       (T (LAP-FASD-NIBBLE WD))))
+  (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
+	 (LAP-FASD-NIBBLE WD))
 	((NULL LOW-HALF-Q) (SETQ LOW-HALF-Q WD))
-     #Q (T
+	(T
 	 (COND ((>= LAP-STORE-POINTER LAP-OUTPUT-BLOCK-LENGTH)
 		(BARF WD 'DOESNT-FIT-IN-ALLOCATED-BLOCK 'BARF)))
 	 (%P-DPB-OFFSET WD %%Q-HIGH-HALF LAP-OUTPUT-BLOCK LAP-STORE-POINTER)
 	 (%P-DPB-OFFSET LOW-HALF-Q %%Q-LOW-HALF LAP-OUTPUT-BLOCK LAP-STORE-POINTER)
 	 (SETQ LOW-HALF-Q NIL)
-	 (SETQ LAP-STORE-POINTER (1+ LAP-STORE-POINTER)))
-     #M (T (LAP-STORE (+ (LSH WD 16.) LOW-HALF-Q))
-	   (SETQ LOW-HALF-Q NIL))
-	))
+	 (SETQ LAP-STORE-POINTER (1+ LAP-STORE-POINTER)))))
 
 (DEFUN LAP-STORE-NXTNIL-CDR-CODE NIL 
-  (COND (LAP-DEBUG NIL)
-	(T
-	 (SETQ LAP-LASTQ-MODIFIER 
-	       (+ 200 (BOOLE 4 LAP-LASTQ-MODIFIER 300))))))
+  (SETQ LAP-LASTQ-MODIFIER (+ 200 (BOOLE 4 LAP-LASTQ-MODIFIER 300))))
 
 (DEFUN LAP-HEADER (Q-LENGTH UNBOXED-LENGTH)
   (AND (> Q-LENGTH 400)
        (BARF (- Q-LENGTH 400) '|You have been screwed!/
 Constants area of FEF is excessively long by| 'DATA))
-  (COND ((EQ LAP-MODE 'QFASL)
-	 (FASD-FUNCTION-HEADER FCTN-NAME)
-	 (FASD-START-GROUP NIL 3 FASL-OP-FRAME)
-	 (FASD-NIBBLE Q-LENGTH)
-	 (FASD-NIBBLE UNBOXED-LENGTH)
-	 (SETQ LAP-FASD-NIBBLE-COUNT 
-	       (+ Q-LENGTH (* 2 UNBOXED-LENGTH)))
-	 (FASD-NIBBLE LAP-FASD-NIBBLE-COUNT)
-	 (SETQ FASD-GROUP-LENGTH LAP-FASD-NIBBLE-COUNT))
- #Q     (T
+  (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
+	 ;Don't call FASD with the temporary area in effect
+	 (LET-IF QC-FILE-IN-PROGRESS ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))
+	   (IF (EQ LAP-MODE 'QFASL) (FASD-FUNCTION-HEADER FCTN-NAME))
+	   (FASD-START-GROUP NIL 3 FASL-OP-FRAME)
+	   (FASD-NIBBLE Q-LENGTH)
+	   (FASD-NIBBLE UNBOXED-LENGTH)
+	   (SETQ LAP-FASD-NIBBLE-COUNT 
+		 (+ Q-LENGTH (* 2 UNBOXED-LENGTH)))
+	   (FASD-NIBBLE LAP-FASD-NIBBLE-COUNT)
+	   (SETQ FASD-GROUP-LENGTH LAP-FASD-NIBBLE-COUNT)))
+	(T
 	  (SETQ LAP-OUTPUT-BLOCK			;CREATE THE FEF
 		(%ALLOCATE-AND-INITIALIZE
 		  DTP-FEF-POINTER		;DATA TYPE OF RETURNED POINTER
@@ -350,12 +339,10 @@ Constants area of FEF is excessively long by| 'DATA))
 						;Q WILL BE FILLED IN LATER.
 
 (DEFUN LAP-FASD-NIBBLE (N)
-  (SETQ LAP-FASD-NIBBLE-COUNT (1- LAP-FASD-NIBBLE-COUNT))
-  (FASD-NIBBLE N))
-
-(DEFUN LAP-LIST-SUM (X)
-  (COND (LAP-DEBUG X)
-	(T (LIST-SUM X))))
+  ;Don't call FASD with the temporary area in effect
+  (LET-IF QC-FILE-IN-PROGRESS ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))
+    (SETQ LAP-FASD-NIBBLE-COUNT (1- LAP-FASD-NIBBLE-COUNT))
+    (FASD-NIBBLE N)))
 
 (DEFUN LAP-ARGP (VARHOME)
   (MEMQ (VAR-KIND VARHOME) '(FEF-ARG-REQ FEF-ARG-OPT FEF-ARG-REST FEF-ARG-AUX)))
@@ -369,7 +356,10 @@ Constants area of FEF is excessively long by| 'DATA))
 	(SETQ FA (COMPUTE-FAST-OPT-Q))	;Compute QFEFHI-FAST-ARG-OPT-OPERATIVE
 	(SETQ A-D-L-NEEDED-P
 	      (OR (BIT-TEST %ARG-DESC-FEF-QUOTE-HAIR FA)	;Needed by interpreter
-		  (NOT QFEFHI-FAST-ARG-OPT-OPERATIVE)))))	;Needed by microcode
+		  (NOT QFEFHI-FAST-ARG-OPT-OPERATIVE)	;Needed by microcode
+		  (DOLIST (V ALLVARS)			;Needed for extra info on args
+		    (OR (LAP-ARGP V) (RETURN NIL))	;(such as &functional)
+		    (AND (VAR-MISC V) (RETURN T)))))))
 
 ;At the start of pass 2, when the MFEF pseudo is encountered,
 ;output the fixed header Qs of the fef.
@@ -388,10 +378,9 @@ Constants area of FEF is excessively long by| 'DATA))
 	 (SETQ QFEFHI-IPC (CONS '%FEFH-NO-ADL QFEFHI-IPC)))
      (SETQ QFEFHI-MISC (+ (LSH ADL-ORIGIN 15.)
 			  QLP-DEBUG-INFO-PRESENT
-			  (+ (FAKE-QCOMPL 
-			      (COND ((NOT (ZEROP ADL-ORIGIN))
+			  (+ (COND ((NOT (ZEROP ADL-ORIGIN))
                                      (LSH (QLEVAL 'DESC-LIST-ORG 'T) 7))
-				    (T 0)))
+				    (T 0))
 			     (SETQ LOCAL-BLOCK-LENGTH (QLEVAL 'LLOCBLOCK 'NIL)))))
      (AND (> LOCAL-BLOCK-LENGTH 100)
 	  (BARF (- LOCAL-BLOCK-LENGTH 100) '|You have been screwed!/
@@ -404,13 +393,13 @@ Local-variables block exceeds maximum length by| 'DATA))
      (LAP-HEADER (// UNBOXED-ORG 2)	;Q PART LENGTH
 		 (- QFEFHI-STORAGE-LENGTH (// UNBOXED-ORG 2)))
 						;UNBOXED PART LENGTH
-     (COND ((EQ LAP-MODE 'QFASL)
+     (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
 	     (SETQ PROG-ORG
-		   (LAP-D-OUT (#M LOGDPB #Q DPB %HEADER-TYPE-FEF %%HEADER-TYPE-FIELD
-			       (LAP-LIST-SUM QFEFHI-IPC))))
+		   (LAP-D-OUT (DPB %HEADER-TYPE-FEF %%HEADER-TYPE-FIELD
+				   (LIST-SUM QFEFHI-IPC))))
 	     (LAP-D-OUT QFEFHI-STORAGE-LENGTH))
 	   (T
-	    #Q (%P-DPB (LAP-LIST-SUM QFEFHI-IPC) %%HEADER-REST-FIELD LAP-OUTPUT-BLOCK)))
+	    (%P-DPB (LIST-SUM QFEFHI-IPC) %%HEADER-REST-FIELD LAP-OUTPUT-BLOCK)))
 	(LAP-D-OUT QFEFHI-FCTN-NAME)
 	(LAP-D-OUT QFEFHI-FAST-ARG-OPT)
 	(LAP-D-OUT QFEFHI-SV-BITMAP)
@@ -566,7 +555,8 @@ Local-variables block exceeds maximum length by| 'DATA))
 	      ((EQ (CAR WD) 'QTAG)
 	       (QLP2-DEFSYM (CADR WD) (// ADR 2))
 	       (COND ((EQ (CADR WD) 'QUOTE-BASE)
-		      (MAPC (FUNCTION QLP2-Q) QUOTE-LIST))) ;DUMP QUOTE TABLE
+		      (MAPC #'(LAMBDA (CONST-ELT) (QLP2-Q (CAR CONST-ELT)))
+			    QUOTE-LIST))) ;DUMP QUOTE TABLE
 	       (RETURN NIL))
 	      ((EQ (CAR WD) 'PARAM) (RETURN NIL))
 	      ((EQ (CAR WD) 'ENDLIST) 			;TERMINATE LIST THAT HAS JUST
@@ -587,6 +577,21 @@ Local-variables block exceeds maximum length by| 'DATA))
 	       (LAP-D-OUT (CDR WD))
 	       (LAP-STORE-NXTNIL-CDR-CODE)
 	       (GO X2))
+	      ((EQ (CAR WD) 'BREAKOFFS)
+	       ;; When we see the BREAKOFFS command,
+	       ;; we copy the fef offsets of where the ptrs to broken-off fns should go
+	       ;; into the cars of the list which is the cadr of the breakoffs command.
+	       ;; That list is shared with a debug-info item
+	       ;; which is supposed to contain a list of those offsets.
+	       (OR (= (LENGTH BREAKOFF-FUNCTION-OFFSETS) (LENGTH (CADR WD)))
+		   (BARF NIL '|wrong number of broken-off functions seen by Lap| 'BARF))
+		   ;Error check avoids writing a garbaged FEF which will cause things
+		   ;to die later.
+	       (DO ((OFFSETS (REVERSE BREAKOFF-FUNCTION-OFFSETS) (CDR OFFSETS))
+		    (L (CADR WD) (CDR L)))
+		   ((NULL L))
+		 (SETF (CAR L) (CAR OFFSETS)))
+	       (RETURN NIL))
 	      ((EQ (CAR WD) 'QUOTE)
 	       (LAP-D-OUT (CADR WD))
 	       (GO X2))
@@ -594,17 +599,18 @@ Local-variables block exceeds maximum length by| 'DATA))
 	       (LAP-Q-OUT NIL 'QZLOC '1 (CADR WD))
 	       (GO X2))
 	      ((EQ (CAR WD) 'FUNCTION)
-	       (LAP-Q-OUT NIL 'QZEVCP '2 (CADR WD))
-	       ;; Collect functions referenced
-	       (OR (NOT (SYMBOLP (CADR WD))) ;Just paranoia
-		   (FUNCTION-P (CADR WD))  ;defined in QCP1
-		   (LET #Q ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)) #M NIL 
-			(DO ((L FUNCTIONS-REFERENCED (CDR L)))
-			    ((NULL L)
-			     (SETQ FUNCTIONS-REFERENCED
-				   (CONS (LIST (CADR WD) FCTN-NAME) FUNCTIONS-REFERENCED)))
-			  (AND (EQ (CAAR L) (CADR WD))
-			       (RETURN (RPLACD (CAR L) (CONS FCTN-NAME (CDAR L))))))))
+	       (IF (SYMBOLP (CADR WD))
+		   (LAP-Q-OUT NIL 'QZEVCP '2 (CADR WD))
+		   (LAP-Q-OUT NIL 'QZEVCP NIL 
+			      (IF (EQ LAP-MODE 'COMPILE-TO-CORE)
+				  (FDEFINITION-LOCATION (CADR WD))
+				  (CONS EVAL-AT-LOAD-TIME-MARKER
+					`(FDEFINITION-LOCATION ',(CADR WD))))))
+	       (FUNCTION-REFERENCED (CADR WD) FCTN-NAME)
+	       (GO X2))
+	      ((EQ (CAR WD) 'BREAKOFF-FUNCTION)
+	       (PUSH (// ADR 2) BREAKOFF-FUNCTION-OFFSETS)
+	       (LAP-D-OUT (CADR WD))
 	       (GO X2))
 	      ((EQ (CAR WD) 'TAG)
 	       (LAP-D-OUT (QLEVAL (CADR WD) T))
@@ -620,6 +626,16 @@ Local-variables block exceeds maximum length by| 'DATA))
 		 (RETURN NIL))
 		(T (RETURN T)))	;ADVANCE TO UNBOXED AREA
      X2   (SETQ ADR (+ 2 ADR))))
+
+(DEFUN FUNCTION-REFERENCED (WHAT BY)
+  ;; Collect functions referenced
+  (OR (FUNCTION-P WHAT)				;defined in QCP1
+      (LET ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA)
+	    (ENTRY (ASSOC WHAT FUNCTIONS-REFERENCED)))
+	(SETQ BY (COPYTREE BY))			;Could be (:METHOD ...)
+	(IF ENTRY
+	    (RPLACD ENTRY (CONS BY (CDR ENTRY)))
+	    (PUSH (LIST (COPYTREE WHAT) BY) FUNCTIONS-REFERENCED)))))
 
 ;Output the block of forwarding pointers to value cells of special variables.
 ;The flag bit is set in each one which is not bound at function entry.
@@ -658,7 +674,7 @@ Local-variables block exceeds maximum length by| 'DATA))
 			      (SYMEVAL (VAR-TYPE V))
 			      (SYMEVAL (VAR-EVAL V))
 			      (SYMEVAL (CAR (VAR-INIT V)))
-			      (LAP-LIST-SUM (VAR-MISC V)))))
+			      (LIST-SUM (VAR-MISC V)))))
 	   (SETQ ADR (+ 2 ADR))
 	   ;; Now output the initialization data, if any.
 	   (SETQ INTL (VAR-INIT V))
@@ -700,6 +716,8 @@ Local-variables block exceeds maximum length by| 'DATA))
 	   ((MEMQ (CAR WD)
 		  '(QUOTE LOCATIVE-TO-S-V-CELL FIXE TAG))
 	    (RETURN (SETQ ADR (+ 2 ADR))))
+	   ((EQ (CAR WD) 'BREAKOFFS) 
+	    (RETURN NIL))
 	   ((EQ (CAR WD) 'ADI-CALL)
 		(LAP-P1-ADI (CDR WD))
 		(RETURN NIL))
@@ -786,37 +804,48 @@ MFEF1(SETQ ADR (+ ADR (* 2 %FEF-HEADER-LENGTH)))
 	((EQ (CAR ADR) 'QUOTE-VECTOR)
 	 (QADD (CADR ADR)))))
 
+;; On pass 1, add an entry for the constant X to the quote vector if necessary.
+;; It is necessary if X is not in the constants page, and not already in the
+;; quote vector,
+;; or if X is a load-time eval.
 (DEFUN QADD (X) 
   (LET ((ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON T))
-    (PROG NIL 
-	(COND ((NULL X) (RETURN NIL))
-	      ((QFIND-CONSTANTS-PAGE X) (RETURN X))
-	      ((NOT (MEMBER X QUOTE-LIST))
-	       (SETQ QUOTE-LIST (CONS X QUOTE-LIST))))
-	(RETURN X))))
+    (OR (NULL X)
+	(QFIND-CONSTANTS-PAGE X)
+	(PROGN (SETQ QUOTE-COUNT (1+ QUOTE-COUNT))
+	       (AND (NOT (CONTAINS-LOAD-TIME-EVAL X)) (ASSOC X QUOTE-LIST)))
+	(PUSH (CONS X QUOTE-COUNT) QUOTE-LIST))
+    X))
 
+;; Return position of ITEM in constants page, or NIL if it doesn't appear there.
 (DEFUN QFIND-CONSTANTS-PAGE (ITEM)
   (AND (EQ (CAR ITEM) 'QUOTE)
        (FIND-POSITION-IN-LIST-EQUAL (CADR ITEM) CONSTANTS-PAGE)))
 
-(DEFUN QFIND (ITEM Q-LIST)
-  (PROG (TEM)
-	(SETQ TEM 0)
-     L	(COND ((NULL Q-LIST) (RETURN NIL))
-	      ((EQUAL ITEM (CAR Q-LIST)) (RETURN TEM)))
-	(SETQ TEM (1+ TEM))
-	(SETQ Q-LIST (CDR Q-LIST))
-	(GO L)))
- 
+;; Return T if FORM contains a load-time eval (#,) or other special
+;; marker that means it should not be made EQ to things that look equal.
+(DEFUN CONTAINS-LOAD-TIME-EVAL (FORM)
+  (DO F FORM (CDR F) (ATOM F)
+    (AND (OR (AND FASD-MAGIC-AREAS-ALIST (ASSQ (%AREA-NUMBER F) FASD-MAGIC-AREAS-ALIST))
+	     (IF (ATOM (CAR F)) (ASSQ (CAR F) FASD-MARKERS-ALIST)
+		 (CONTAINS-LOAD-TIME-EVAL (CAR F))))
+	 (RETURN T))))
+
 (DEFUN LAP-QUOTE-ADR (ITEM)
-  (LET ((ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON T))
-    (PROG (TM) 
-	(COND ((SETQ TM (QFIND-CONSTANTS-PAGE ITEM))
-	       (RETURN (+ TM (GET 'CONST-PAGE 'QLVAL))))
-	      ((SETQ TM (QFIND ITEM QUOTE-LIST))
-	       (RETURN (+ TM (QLEVAL 'QUOTE-BASE T))))
-	      (T (BARF ITEM 'NOT-ON-QUOTE-LIST 'BARF)
-		 (RETURN 0))))))
+  (LET ((ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON T)
+	TM)
+    (COND ((SETQ TM (QFIND-CONSTANTS-PAGE ITEM))
+	   (+ TM (GET 'CONST-PAGE 'QLVAL)))
+	  ((PROGN (SETQ QUOTE-COUNT (1+ QUOTE-COUNT))
+		  (DO ((IDX 0 (1+ IDX)) (QUOTE-LIST QUOTE-LIST (CDR QUOTE-LIST)))
+		      ((NULL QUOTE-LIST) (SETQ TM NIL))
+		    (AND (OR (NOT (CONTAINS-LOAD-TIME-EVAL ITEM))
+			     (= QUOTE-COUNT (CDAR QUOTE-LIST)))
+			 (EQUAL ITEM (CAAR QUOTE-LIST))
+			 (RETURN (SETQ TM IDX)))))
+	   (+ TM (QLEVAL 'QUOTE-BASE T)))
+	  (T (BARF ITEM 'NOT-ON-QUOTE-LIST 'BARF)
+	     0))))
 
 ;Var is either the name or the index of a special variable.
 (DEFUN LAP-SPECIAL-ADR (VAR)

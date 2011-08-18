@@ -195,16 +195,9 @@
 	  REST-FLAG LAMBDA-LIST SAVED-LAMBDA-LIST)
 
 RETRY	(COND ((NUMBERP FORM) (RETURN FORM))
-	      ((SYMBOLP FORM)
-	       (RETURN
-		(COND ((OR (BOUNDP FORM)
-			   (AND (FBOUNDP 'TRAPPING-ENABLED-P) ;GO AHEAD AN REFERENCE IT
-				(TRAPPING-ENABLED-P)))   ;TAKING TRAP TO REACH ERROR HANDLER
-		       (SYMEVAL FORM))
-		      (T (FERROR NIL "The variable ~S is unbound" FORM)))))
-	      ((STRINGP FORM) (RETURN FORM))			;STRING SELF-EVALUATES
+	      ((SYMBOLP FORM) (RETURN (SYMEVAL FORM)))
+	      ((STRINGP FORM) (RETURN FORM))
 	      ((NOT (LISTP FORM))
-	       ;; This RETURN would be MULTIPLE-VALUE-RETURN if that would compile.
 	       (RETURN (CERROR T NIL ':INVALID-FORM
 			       "~S is not a valid form" FORM))))
 ;;; Drops through.
@@ -213,13 +206,7 @@ RETRY	(COND ((NUMBERP FORM) (RETURN FORM))
 LST	(SETQ FCTN (CAR FORM) ARGL (CDR FORM))
 FRETRY
 	(COND ((SYMBOLP FCTN)
-	       (COND ((OR (FBOUNDP FCTN)
-			  (AND (FBOUNDP 'TRAPPING-ENABLED-P)
-			       (TRAPPING-ENABLED-P)))
-		      (SETQ FCTN (FSYMEVAL FCTN)))
-		     (T 
-		      (FSET FCTN (CERROR T NIL ':UNDEFINED-FUNCTION
-					 "The function ~S is undefined" FCTN))))
+	       (SETQ FCTN (FSYMEVAL FCTN))
 	       (GO FRETRY)))
 	(SETQ CFCTN FCTN)
 FCLOSED
@@ -314,6 +301,7 @@ INTERP	(SETQ TEM (%DATA-TYPE CFCTN))
 	(COND ((LISTP CFCTN)
 	       (COND ((OR (EQ (CAR CFCTN) 'LAMBDA)
 			  (EQ (CAR CFCTN) 'NAMED-LAMBDA)
+			  (EQ (CAR CFCTN) 'NAMED-SUBST)
 			  (EQ (CAR CFCTN) 'SUBST))
 		      (GO LAMBDA))
 		     ((AND (EQ FCTN CFCTN) (EQ (CAR CFCTN) 'MACRO))
@@ -342,14 +330,17 @@ INTERP	(SETQ TEM (%DATA-TYPE CFCTN))
 	       (SETQ FCTN (SYSTEM:MICRO-CODE-ENTRY-AREA (%POINTER CFCTN)))
 	       (GO FRETRY)))	  ;Not really microcoded now.
 	(SETQ FCTN (CERROR T NIL ':INVALID-FUNCTION
-			   "The function ~S has a function definition which is invalid"
+			   (IF (SYMBOLP (CAR FORM))
+			       "The function ~S has a function definition which is invalid"
+			       "The object ~S is not a valid function")
 			   (CAR FORM)))
 	(GO FRETRY)
 
 ;;; Come here when calling a lambda-function (or a closure of one).
 ;;; Analyse the lambda list to determine which args to evaluate.
 LAMBDA	(SETQ LAMBDA-LIST
-	      (COND ((EQ (CAR CFCTN) 'NAMED-LAMBDA)
+	      (COND ((OR (EQ (CAR CFCTN) 'NAMED-LAMBDA)
+			 (EQ (CAR CFCTN) 'NAMED-SUBST))
 		     (CADDR CFCTN))
 		    (T (CADR CFCTN))))	;FIRST PASS TO CHECK ON REST STUFF
 	(SETQ SAVED-LAMBDA-LIST LAMBDA-LIST)	;SAVE FOR SECOND PASS.
@@ -357,22 +348,25 @@ LAMBDA	(SETQ LAMBDA-LIST
 	;; and if so, whether it is evaluated.
 	(SETQ QUOTE-STATUS '&EVAL)
 	(SETQ NWADI 0)
-LAMBP1	(COND ((OR (NULL LAMBDA-LIST) (EQ (CAR LAMBDA-LIST) '&AUX))
+LAMBP1	(COND ((OR (NULL LAMBDA-LIST)
+		   (EQ (CAR LAMBDA-LIST) '&AUX)
+		   (EQ (CAR LAMBDA-LIST) '&KEY))
 	       (GO LAMBP2))
 	      ((MEMQ (CAR LAMBDA-LIST) 
 		     '(&EVAL &QUOTE &QUOTE-DONTCARE))
 	       (SETQ QUOTE-STATUS (CAR LAMBDA-LIST)))
 	      ((EQ (CAR LAMBDA-LIST) '&REST)
 	       (SETQ REST-FLAG T))
+	      ((MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS))
 	      (REST-FLAG
 		(COND ((NOT (MEMQ QUOTE-STATUS '(&EVAL &QUOTE-DONTCARE)))
 		       ;; If the function has a quoted rest argument,
 		       ;; we must call it with adi.
 		       (%ASSURE-PDL-ROOM 2)
 		       (%PUSH 0)
-		       (%PUSH 14000000)			;ADIFEX
-		       (SETQ NWADI 1)			;also used as flag at LAMBX1
-		       (GO LAMBP2)))))
+		       (%PUSH 14000000)		;ADIFEX
+		       (SETQ NWADI 1)))		;also used as flag at LAMBX1
+		(GO LAMBP2)))
 	(SETQ LAMBDA-LIST (CDR LAMBDA-LIST))
 	(GO LAMBP1)
 
@@ -384,17 +378,19 @@ LAMBP2	(%OPEN-CALL-BLOCK FCTN NWADI 4)
 	(SETQ REST-FLAG NIL)
 LAMBLP	(COND ((ATOM ARGL)
 	       (COND ((= NWADI 1) (GO REST))
-		     (T (GO CALL))))
-	      ((EQ (CAR LAMBDA-LIST) '&AUX)
-	       (SETQ LAMBDA-LIST NIL))
-	      ((MEMQ (CAR LAMBDA-LIST) 
-		     '(&EVAL &QUOTE &QUOTE-DONTCARE))
-	       (SETQ QUOTE-STATUS (CAR LAMBDA-LIST))
-	       (GO LAMBL1))
-	      ((EQ (CAR LAMBDA-LIST) '&REST)
-	       (SETQ REST-FLAG T)
-	       (GO LAMBL1))
-	      ((MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS) (GO LAMBL1)))
+		     (T (GO CALL)))))
+	(AND LAMBDA-LIST
+	     (COND ((OR (EQ (CAR LAMBDA-LIST) '&AUX)
+			(EQ (CAR LAMBDA-LIST) '&KEY))
+		    (SETQ LAMBDA-LIST NIL))
+		   ((MEMQ (CAR LAMBDA-LIST) 
+			  '(&EVAL &QUOTE &QUOTE-DONTCARE))
+		    (SETQ QUOTE-STATUS (CAR LAMBDA-LIST))
+		    (GO LAMBL1))
+		   ((EQ (CAR LAMBDA-LIST) '&REST)
+		    (SETQ REST-FLAG T)
+		    (GO LAMBL1))
+		   ((MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS) (GO LAMBL1))))
 	;; Here if next thing in lambda list is a variable, not a keyword.
 	;; Now we know whether the argument needs to be evaluated, etc.
 	(AND REST-FLAG (GO LAMBRST))
@@ -408,11 +404,16 @@ LAMBLP	(COND ((ATOM ARGL)
 LAMBL1	(SETQ LAMBDA-LIST (CDR LAMBDA-LIST))
 	(GO LAMBLP)
 
-LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
+LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE)
+	       (GO REST))
 	      (T
 	       (SETQ N-ARGS (LENGTH ARGL))
 	       (GO SIMPLE0)))
 ))
+
+;;; LISP-REINITIALIZE also sets this back.  This is here for the source file
+;;; name recording.
+(DEFF EVAL #'*EVAL)
 
 (DEFUN EVALHOOK (FORM EVALHOOK) ;EVALHOOK IS &SPECIAL
   (BIND (FUNCTION-CELL-LOCATION 'EVAL) (FUNCTION EVALHOOK1))
@@ -477,14 +478,20 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 		  (%ACTIVATE-OPEN-CALL-BLOCK)))
 	     ((OR (EQ (CAR FCTN) 'LAMBDA)
                   (EQ (CAR FCTN) 'SUBST)
+                  (EQ (CAR FCTN) 'NAMED-SUBST)
 		  (EQ (CAR FCTN) 'NAMED-LAMBDA))
-	      (PROG* (OPTIONALF TEM RESTF INIT
+	      (PROG* (OPTIONALF TEM RESTF INIT THIS-RESTF
 				(FCTN (COND ((EQ (CAR FCTN) 'NAMED-LAMBDA) (CDR FCTN))
+					    ((EQ (CAR FCTN) 'NAMED-SUBST) (CDR FCTN))
 					    (T FCTN)))
 				(LAMBDA-LIST (CADR FCTN))
 				(LOCAL-DECLARATIONS LOCAL-DECLARATIONS)
 				(DT-STATUS '&DT-DONTCARE)
-				(VALUE-LIST A-VALUE-LIST))
+				(VALUE-LIST A-VALUE-LIST)
+				MISSING-REQ-KEYS
+				KEYNAMES KEYVALUES KEYINITS KEYKEYS KEYOPTFS KEYFLAGS
+				KEY-SUPPLIED-FLAGS
+				ALLOW-OTHER-KEYS)
 		     (SETQ FCTN (CDDR FCTN))	;throw away lambda list
 		     (AND (CDR FCTN) (STRINGP (CAR FCTN)) (POP FCTN))	;and doc string.
 		     ;; Process any (DECLARE) at the front of the function.
@@ -497,12 +504,15 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 		L    (COND ((NULL VALUE-LIST) (GO LP1))
 			   ((OR (NULL LAMBDA-LIST)
 				(EQ (CAR LAMBDA-LIST) '&AUX)) 
-			    (GO TOO-MANY-ARGS))
+			    (COND (RESTF (GO LP1))
+				  (T (GO TOO-MANY-ARGS))))
+			   ((EQ (CAR LAMBDA-LIST) '&KEY)
+			    (GO KEY))
 			   ((EQ (CAR LAMBDA-LIST) '&OPTIONAL)
 			    (SETQ OPTIONALF T)
 			    (GO L1))		    ;Do next value.
 			   ((EQ (CAR LAMBDA-LIST) '&REST)
-			    (SETQ RESTF T)
+			    (SETQ THIS-RESTF T)
 			    (GO L1))		    ;Do next value.
 			   
 			   ((MEMQ (CAR LAMBDA-LIST)
@@ -521,22 +531,100 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 				   (AND (NULL (CADDAR LAMBDA-LIST)) (GO BAD-LAMBDA-LIST))
 				   (BIND (VALUE-CELL-LOCATION (CADDAR LAMBDA-LIST)) T))))
 			   (T (GO BAD-LAMBDA-LIST)))
-		     ; Get here if there was a real value in (CAR LAMBDA-LIST).  It is in TEM.
-		     (COND (RESTF (SETQ INIT VALUE-LIST)
-				  (GO LP3)))
+		     ;; Get here if there was a real argname in (CAR LAMBDA-LIST).
+		     ;;  It is in TEM.
 		     (AND (NULL TEM) (GO BAD-LAMBDA-LIST))
+		     (COND (RESTF (GO BAD-LAMBDA-LIST))	;Something follows a &REST arg???
+			   (THIS-RESTF		;This IS the &REST arg.
+			    (BIND (LOCF (SYMEVAL TEM)) VALUE-LIST)
+			    ;; We don't clear out VALUE-LIST
+			    ;; in case keyword args follow.
+			    (SETQ THIS-RESTF NIL RESTF T)
+			    (GO L1)))
 		     (BIND (VALUE-CELL-LOCATION TEM) (CAR VALUE-LIST))
 		     (SETQ VALUE-LIST (CDR VALUE-LIST))
 		L1   (SETQ LAMBDA-LIST (CDR LAMBDA-LIST))
 		     (GO L)
-		     
-	        LP1  (COND ((NULL LAMBDA-LIST) (GO EX1)) ;HERE AFTER VALUES ARE USED UP.
-			   ((MEMQ (CAR LAMBDA-LIST) '(&OPTIONAL &REST &AUX))
+
+		KEY  (SETF (VALUES NIL NIL LAMBDA-LIST NIL NIL
+				   KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS
+				   ALLOW-OTHER-KEYS)
+			   (DECODE-KEYWORD-ARGLIST LAMBDA-LIST))
+		     ;; Make a list of all required keywords we haven't seen yet.
+		     (SETQ MISSING-REQ-KEYS
+			   (SUBSET-NOT #'PROG2 KEYKEYS KEYOPTFS))
+		     ;; Make alist of (keyword supplied-flag-var supplied-this-time-p)
+		     (DO ((KEYL KEYKEYS (CDR KEYL))
+			  (FLAGL KEYFLAGS (CDR FLAGL)))
+			 ((NULL KEYL))
+		       (AND (CAR FLAGL)
+			    (PUSH (LIST (CAR KEYL) (CAR FLAGL) NIL)
+				  KEY-SUPPLIED-FLAGS)))
+
+		     (SETQ KEYVALUES (MAKE-LIST (LENGTH KEYNAMES)))
+		     ;; Now look at what keyword args were actually supplied.
+		     ;; Set up KEYVALUES to contain values corresponding
+		     ;; with the variable names in KEYNAMES.
+		     (DO ((VL VALUE-LIST (CDDR VL))
+			  KEYWORD)
+			 ((NULL VL))
+		       (OR (CDR VL)
+			   (FERROR ':BAD-KEYWORD-ARGLIST
+				   "No argument after keyword ~S"
+				   (CAR VL)))
+		       (SETQ KEYWORD (CAR VL))
+		       RETRY
+		       (LET ((TEM (FIND-POSITION-IN-LIST KEYWORD KEYKEYS)))
+			 (COND (TEM
+				(SETF (NTH TEM KEYVALUES) (CADR VL))
+				(SETF (NTH TEM KEYINITS) NIL)
+				(SETQ MISSING-REQ-KEYS
+				      (DELQ KEYWORD MISSING-REQ-KEYS))
+				(LET ((TEM1 (ASSQ KEYWORD KEY-SUPPLIED-FLAGS)))
+				  (AND TEM1 (SETF (CADDR TEM1) T))))
+			       ((NOT ALLOW-OTHER-KEYS)
+				(SETQ KEYWORD (CERROR T NIL ':UNDEFINED-ARG-KEYWORD
+						      "Keyword arg keyword ~S unrecognized"
+						      KEYWORD))
+				(AND KEYWORD (GO RETRY))))))
+		     ;; Eval the inits of any keyword args that were not supplied.
+		     (DO ((KVS KEYVALUES (CDR KVS))
+			  (KIS KEYINITS (CDR KIS)))
+			 ((NULL KVS))
+		       (AND (CAR KIS)
+			    (RPLACA KVS (EVAL (CAR KIS)))))
+		     ;; Bind the supplied-flags of the optional keyword args.
+		     ;; Can't use DO here because the bindings must stay around.
+		KEY1 (COND (KEY-SUPPLIED-FLAGS
+			    (BIND (LOCF (SYMEVAL (CADAR KEY-SUPPLIED-FLAGS)))
+				  (CADDAR KEY-SUPPLIED-FLAGS))
+			    (POP KEY-SUPPLIED-FLAGS)
+			    (GO KEY1)))
+		     ;; If any required keyword args were not specified, barf.
+		     (MAPCAR #'(LAMBDA (KEYWORD)
+				 (SETF (NTH (FIND-POSITION-IN-LIST KEYWORD KEYKEYS)
+					    KEYVALUES)
+				       (CERROR T NIL ':MISSING-KEYWORD-ARG
+					       "The required keyword arg ~S was not supplied"
+					       KEYWORD)))
+			     MISSING-REQ-KEYS)
+		     ;; Keyword args always use up all the values that are left...
+
+		     ;; Here when all values used up.
+	        LP1  (COND ((NULL LAMBDA-LIST) (GO EX1))
+			   ((EQ (CAR LAMBDA-LIST) '&REST)
+			    (AND RESTF (GO BAD-LAMBDA-LIST))
+			    (SETQ THIS-RESTF T)
+			    (GO LP2))
+			   ((EQ (CAR LAMBDA-LIST) '&KEY)
+			    (GO KEY))
+			   ((MEMQ (CAR LAMBDA-LIST) '(&OPTIONAL &AUX))
 			    (SETQ OPTIONALF T)		;SUPPRESS TOO FEW ARGS ERROR
 			    (GO LP2))
 			   ((MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS)
 			    (GO LP2))
-			   ((AND (NULL OPTIONALF) (NULL RESTF))
+			   ((AND (NULL OPTIONALF) (NULL THIS-RESTF))
+			    (AND RESTF (GO BAD-LAMBDA-LIST))
 			    (GO TOO-FEW-ARGS))
 			   ((ATOM (CAR LAMBDA-LIST)) (SETQ TEM (CAR LAMBDA-LIST))
 			    (SETQ INIT NIL))
@@ -550,26 +638,29 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 			   (T (GO BAD-LAMBDA-LIST)))
 		LP3  (AND (NULL TEM) (GO BAD-LAMBDA-LIST))
 		     (BIND (VALUE-CELL-LOCATION TEM) INIT)
+		     (AND THIS-RESTF (SETQ RESTF T))
+		     (SETQ THIS-RESTF NIL)
 		LP2  (SETQ LAMBDA-LIST (CDR LAMBDA-LIST))
 		     (GO LP1)
-		     
-		EX1  (DO ((L FCTN (CDR L)))
-			 ((NULL (CDR L))
-			  (RETURN-FROM APPLY-LAMBDA
-				       (MULTIPLE-VALUE-RETURN (EVAL (CAR L)))))
-		       (EVAL (CAR L)))))
+
+		EX1  ;; Here to evaluate the body.
+		     ;; First bind the keyword args if any.
+		     (PROGV KEYNAMES KEYVALUES
+			    (DO ((L FCTN (CDR L)))
+				((NULL (CDR L))
+				 (RETURN-FROM APPLY-LAMBDA (EVAL (CAR L))))
+			      (EVAL (CAR L))))))
              ;; *** Who put this in and what could they possibly imagine it does? ***
 	     ;; ANSWER: I not only imagined, but verified,
 	     ;; that this makes it possible to apply a macro
 	     ;; in a way that works reasonably if the macro "evals its args".
 	     ;;*** Yes, but it completely shafts you to the wall in the usual case ***
 	     ((EQ (CAR FCTN) 'MACRO)
-              (CERROR T NIL NIL
-		      "Funcalling the macro ~S - type c-C to attempt to kludge it via EVAL"
+              (CERROR T NIL 'KLUDGE-MACRO-VIA-EVAL
+		      "Funcalling the macro ~S - type Resume to attempt to kludge it via EVAL"
 		      (EH:FUNCTION-NAME (CDR FCTN)))
-	      (MULTIPLE-VALUE-RETURN
-                   (EVAL (CONS FCTN (MAPCAR (FUNCTION (LAMBDA (ARG) `',ARG))
-                                            A-VALUE-LIST)))))
+	      (RETURN-FROM APPLY-LAMBDA
+			   (EVAL (CONS FCTN (MAPCAR #'(LAMBDA (ARG) `',ARG) A-VALUE-LIST)))))
 	     )
        BAD-FUNCTION
        ;; COND can drop through to here for a totally unrecognized function.
@@ -586,20 +677,28 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 		     "~S has an invalid LAMBDA list" FCTN))
        RETRY
        (AND (LISTP FCTN) (GO TAIL-RECURSE))
-       (MULTIPLE-VALUE-RETURN
-	 (APPLY FCTN A-VALUE-LIST))
+       (RETURN (APPLY FCTN A-VALUE-LIST))
 
        TOO-FEW-ARGS
-       (MULTIPLE-VALUE-RETURN 
-	 (CERROR T NIL ':WRONG-NUMBER-OF-ARGUMENTS
-		 "Function ~S called with only ~D argument~1G~P"
-		 FCTN (LENGTH A-VALUE-LIST)))
+       (RETURN (CERROR T NIL ':WRONG-NUMBER-OF-ARGUMENTS
+		       "Function ~S called with only ~D argument~1G~P"
+		       FCTN (LENGTH A-VALUE-LIST)))
 
        TOO-MANY-ARGS
-       (MULTIPLE-VALUE-RETURN
-	 (CERROR T NIL ':WRONG-NUMBER-OF-ARGUMENTS
-		 "Function ~S given too many arguments (~D)"
-		 FCTN (LENGTH A-VALUE-LIST)))))
+       (RETURN (CERROR T NIL ':WRONG-NUMBER-OF-ARGUMENTS
+		       "Function ~S given too many arguments (~D)"
+		       FCTN (LENGTH A-VALUE-LIST)))))
+
+(DEFUN (KLUDGE-MACRO-VIA-EVAL EH:PROCEED) (&REST IGNORE)
+  (FORMAT T " OK, but don't say I didn't warn you...~%"))
+
+(DEFPROP :MISSING-KEYWORD-ARG MISSING-KEYWORD-ARG-EH-PROCEED EH:PROCEED)
+(DEFUN MISSING-KEYWORD-ARG-EH-PROCEED (IGNORE IGNORE)
+  (EH:READ-OBJECT "Form to evaluate and use for this keyword argument"))
+
+(DEFPROP :UNDEFINED-ARG-KEYWORD UNDEFINED-ARG-KEYWORD-EH-PROCEED EH:PROCEED)
+(DEFUN UNDEFINED-ARG-KEYWORD-EH-PROCEED (IGNORE IGNORE)
+  (EH:READ-OBJECT "Form which evaluates to keyword to use instead, or NIL to ignore value"))
 
 (DEFPROP :INVALID-FUNCTION INVALID-FUNCTION-EH-PROCEED EH:PROCEED)
 (DEFUN INVALID-FUNCTION-EH-PROCEED (IGNORE IGNORE)
@@ -610,12 +709,89 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 (DEFUN INVALID-FORM-EH-PROCEED (IGNORE IGNORE)
   (EH:READ-OBJECT "Form to evaluate instead"))
 
+;DECODE-KEYWORD-ARGLIST
+
+;Given a lambda list, return a decomposition of it and a description
+;of all the keyword args in it.
+;POSITIONAL-ARGS is the segment of the front of the arglist before any keyword args.
+;KEYWORD-ARGS is the segment containing the keyword args.
+;AUXVARS is the segment containing the aux vars.
+;REST-ARG is the name of the rest arg, if any, else nil.
+;POSITIONAL-ARG-NAMES is a list of all positional args
+; and the supplied-flags of all optional positional args.
+;The rest of the values describe the keyword args.
+;There are several lists, equally long, with one element per arg.
+;KEYNAMES contains the keyword arg variable names.
+;KEYKEYS contains the key symbols themselves (in the keyword package).
+;KEYOPTFS contains T for each optional keyword arg, NIL for each required one.
+;KEYINITS contains for each arg the init-form, or nil if none.
+;KEYFLAGS contains for each arg its supplied-flag's name, or nil if none.
+;Finally,
+;ALLOW-OTHER-KEYS is T if &ALLOW-OTHER-KEYS appeared among the keyword args.
+(DEFUN DECODE-KEYWORD-ARGLIST (LAMBDA-LIST)
+  (DECLARE (RETURN-LIST POSITIONAL-ARGS KEYWORD-ARGS AUXVARS
+			REST-ARG POSITIONAL-ARG-NAMES
+			KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS ALLOW-OTHER-KEYS))
+  (LET (POSITIONAL-ARGS KEYWORD-ARGS AUXVARS
+	OPTIONALF THIS-REST REST-ARG POSITIONAL-ARG-NAMES
+	KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS ALLOW-OTHER-KEYS)
+    (SETQ AUXVARS (MEMQ '&AUX LAMBDA-LIST))
+    (SETQ POSITIONAL-ARGS (LDIFF LAMBDA-LIST AUXVARS))
+    (SETQ KEYWORD-ARGS (MEMQ '&KEY POSITIONAL-ARGS))
+    (SETQ POSITIONAL-ARGS (LDIFF POSITIONAL-ARGS KEYWORD-ARGS))
+
+    (SETQ KEYWORD-ARGS (LDIFF KEYWORD-ARGS AUXVARS))
+    ;; Get names of all positional args and their supplied-flags.
+    ;; Get name of rest arg if any.  Find out whether they end optional.
+    (DOLIST (A POSITIONAL-ARGS)
+      (COND ((EQ A '&OPTIONAL) (SETQ OPTIONALF T))
+	    ((EQ A '&REST) (SETQ THIS-REST T))
+	    ((MEMQ A LAMBDA-LIST-KEYWORDS))
+	    (T (COND ((SYMBOLP A) (PUSH A POSITIONAL-ARG-NAMES))
+		     (T (AND (CDDR A) (PUSH (CADDR A) POSITIONAL-ARG-NAMES))
+			(PUSH (CAR A) POSITIONAL-ARG-NAMES)))
+	       (AND THIS-REST (NOT REST-ARG) (SETQ REST-ARG (CAR POSITIONAL-ARG-NAMES))))))
+    (SETQ POSITIONAL-ARG-NAMES (NREVERSE POSITIONAL-ARG-NAMES))
+    ;; Decode the keyword args.  Set up keynames, keyinits, keykeys, keyflags.
+    (DOLIST (A (CDR KEYWORD-ARGS))
+      (COND ((EQ A '&OPTIONAL) (SETQ OPTIONALF T))
+	    ((EQ A '&ALLOW-OTHER-KEYS) (SETQ ALLOW-OTHER-KEYS T))
+	    ((MEMQ A LAMBDA-LIST-KEYWORDS))
+	    (T (LET (KEYNAME KEYINIT KEYFLAG KEYKEY)
+		 (COND ((SYMBOLP A) (SETQ KEYNAME A KEYINIT NIL))
+		       (T (SETQ KEYINIT (CADR A) KEYFLAG (CADDR A))
+			  (COND ((SYMBOLP (CAR A))
+				 (SETQ KEYNAME (CAR A)))
+				(T (SETQ KEYKEY (CAAR A) KEYNAME (CADAR A))))))
+		 ;; Compute the key symbol (same pname but in user package)
+		 ;; if not explicitly specified.
+		 (OR KEYKEY
+		     (SETQ KEYKEY (GET KEYNAME 'KEYKEY))
+		     (PROGN (SETQ KEYKEY (INTERN (GET-PNAME KEYNAME)
+						 SI:PKG-USER-PACKAGE))
+			    (PUTPROP KEYNAME KEYKEY 'KEYKEY)))
+		 (PUSH KEYNAME KEYNAMES)
+		 (PUSH OPTIONALF KEYOPTFS)
+		 (PUSH KEYINIT KEYINITS)
+		 (PUSH KEYFLAG KEYFLAGS)
+		 (PUSH KEYKEY KEYKEYS)))))
+    ;; Get everything about the keyword args back into forward order.
+    (SETQ KEYNAMES (NREVERSE KEYNAMES)
+	  KEYINITS (NREVERSE KEYINITS)
+	  KEYOPTFS (NREVERSE KEYOPTFS)
+	  KEYKEYS (NREVERSE KEYKEYS)
+	  KEYFLAGS (NREVERSE KEYFLAGS))
+    (VALUES POSITIONAL-ARGS KEYWORD-ARGS AUXVARS
+	    REST-ARG POSITIONAL-ARG-NAMES
+	    KEYKEYS KEYNAMES KEYOPTFS KEYINITS KEYFLAGS ALLOW-OTHER-KEYS)))
+
 ;;;FULL MAPPING FUNCTIONS
 
-(DEFUN MAPCAR (FCN &EVAL &REST LISTS)
+(DEFUN MAPCAR (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive elements, returns a list of the results."
   (PROG (V P LP)
 	(SETQ P (VALUE-CELL-LOCATION 'V))		;ACCUMULATE LIST IN P, V
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 1)			;DESTINATION STACK
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -629,10 +805,11 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 	(RPLACD P (SETQ P (NCONS LP)))			;CONS IT ONTO LIST
 	(GO L)))
 
-(DEFUN MAPC (FCN &EVAL &REST LISTS)
+(DEFUN MAPC (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive elements, returns second argument."
   (PROG (LP RES)
 	(SETQ RES (CAR LISTS))				;RESULT WILL BE FIRST ARG
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 0)			;DESTINATION IGNORE
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -644,10 +821,11 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
    L2	(%ACTIVATE-OPEN-CALL-BLOCK)			;MAKE THE CALL
 	(GO L)))
 
-(DEFUN MAPLIST (FCN &EVAL &REST LISTS)
+(DEFUN MAPLIST (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive sublists, returns a list of the results."
   (PROG (V P LP)
 	(SETQ P (VALUE-CELL-LOCATION 'V))		;ACCUMULATE LIST IN P, V
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 1)			;DESTINATION STACK
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -661,10 +839,11 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 	(RPLACD P (SETQ P (NCONS LP)))			;CONS IT ONTO LIST
 	(GO L)))
 
-(DEFUN MAP (FCN &EVAL &REST LISTS)
+(DEFUN MAP (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive sublists, returns second argument."
   (PROG (LP RES)
 	(SETQ RES (CAR LISTS))				;RESULT WILL BE FIRST ARG
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 0)			;DESTINATION IGNORE
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -676,10 +855,11 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
    L2	(%ACTIVATE-OPEN-CALL-BLOCK)			;MAKE THE CALL
 	(GO L)))
 
-(DEFUN MAPCAN (FCN &EVAL &REST LISTS)
+(DEFUN MAPCAN (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive elements, returns NCONC of the results."
   (PROG (V P LP)
 	(SETQ P (VALUE-CELL-LOCATION 'V))		;ACCUMULATE LIST IN P, V
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 1)			;DESTINATION STACK
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -695,10 +875,11 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 	(SETQ P (LAST LP))				;SAVE NEW CELL TO BE CONC'ED ONTO
 	(GO L)))
 
-(DEFUN MAPCON (FCN &EVAL &REST LISTS)
+(DEFUN MAPCON (&FUNCTIONAL FCN &EVAL &REST LISTS)
+  "Maps over successive sublists, returns NCONC of the results."
   (PROG (V P LP)
 	(SETQ P (VALUE-CELL-LOCATION 'V))		;ACCUMULATE LIST IN P, V
-	(%ASSURE-PDL-ROOM (+ 4 (LENGTH LISTS)))		;MAKE SURE %PUSH'S DON'T LOSE
+	(%ASSURE-PDL-ROOM (+ (LENGTH LISTS) 4))		;MAKE SURE %PUSH'S DON'T LOSE
    L	(SETQ LP LISTS)					;PICK UP NEXT ELEMENT OF EACH LIST
 	(%OPEN-CALL-BLOCK FCN 0 1)			;DESTINATION STACK
    L1	(OR LP (GO L2))					;ALL LISTS PICKED UP
@@ -714,16 +895,23 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 	(SETQ P (LAST LP))				;SAVE NEW CELL TO BE CONC'ED ONTO
 	(GO L)))
 
-(DEFUN FUNCALL (FN &EVAL &REST ARGS)
+(DEFUN FUNCALL (&FUNCTIONAL FN &EVAL &REST ARGS)
   (APPLY FN ARGS))
 
 (DEFUN QUOTE (&QUOTE X) X)
 
+;;; "Evaluate a form as in function position"
+;;; A symbol turns into its function definition.
+;;; A list is either a functional constant, which is self-evaluating,
+;;; or a function-spec, which turns into its function definition.
+;;; Note that (:property foo bar) is a function spec but (foo bar) is not a function spec!
+;;; Atomic functional constants (FEFs and so forth) are also allowed.
 (DEFUN FUNCTION (&QUOTE X)
-	(COND ((SYMBOLP X)
-	       (OR (FBOUNDP X) (FERROR NIL "The function ~S is not defined" X))
-	       (CDR (FUNCTION-CELL-LOCATION X)))
-	      (T X)))
+  (COND ((SYMBOLP X) (FSYMEVAL X))		;"Functional variable"
+	((FUNCTIONP X T) X)			;Functional constant
+	((VALIDATE-FUNCTION-SPEC X)		;Function spec
+	 (FDEFINITION X))
+	(T (FERROR NIL "~S is not a function nor the name of a function" X))))
 
 (DEFUN FUNCTIONAL-ALIST (&QUOTE X)   ;JUST LIKE QUOTE INTERPRETED.  HOWEVER, THE COMPILER
        X)     ;IS TIPPED OFF TO BREAK OFF  AND COMPILE SEPARATELY FUNCTIONS WHICH APPEAR
@@ -733,31 +921,44 @@ LAMBRST	(COND ((EQ QUOTE-STATUS '&QUOTE) (GO REST))
 ;; If extra args are supplied, their successive elements are passed
 ;; to PRED along with elements of LIST.  Unlike MAP, etc., we process
 ;; every element of LIST even if extra args are exhausted by cdr'ing.
-(DEFUN SUBSET (PRED LIST &REST EXTRA-LISTS &AUX VALUE)
-  (DO ((VALUE-PTR (VALUE-CELL-LOCATION 'VALUE))
-       (L LIST (CDR L)))
-      ((NULL L) VALUE)
-    (%OPEN-CALL-BLOCK PRED 0 1)
-    (%PUSH (CAR L))
-    (DO ((EX EXTRA-LISTS (CDR EX))) ((NULL EX))
-      (%PUSH (CAAR EX))
-      (RPLACA EX (CDAR EX)))
-    (%ACTIVATE-OPEN-CALL-BLOCK)
-    (AND (%POP)
-	 (RPLACD VALUE-PTR (SETQ VALUE-PTR (CONS (CAR L) NIL))))))
+(DEFUN SUBSET (&FUNCTIONAL PRED LIST &EVAL &REST EXTRA-LISTS &AUX VALUE P LP)
+  (SETQ P (VALUE-CELL-LOCATION 'VALUE))		;ACCUMULATE LIST IN P, VALUE
+  (%ASSURE-PDL-ROOM (+ (LENGTH EXTRA-LISTS) 5))	;Make sure %PUSH's don't lose.
+  (DO () ((NULL LIST) VALUE)
+    (SETQ LP EXTRA-LISTS)
+    (%OPEN-CALL-BLOCK PRED 0 1)			;call with destination=stack.
+    (%PUSH (CAR LIST))				;push next element of LIST.
+
+    (DO () ((NULL LP))				;LP scans down the extra lists.
+      (%PUSH (CAAR LP))				;Push car of each one.
+      (POP (CAR LP))				;cdr this list.
+      (POP LP))					;advance to next list.
+
+    (%ACTIVATE-OPEN-CALL-BLOCK)			;Make the call.
+    (IF (%POP)					;If value non-nil, put this one in the value.
+	(RPLACD P (SETQ P (NCONS (CAR LIST)))))
+
+    (POP LIST)))
 
 ;; Like SUBSET but negates the predicate.
-(DEFUN SUBSET-NOT (PRED LIST &REST EXTRA-LISTS &AUX VALUE)
-  (DO ((VALUE-PTR (VALUE-CELL-LOCATION 'VALUE))
-       (L LIST (CDR L)))
-      ((NULL L) VALUE)
-    (%OPEN-CALL-BLOCK PRED 0 1)
-    (%PUSH (CAR L))
-    (DO ((EX EXTRA-LISTS (CDR EX))) ((NULL EX))
-      (%PUSH (CAAR EX))
-      (RPLACA EX (CDAR EX)))
-    (%ACTIVATE-OPEN-CALL-BLOCK)
-    (OR (%POP)
-	(RPLACD VALUE-PTR (SETQ VALUE-PTR (CONS (CAR L) NIL))))))
+(DEFUN SUBSET-NOT (&FUNCTIONAL PRED LIST &EVAL &REST EXTRA-LISTS &AUX VALUE P LP)
+  (SETQ P (VALUE-CELL-LOCATION 'VALUE))		;ACCUMULATE LIST IN P, VALUE
+  (%ASSURE-PDL-ROOM (+ (LENGTH EXTRA-LISTS) 5))	;Make sure %PUSH's don't lose.
+  (DO () ((NULL LIST) VALUE)
+    (SETQ LP EXTRA-LISTS)
+    (%OPEN-CALL-BLOCK PRED 0 1)			;call with destination=stack.
+    (%PUSH (CAR LIST))				;push next element of LIST.
+
+    (DO () ((NULL LP))				;LP scans down the extra lists.
+      (%PUSH (CAAR LP))				;Push car of each one.
+      (POP (CAR LP))				;cdr this list.
+      (POP LP))					;advance to next list.
+
+    (%ACTIVATE-OPEN-CALL-BLOCK)			;Make the call.
+    (IF (NOT (%POP))				;If value nil, put this one in the value.
+	(RPLACD P (SETQ P (NCONS (CAR LIST)))))
+
+    (POP LIST)))
+
 
     

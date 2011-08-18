@@ -1,13 +1,10 @@
-;-*-LISP-*-
+;-*- Mode:LISP; Package:SYSTEM-INTERNALS; Base:8 -*-
 
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 (SPECIAL DEFAULT-CONS-AREA %NUMBER-OF-AREAS)
 
 ;;; Function and macro defining.
-
-;This file must not use defun of non-atomic function name since real
-;  FDEFINE not available when this loaded.
 
 ;This is used in this file so must be at begining of file to win at cold-load time.
 (DEFUN DEF (&QUOTE FUNCTION &REST DEFINING-FORMS)
@@ -19,6 +16,10 @@
     FUNCTION)
 
 (SPECIAL UNDO-DECLARATIONS-FLAG LOCAL-DECLARATIONS FILE-LOCAL-DECLARATIONS)
+
+(DEFCONST *DEBUG-INFO-LOCAL-DECLARATION-TYPES*
+	  '(ARGLIST RETURN-LIST FUNCTION-PARENT)
+  "Local declaration types which are incorporated into the function debugging info by DEFUN")
 
 (DEFUN DEFUN (&QUOTE &REST ARG)
   (DECLARE (ARGLIST &QUOTE SYMBOL LAMBDA-LIST &REST BODY))  ;What the user gets from ARGLIST.
@@ -39,14 +40,14 @@
 	       (SETQ ARG (CDR ARG))))
 	(SETQ SYM (CAR ARG) VARS+BODY (CDR ARG))
 	;; Use some local declarations for making debug-info, if they are present.
-	(AND (SETQ TEM (ASSQ 'ARGLIST LOCAL-DECLARATIONS))
-	     (PUSH `(ARGLIST ,(CDR TEM)) DEBUG-INFO))
-	(AND (SETQ TEM (ASSQ 'RETURN-LIST LOCAL-DECLARATIONS))
-	     (PUSH `(RETURN-LIST ,(CDR TEM)) DEBUG-INFO))
+	(LOOP FOR DCL IN LOCAL-DECLARATIONS
+	      WHEN (MEMQ (CAR DCL) *DEBUG-INFO-LOCAL-DECLARATION-TYPES*)
+	        DO (PUSH DCL DEBUG-INFO))
 	;; Put whatever other local declarations there are
 	;; into a DECLARE at the front of the transformed body.
 	(AND LOCAL-DECLARATIONS
-	     (SETQ TEM (SUBSET-NOT #'(LAMBDA (X) (MEMQ (CAR X) '(ARGLIST RETURN-LIST)))
+	     (SETQ TEM (SUBSET-NOT #'(LAMBDA (X)
+				       (MEMQ (CAR X) *DEBUG-INFO-LOCAL-DECLARATION-TYPES*))
 				   LOCAL-DECLARATIONS))
 	     (SETQ VARS+BODY
 		   `(,(CAR VARS+BODY)
@@ -61,18 +62,21 @@
 	(RETURN SYM)))
 
 (DEFUN MACRO (&QUOTE SYMBOL &REST DEF &AUX DEF1 ARGL)
+  (OR (SYMBOLP SYMBOL) (SETQ SYMBOL (STANDARDIZE-FUNCTION-SPEC SYMBOL)))
   (SETQ DEF1 `(MACRO NAMED-LAMBDA
 		     ,(COND ((SETQ ARGL (ASSQ 'ARGLIST LOCAL-DECLARATIONS))
 			     (LIST SYMBOL (LIST 'ARGLIST (CDR ARGL))))
 			    ((SYMBOLP SYMBOL) SYMBOL)
 			    (T (LIST SYMBOL)))
 		     . ,DEF))
-  (COND ((AND (BOUNDP 'UNDO-DECLARATIONS-FLAG)
-	      UNDO-DECLARATIONS-FLAG)
+  (COND ((AND (BOUNDP 'UNDO-DECLARATIONS-FLAG) UNDO-DECLARATIONS-FLAG)
 	 (PUSH `(DEF ,SYMBOL . ,DEF1) FILE-LOCAL-DECLARATIONS))
 	(T
-	 (FSET-CAREFULLY SYMBOL DEF1)))
+	 (FDEFINE SYMBOL DEF1 T)))
   SYMBOL)
+
+; non-NIL to prevent macros from displacing.
+(defvar inhibit-displacing-flag nil)
 
 ;; Make the original form now look like
 ;; (displaced (original-car . original-cdr) expanded-form)
@@ -84,17 +88,20 @@
 ;; in which case attempting to displace would crash the machine.
 (defun displace (original-form expanded-form &aux area tem)
   (without-interrupts
-      (cond ((eq (car original-form) 'displaced)
-	     (caddr original-form))
-	    ((= (setq area (%area-number original-form)) working-storage-area)
+      (cond (inhibit-displacing-flag)
+	    ((eq (car original-form) 'displaced)
+	     (setf (caddr original-form) expanded-form))
+	    ((and (= (setq area (%area-number original-form)) working-storage-area)
+		  (= (%area-number expanded-form) area))
+	     ;; Above area tests are intended to avoid problems with the compiler
+	     ;; temporary area, by not displacing anything with something that was
+	     ;; consed in a temporary area.  Note that not only lists are in the
+	     ;; temporary area, so are gensyms, strings, and flonums.
 	     (let ((default-cons-area area))
-	       (or (= (%area-number expanded-form) area)
-		   (setq expanded-form (subst nil nil expanded-form)))
 	       (setq tem `((,(car original-form) . ,(cdr original-form)) ,expanded-form)))
 	     (rplaca original-form 'displaced)
-	     (rplacd original-form tem)
-	     expanded-form)
-	    (t expanded-form))))
+	     (rplacd original-form tem)))
+      expanded-form))
 
 (macro displaced (form)
     (caddr form))
@@ -147,10 +154,6 @@
 (DEFUN MULTIPLE-VALUE-LIST (&QUOTE EXP)
        (MULTIPLE-VALUE-LIST (EVAL EXP)))
 
-(DEFUN MULTIPLE-VALUE-RETURN (&QUOTE EXP)
-       (FUNCALL (FSYMEVAL 'RETURN-LIST)			;This kludge is so RETURN-LIST
-		(MULTIPLE-VALUE-LIST (EVAL EXP))))	;won't compile open.
-
 ;Note: this function is a little slower than necessary, in order to work
 ;even if (CDR NIL) = NIL mode is shut off.
 (DEFUN MULTIPLE-VALUE-BIND (&QUOTE VAR-LIST MV-RETURNING-FORM &REST BODY)
@@ -167,10 +170,16 @@
        DO-BODY
 	  (OR BODY (RETURN NIL))
 	  (OR (CDR BODY)
-	      (MULTIPLE-VALUE-RETURN (EVAL (CAR BODY))))
+	      (RETURN (EVAL (CAR BODY))))
 	  (EVAL (CAR BODY))
 	  (POP BODY)
 	  (GO DO-BODY))))
+
+(DEFUN VALUES (&REST VALUES)
+  (VALUES-LIST VALUES))
+
+(DEFUN VALUES-LIST (VALUES)
+  (VALUES-LIST VALUES))	;Relies on open-compilation of VALUES-LIST.
 
 ;;; These functions have hair to implement the correct rules for multiple values
 
@@ -184,6 +193,63 @@
 (DEFUN PROG2 (IGNORED VALUE &REST IGNORED) VALUE)
 
 (DEFUN PROG1 (VALUE &REST IGNORED) VALUE)
+
+(DEFUN LET (&QUOTE VARLIST &REST EXPRESSIONS)
+  (PROG (VARS-LEFT)
+	;; Now bind all the prog-variables.
+	;; DO cannot be used, since the scope of the BINDs would be wrong.
+	(SETQ VARS-LEFT VARLIST)
+   BINDLOOP
+   	(COND (VARS-LEFT
+	       ;; For each symbol, push 2 words on stack:
+	       ;; value cell location and new value.
+	       (COND ((ATOM (CAR VARS-LEFT))
+		      (OR (CAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+		      (%PUSH (VALUE-CELL-LOCATION (CAR VARS-LEFT)))
+		      (%PUSH NIL))
+		     (T (OR (CAAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+			(%PUSH (VALUE-CELL-LOCATION (CAAR VARS-LEFT)))
+			(%PUSH (EVAL (CADAR VARS-LEFT)))))
+	       (POP VARS-LEFT)
+	       (GO BINDLOOP)))
+
+	(SETQ VARS-LEFT VARLIST)
+   BINDLOOP1
+	(COND (VARS-LEFT
+	       ;; Pop off next symbol and value, and bind them.
+	       (BIND (%POP) (%POP))
+	       ;; Step down VARS-LEFT just so we pop as many pairs as we pushed.
+	       (POP VARS-LEFT)
+	       (GO BINDLOOP1)))
+
+	(RETURN
+	  (IF (NULL EXPRESSIONS) NIL
+	      (DO ((L EXPRESSIONS (CDR L)))
+		  ((NULL (CDR L))
+		   (EVAL (CAR L)))		;Note: this works for multiple values now!
+		(EVAL (CAR L)))))))
+
+(DEFUN LET* (&QUOTE VARLIST &REST EXPRESSIONS)
+  (PROG (VARS-LEFT)
+	(SETQ VARS-LEFT VARLIST)
+     BINDLOOP
+   	(COND (VARS-LEFT
+	       (COND ((ATOM (CAR VARS-LEFT))
+		      (AND (NULL (CAR VARS-LEFT)) (FERROR NIL "Attempt to bind NIL"))
+		      (BIND (VALUE-CELL-LOCATION (CAR VARS-LEFT))
+			    NIL))
+		     (T (AND (NULL (CAAR VARS-LEFT)) (FERROR NIL "Attempt to bind NIL"))
+			(BIND (VALUE-CELL-LOCATION (CAAR VARS-LEFT))
+			      (EVAL (CADAR VARS-LEFT)))))
+	       (SETQ VARS-LEFT (CDR VARS-LEFT))
+	       (GO BINDLOOP)))
+
+	(RETURN
+	  (IF (NULL EXPRESSIONS) NIL
+	      (DO ((L EXPRESSIONS (CDR L)))
+		  ((NULL (CDR L))
+		   (EVAL (CAR L)))		;Note: this works for multiple values now!
+		(EVAL (CAR L)))))))
 
 (DEFUN COMMENT (&QUOTE &REST IGNORE)
       'COMMENT)
@@ -209,7 +275,12 @@
   (DO ((CLAUSES CLAUSES (CDR CLAUSES))
        (PREDVAL)(EXPRESSIONS))
       ((NULL CLAUSES) NIL)
-    (COND ((AND (NULL (CDR CLAUSES)) (NULL (CDAR CLAUSES)))
+    (COND ((ATOM (CAR CLAUSES))
+	   (FERROR NIL "The atom ~S is not a valid COND clause." (CAR CLAUSES)))
+	  ((AND (NULL (CDR CLAUSES)) (NULL (CDAR CLAUSES)))
+	   ;; If this is the last clause, then treat its predicate as part of
+	   ;; the body instead of as the predicate, so that multiple values
+	   ;; get propagated properly.
 	   (SETQ EXPRESSIONS (CAR CLAUSES)))
 	  ((SETQ PREDVAL (EVAL (CAAR CLAUSES)))
 	   (OR (SETQ EXPRESSIONS (CDAR CLAUSES))
@@ -218,7 +289,7 @@
     ;; Predicate true
    PREDTRUE
     (COND ((NULL (CDR EXPRESSIONS))
-	   (MULTIPLE-VALUE-RETURN (EVAL (CAR EXPRESSIONS))))
+	   (RETURN (EVAL (CAR EXPRESSIONS))))
 	  (T (EVAL (CAR EXPRESSIONS))
 	     (SETQ EXPRESSIONS (CDR EXPRESSIONS))
 	     (GO PREDTRUE)))
@@ -227,40 +298,54 @@
 
 ;;; PROG, GO, RETURN, RETURN-LIST, RETURN-FROM
 
-(DECLARE (SPECIAL PROGDESCLIST RETPROGDESC))
-(SETQ PROGDESCLIST NIL RETPROGDESC NIL)
+(DEFVAR PROGDESCLIST NIL)
 ;; PROGDESCLIST is a stack of descriptors for all PROGs which are in progress
-;; (in this stack-group).  Each descriptor has is a list of four elements:
+;; (in this stack-group).  Each descriptor has is a list of five elements:
 ;;   NAME - the name of the PROG, or NIL,
 ;;   BODY - the entire body of the PROG,
 ;;   OP   - the operation to be performed,
 ;;   VALUE- the operand.
+;;   TAG  - the catch tag for returning from this PROG.
+;;          The catch tag is a pointer to this very cell!
 ;; OP and VALUE are used by RETURN and GO to tell the PROG what to do.
-;; RETURN and GO store into those slots and then throw to the tag which
-;; is the descriptor itself.  The PROG then does the dirty work.
+;; RETURN and GO store into those slots and then throw to the tag.
+;; The PROG then does the dirty work.
 
-;; RETURN works by setting OP to 'RETURN and VALUE to the value.
+;; RETURN-LIST works by setting OP to 'RETURN-LIST and VALUE to the list of values.
+;; RETURN turns itself into a RETURN-LIST.
 ;; GO works by setting OP to 'GO and VALUE to the body tail at the tag.
 
 ;; RETPROGDESC is the descriptor for the PROG which a simple RETURN should return from.
+(DEFVAR RETPROGDESC NIL)
+
+;; We used to use the descriptor itself as the catch tag,
+;; but this loses when the stack is extended and forwarded.
+;; For some reason, we used to try throwing using the new
+;; location of the descriptor, while the stored catch tag was
+;; still pointing to the old locations (which now contain forwarding pointers).
+;; The new data structure ensures that everyone who tries to access
+;; the catch tag of a descriptor always gets the same address
+;; as was used in the catch.
 
 ;; This version binds arguments sequentially (PROG*).
 (DEFUN PROG* (&QUOTE &REST PROG-ARGUMENTS)
  ;; Make sure that these variables aren't special, or pdl-list will be screwed up.
  (LOCAL-DECLARE ((UNSPECIAL DESCPTR CHAIN NAME BODY OP VALUE))
-  (PROG* (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE
+  (PROG* (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE CATCH-TAG
 	  VARLIST EXP PROG-PC PROGDESCLIST (RETPROGDESC RETPROGDESC))
 	(AND (ATOM (CAR PROG-ARGUMENTS)) (CAR PROG-ARGUMENTS)
 	     (SETQ NAME (CAR PROG-ARGUMENTS) PROG-ARGUMENTS (CDR PROG-ARGUMENTS)))
 	(SETQ VARLIST (CAR PROG-ARGUMENTS))
 	(SETQ BODY (CDR PROG-ARGUMENTS))
+	(SETQ CATCH-TAG (VALUE-CELL-LOCATION 'CATCH-TAG))
 	(SETQ DESCPTR (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'NAME)))
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'DESCPTR) CDR-NORMAL)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CHAIN) CDR-ERROR)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'NAME) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'BODY) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'OP) CDR-NEXT)
-	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NIL)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NEXT)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CATCH-TAG) CDR-NIL)
 	(SETQ PROGDESCLIST (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'DESCPTR)))
 	(OR (EQ NAME T) (SETQ RETPROGDESC DESCPTR))
 	;; We have now done, effectively, (PUSH `(,NAME ,BODY ,OP ,VALUE) PROGDESCLIST)
@@ -287,44 +372,39 @@
 	(SETQ EXP (CAR PROG-PC))
 	(SETQ PROG-PC (CDR PROG-PC))
 	(AND (ATOM EXP) (GO L2))			;SKIP TAGS
-	(*CATCH DESCPTR (EVAL EXP))
+	(*CATCH CATCH-TAG (EVAL EXP))
 	(COND ((NULL OP) (GO L2))
-	      ((EQ OP 'RETURN)
-	       (RETURN VALUE))
 	      ((EQ OP 'GO)
 	       (SETQ PROG-PC VALUE))
 	      ((EQ OP 'RETURN-LIST)
-	       (GO RETURN-LIST))
+	       (RETURN-LIST VALUE))
 	      (T (FERROR NIL "Illegal PROG throw operation ~S, ~S" OP VALUE)))
 	;; The following must NOT use (SETQ OP NIL), becauses that does
 	;; not preserve the CDR codes withing the PDL buffer.
 	(RPLACA (VALUE-CELL-LOCATION 'OP) NIL)
-	(GO L2)
-
-	;; Here to do (RETURN-LIST VALUE) if RETURN-LIST isn't implemented compiled yet.
-   RETURN-LIST
-	(OR (CDR VALUE) (RETURN (CAR VALUE)))
-	(RETURN-NEXT-VALUE (CAR VALUE))
-	(SETQ VALUE (CDR VALUE))
-	(GO RETURN-LIST))))
+	(GO L2))))
 
 ;; This version binds arguments in parallel (PROG).
 (DEFUN PROG (&QUOTE &REST PROG-ARGUMENTS)
  ;; Make sure that these variables aren't special, or pdl-list will be screwed up.
  (LOCAL-DECLARE ((UNSPECIAL DESCPTR CHAIN NAME BODY OP VALUE))
-  (PROG* (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE
-	  VARLIST VALLIST VALLIST-HEAD
+  (PROG* (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE CATCH-TAG
+	  VARLIST VARS-LEFT
 	  EXP PROG-PC PROGDESCLIST (RETPROGDESC RETPROGDESC))
 	(AND (ATOM (CAR PROG-ARGUMENTS)) (CAR PROG-ARGUMENTS)
 	     (SETQ NAME (CAR PROG-ARGUMENTS) PROG-ARGUMENTS (CDR PROG-ARGUMENTS)))
+	(SETQ VARLIST (CAR PROG-ARGUMENTS))
 	(SETQ BODY (CDR PROG-ARGUMENTS))
+
+	(SETQ CATCH-TAG (VALUE-CELL-LOCATION 'CATCH-TAG))
 	(SETQ DESCPTR (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'NAME)))
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'DESCPTR) CDR-NORMAL)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CHAIN) CDR-ERROR)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'NAME) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'BODY) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'OP) CDR-NEXT)
-	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NIL)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NEXT)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CATCH-TAG) CDR-NIL)
 	(SETQ PROGDESCLIST (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'DESCPTR)))
 	(OR (EQ NAME T) (SETQ RETPROGDESC DESCPTR))
 	;; We have now done, effectively, (PUSH `(,NAME ,BODY ,OP ,VALUE) PROGDESCLIST)
@@ -332,30 +412,29 @@
 
 	;; Now bind all the prog-variables.
 	;; DO cannot be used, since the scope of the BINDs would be wrong.
-	;; First EVAL all the initial values and store them in a list.
-	(SETQ VARLIST (CAR PROG-ARGUMENTS))
-	(SETQ VALLIST-HEAD (MAKE-LIST DEFAULT-CONS-AREA (LENGTH VARLIST)))
-	(SETQ VALLIST VALLIST-HEAD)
+	(SETQ VARS-LEFT VARLIST)
    BINDLOOP
-   	(COND (VARLIST
-	       (COND ((ATOM (CAR VARLIST)))
-		     (T (RPLACA VALLIST (EVAL (CADAR VARLIST)))))
-	       (POP VARLIST)
-	       (POP VALLIST)
+   	(COND (VARS-LEFT
+	       ;; For each symbol, push 2 words on stack:
+	       ;; value cell location and new value.
+	       (COND ((ATOM (CAR VARS-LEFT))
+		      (OR (CAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+		      (%PUSH (VALUE-CELL-LOCATION (CAR VARS-LEFT)))
+		      (%PUSH NIL))
+		     (T (OR (CAAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+			(%PUSH (VALUE-CELL-LOCATION (CAAR VARS-LEFT)))
+			(%PUSH (EVAL (CADAR VARS-LEFT)))))
+	       (POP VARS-LEFT)
 	       (GO BINDLOOP)))
 
-	;; Then take the values out of the list, binding the variables.
-	(SETQ VARLIST (CAR PROG-ARGUMENTS))
-	(SETQ VALLIST VALLIST-HEAD)
+	(SETQ VARS-LEFT VARLIST)
    BINDLOOP1
-   	(COND (VARLIST
-		(SETQ EXP (IF (ATOM (CAR VARLIST)) (CAR VARLIST) (CAAR VARLIST)))
-		(AND (NULL EXP) (FERROR NIL "Attempt to bind NIL"))
-		(BIND (VALUE-CELL-LOCATION EXP)
-		      (CAR VALLIST))
-		(POP VARLIST)
-		(POP VALLIST)
-		(GO BINDLOOP1)))
+	(COND (VARS-LEFT
+	       ;; Pop off next symbol and value, and bind them.
+	       (BIND (%POP) (%POP))
+	       ;; Step down VARS-LEFT just so we pop as many pairs as we pushed.
+	       (POP VARS-LEFT)
+	       (GO BINDLOOP1)))
 
    	(SETQ PROG-PC BODY)				;EXECUTE THE BODY
    L2	(COND ((NULL PROG-PC) (RETURN NIL))
@@ -365,57 +444,53 @@
 	(SETQ EXP (CAR PROG-PC))
 	(SETQ PROG-PC (CDR PROG-PC))
 	(AND (ATOM EXP) (GO L2))			;SKIP TAGS
-	(*CATCH DESCPTR (EVAL EXP))
+	(*CATCH CATCH-TAG (EVAL EXP))
 	(COND ((NULL OP) (GO L2))
-	      ((EQ OP 'RETURN)
-	       (RETURN VALUE))
 	      ((EQ OP 'GO)
 	       (SETQ PROG-PC VALUE))
 	      ((EQ OP 'RETURN-LIST)
-	       (GO RETURN-LIST))
+	       (RETURN-LIST VALUE))
 	      (T (FERROR NIL "Illegal PROG throw operation ~S, ~S" OP VALUE)))
 	;; The following must NOT use (SETQ OP NIL), becauses that does
 	;; not preserve the CDR codes withing the PDL buffer.
 	(RPLACA (VALUE-CELL-LOCATION 'OP) NIL)
-	(GO L2)
-
-	;; Here to do (RETURN-LIST VALUE) if RETURN-LIST isn't implemented compiled yet.
-   RETURN-LIST
-	(OR (CDR VALUE) (RETURN (CAR VALUE)))
-	(RETURN-NEXT-VALUE (CAR VALUE))
-	(SETQ VALUE (CDR VALUE))
-	(GO RETURN-LIST))))
+	(GO L2))))
 
 (DEFUN RETURN-FROM (&QUOTE PROG-NAME &REST VALS)
-    (CHECK-ARG PROG-NAME SYMBOLP "a symbol")
+  (CHECK-ARG PROG-NAME SYMBOLP "a symbol")
+  (LET ((VALUES (COND ((OR (NULL VALS) (CDR VALS))
+		       (MAPCAR 'EVAL VALS))
+		      (T (MULTIPLE-VALUE-LIST (EVAL (CAR VALS)))))))
     (LET ((RETPROGDESC (OR (ASSQ PROG-NAME PROGDESCLIST)
 			   (FERROR NIL "No PROG is named ~S" PROG-NAME))))
-         (EVAL (CONS 'RETURN VALS))))
+      (FUNCALL (FSYMEVAL 'RETURN-LIST) VALUES))))
 
-(DEFUN RETURN (&REST &EVAL VALS)
-    (FUNCALL (FSYMEVAL 'RETURN-LIST) VALS))		;Don't let RETURN-LIST compile open.
+(DEFPROP MULTIPLE-VALUE-RETURN COMPILER:OBSOLETE COMPILER:STYLE-CHECKER)
+(DEFPROP MULTIPLE-VALUE-RETURN "is an obsolete function; use RETURN" COMPILER:OBSOLETE)
+(DEFF MULTIPLE-VALUE-RETURN 'RETURN)
+(DEFUN RETURN (&QUOTE &REST VALS)
+  (FUNCALL (FSYMEVAL 'RETURN-LIST)		;This kludge is so RETURN-LIST
+	   (COND ((OR (NULL VALS) (CDR VALS))	;won't compile open.
+		  (MAPCAR 'EVAL VALS))
+		 (T (MULTIPLE-VALUE-LIST (EVAL (CAR VALS)))))))
 
 (DEFUN RETURN-LIST (VALS)
-    (OR VALS (SETQ VALS '(NIL)))
-    (COND ((NULL (CDR VALS))				;TRY NOT TO CONS IN SIMPLE CASE
-	   (RPLACA (CDDR RETPROGDESC) 'RETURN)
-	   (RPLACA (CDDDR RETPROGDESC) (CAR VALS)))
-	  (T
-	   (RPLACA (CDDR RETPROGDESC) 'RETURN-LIST)
-	   (RPLACA (CDDDR RETPROGDESC)
-		   (APPEND VALS NIL))))			;MUST COPY SINCE MAY BE PDL LIST
-    (*THROW RETPROGDESC NIL))
+  (OR RETPROGDESC
+      (FERROR NIL "RETURN or RETURN-LIST not within a DO or PROG"))
+  (RPLACA (CDDR RETPROGDESC) 'RETURN-LIST)
+  (RPLACA (CDDDR RETPROGDESC) VALS)
+  (*THROW (CAR (CDDDDR RETPROGDESC)) NIL))
 
 (DEFUN GO (&QUOTE TAG &AUX TEM)
     (CHECK-ARG TAG SYMBOLP "a symbol")
     (DO ((DESCS PROGDESCLIST (CDR DESCS)))
 	((NULL DESCS)
-	 (FERROR "Unseen GO-tag ~S" TAG))
+	 (FERROR NIL "Unseen GO-tag ~S" TAG))
       (SETQ TEM (MEMQ TAG (CADAR DESCS)))
       (AND TEM (PROGN
 		(RPLACA (CDDAR DESCS) 'GO)
 		(RPLACA (CDDDAR DESCS) TEM)
-		(*THROW (CAR DESCS) NIL)))))
+		(*THROW (CAR (CDDDDR (CAR DESCS))) NIL)))))
 
 (DEFUN DO (&QUOTE &REST X)
     (DO-INTERNAL NIL X))
@@ -427,17 +502,19 @@
  ;; Make sure that these variables aren't special, or pdl-list will be screwed up.
  (LOCAL-DECLARE ((UNSPECIAL DESCPTR CHAIN NAME BODY OP VALUE))
   (PROG* DO-INTERNAL
-	 (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE
-	  PROGDESCLIST (RETPROGDESC RETPROGDESC) PROG-PC EXP
-	  VARLIST ENDTEST RETVALS OLDP ONCEP TEM VALS)
+	 (DESCPTR (CHAIN PROGDESCLIST) NAME BODY OP VALUE CATCH-TAG
+	  PROGDESCLIST (RETPROGDESC RETPROGDESC) PROG-PC
+	  VARLIST VARS-LEFT ENDTEST RETVALS OLDP ONCEP TEM EXP)
 	(SETQ NAME DO-NAME)
 	(SETQ DESCPTR (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'NAME)))
+	(SETQ CATCH-TAG (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'CATCH-TAG)))
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'DESCPTR) CDR-NORMAL)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CHAIN) CDR-ERROR)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'NAME) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'BODY) CDR-NEXT)
 	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'OP) CDR-NEXT)
-	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NIL)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'VALUE) CDR-NEXT)
+	(%P-STORE-CDR-CODE (VALUE-CELL-LOCATION 'CATCH-TAG) CDR-NIL)
 	(SETQ PROGDESCLIST (%MAKE-POINTER DTP-LIST (VALUE-CELL-LOCATION 'DESCPTR)))
 	(OR (EQ NAME T) (SETQ RETPROGDESC DESCPTR))
 	;; We have now done, effectively, (PUSH `(,NAME ,BODY ,OP ,VALUE) PROGDESCLIST)
@@ -459,35 +536,46 @@
 	(SETQ ONCEP (NULL (CADR X)))
 	(OR ONCEP (SETQ ENDTEST (CAADR X) RETVALS (CDADR X)))
 
-	;; Bind vars for new-style DO.  First compute all values, then bind all.
-	(SETQ VALS (MAPCAR '(LAMBDA (X) (AND (LISTP X) (CDR X) (EVAL (CADR X)))) VARLIST))
-	(SETQ TEM VARLIST)
+	;; Now bind all the DO-variables.
+	;; DO cannot be used, since the scope of the BINDs would be wrong.
+	(SETQ VARS-LEFT VARLIST)
    BINDLOOP
-	(COND (TEM
-	       (SETQ EXP (IF (ATOM (CAR TEM)) (CAR TEM) (CAAR TEM)))
-	       (AND (NULL EXP) (FERROR NIL "Attempt to bind NIL"))
-	       (BIND (VALUE-CELL-LOCATION EXP)
-		     (CAR VALS))
-	       (SETQ TEM (CDR TEM) VALS (CDR VALS))
+   	(COND (VARS-LEFT
+	       ;; For each symbol, push 2 words on stack:
+	       ;; value cell location and new value.
+	       (COND ((ATOM (CAR VARS-LEFT))
+		      (OR (CAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+		      (%PUSH (VALUE-CELL-LOCATION (CAR VARS-LEFT)))
+		      (%PUSH NIL))
+		     (T (OR (CAAR VARS-LEFT) (FERROR NIL "Attempt to bind NIL"))
+			(%PUSH (VALUE-CELL-LOCATION (CAAR VARS-LEFT)))
+			(%PUSH (EVAL (CADAR VARS-LEFT)))))
+	       (POP VARS-LEFT)
 	       (GO BINDLOOP)))
+
+	(SETQ VARS-LEFT VARLIST)
+   BINDLOOP1
+	(COND (VARS-LEFT
+	       ;; Pop off next symbol and value, and bind them.
+	       (BIND (%POP) (%POP))
+	       ;; Step down VARS-LEFT just so we pop as many pairs as we pushed.
+	       (POP VARS-LEFT)
+	       (GO BINDLOOP1)))
 
 	;; Now actually iterate the body.
    ITR
-	(COND ((AND (NOT ONCEP) (*CATCH DESCPTR (EVAL ENDTEST)))
+	(COND ((AND (NOT ONCEP) (*CATCH CATCH-TAG (EVAL ENDTEST)))
 	       (SETQ TEM NIL)			       ;IF NO RETVALS, RETURN NIL, NOT ENDTEST
 	       ;; Now evaluate the exit actions.
 	       ;; The last one should return its values out of the DO.
 	       (DO VL RETVALS (CDR VL) (NULL VL)
-		   (SETQ TEM (*CATCH DESCPTR
+		   (SETQ TEM (*CATCH CATCH-TAG
 				     (COND ((NULL (CDR VL))
 					    (RETURN-FROM DO-INTERNAL
-							 (MULTIPLE-VALUE-RETURN
-							   (EVAL (CAR VL)))))
+							 (EVAL (CAR VL))))
 					   (T (EVAL (CAR VL))))))
 		   ;; Make a RETURN or RETURN-LIST inside one of the exit forms work.
-		   (COND (OP (COND ((EQ OP 'RETURN)
-				    (GO RETURN))
-				   ((EQ OP 'RETURN-LIST)
+		   (COND (OP (COND ((EQ OP 'RETURN-LIST)
 				    (GO RETURN-LIST))
 				   ((EQ OP 'GO)
 				    (FERROR NIL
@@ -496,9 +584,7 @@
   "Illegal PROG throw operation ~S, ~S" OP VALUE))))))
 	       (RETURN (AND (NOT OLDP) TEM))))
 
-	(COND (OP (COND ((EQ OP 'RETURN)  ;This in case a RETURN encountered in the endtest
-			 (GO RETURN))
-			((EQ OP 'RETURN-LIST)
+	(COND (OP (COND ((EQ OP 'RETURN-LIST)
 			 (GO RETURN-LIST))
 			(T (FERROR NIL 
   "Illegal PROG throw operation ~S, ~S" OP VALUE)))))
@@ -510,10 +596,8 @@
 	(SETQ EXP (CAR PROG-PC))
 	(SETQ PROG-PC (CDR PROG-PC))
 	(AND (ATOM EXP) (GO L2))			;SKIP TAGS
-	(*CATCH DESCPTR (EVAL EXP))
+	(*CATCH CATCH-TAG (EVAL EXP))
 	(COND ((NULL OP) (GO L2))
-	      ((EQ OP 'RETURN)
-	       (GO RETURN))
 	      ((EQ OP 'GO)
 	       (SETQ PROG-PC VALUE))
 	      ((EQ OP 'RETURN-LIST)
@@ -524,16 +608,9 @@
 	(RPLACA (VALUE-CELL-LOCATION 'OP) NIL)
 	(GO L2)
 
-	;; Here to do (RETURN VALUE) from either endtest, retvals, or main loop.
-   RETURN
-   	(RETURN VALUE)
-
-	;; Here to do (RETURN-LIST VALUE) if RETURN-LIST isn't implemented compiled yet.
+	;; Here to do (RETURN-LIST VALUE).  RETURN also handled through this path.
    RETURN-LIST
-	(OR (CDR VALUE) (RETURN (CAR VALUE)))
-	(RETURN-NEXT-VALUE (CAR VALUE))
-	(SETQ VALUE (CDR VALUE))
-	(GO RETURN-LIST)
+	(RETURN-LIST VALUE)
 
 	;; Here after finishin the body to step the DO-variables.
    STEP
@@ -567,6 +644,22 @@
 	(SETQ LIST (CDR LIST))
 	(GO L)))
 
+(DEFVAR QREVERSE-DUMMY-ARRAY-HEADER
+	(MAKE-ARRAY 100
+		    ':TYPE ':ART-Q-LIST
+		    ':AREA PERMANENT-STORAGE-AREA
+		    ':DISPLACED-TO (%MAKE-POINTER DTP-LOCATIVE NIL)))
+
+(DEFUN QREVERSE (LIST &AUX LENGTH RETURN-LIST (INHIBIT-SCHEDULING-FLAG T))
+  (SETQ RETURN-LIST (MAKE-LIST (SETQ LENGTH (LENGTH LIST))))
+  (%P-STORE-CONTENTS-OFFSET RETURN-LIST QREVERSE-DUMMY-ARRAY-HEADER 1)
+  (%P-STORE-CONTENTS-OFFSET LENGTH QREVERSE-DUMMY-ARRAY-HEADER 2)
+  (DO ((I (1- LENGTH) (1- I))
+       (L LIST (CDR L)))
+      ((NULL L))
+    (ASET (CAR L) QREVERSE-DUMMY-ARRAY-HEADER I))
+  RETURN-LIST)
+
 (DEFUN COPYLIST (LIST &OPTIONAL AREA FORCE-DOTTED)
   "Copy top level of list structure.  Dotted pair termination of list will be copied"
   (COND ((ATOM LIST) LIST)	;Might be NIL
@@ -595,6 +688,14 @@
 	       ((NLISTP P) AL)
 	     (COND ((LISTP (CAR P))		  ;THEN RECOPY THE ASSOC CELLS.
 		    (RPLACA P (CONS (CAAR P) (CDAR P)))))))))
+
+;;; (SUBST NIL NIL ...) is such an ugly language idiom...
+(DEFUN COPYTREE (TREE &OPTIONAL (DEFAULT-CONS-AREA DEFAULT-CONS-AREA))
+  "Copies a binary tree of CONSES."
+  (IF (ATOM TREE)
+      TREE
+      (CONS (COPYTREE (CAR TREE))
+	    (COPYTREE (CDR TREE)))))
 
 (DEFUN APPEND (&REST LISTS)
   (PROG (TOTAL-LENGTH ARGP VAL VALP)
@@ -699,13 +800,42 @@
 
 (DEFUN ASS (PRED ITEM LIST)
     (DO L LIST (CDR L) (NULL L)
-      (AND (FUNCALL PRED (CAAR L) ITEM)
+      (AND (FUNCALL PRED ITEM (CAAR L))
            (RETURN (CAR L)))))
 
 (DEFUN RASSOC (ITEM IN-LIST) 
-    (DO L IN-LIST (CDR L) (NULL L) 
-      (AND (EQUAL ITEM (CDAR L)) 
-	   (RETURN (CAR L)))))
+  (DO L IN-LIST (CDR L) (NULL L) 
+    (AND (EQUAL ITEM (CDAR L)) 
+	 (RETURN (CAR L)))))
+
+(DEFUN RASSQ (ITEM IN-LIST) 
+  (DO L IN-LIST (CDR L) (NULL L) 
+    (AND (EQ ITEM (CDAR L)) 
+	 (RETURN (CAR L)))))
+
+(DEFUN RASS (PRED ITEM IN-LIST) 
+  (DO L IN-LIST (CDR L) (NULL L) 
+    (AND (FUNCALL PRED ITEM (CDAR L))
+	 (RETURN (CAR L)))))
+
+;Like ASSQ, but doesnt complain if list element is not a cons.  Just ignores those.
+(DEFUN ASSQ-CAREFUL (KEY LST)
+  (PROG NIL 
+    L	(COND ((ATOM LST) (RETURN NIL))
+              ((ATOM (CAR LST)))
+              ((EQ KEY (CAAR LST))
+               (RETURN (CAR LST))))
+    	(SETQ LST (CDR LST))
+        (GO L)))
+
+(DEFUN ASSOC-CAREFUL (KEY LST)
+  (PROG NIL 
+    L	(COND ((ATOM LST) (RETURN NIL))
+              ((ATOM (CAR LST)))
+              ((EQUAL KEY (CAAR LST))
+               (RETURN (CAR LST))))
+    	(SETQ LST (CDR LST))
+        (GO L)))
 
 (DEFUN MEMBER (ITEM IN-LIST)
   (PROG NIL 
@@ -734,24 +864,25 @@
     (RPLACD (LAST TEM) TEM)
     TEM)
 
-(DEFUN LIST-IN-AREA (AREA &REST ELEMENTS)
-  (PROG (VAL TEM)
-	(OR ELEMENTS (RETURN NIL))
-	(OR (NUMBERP AREA) (SETQ AREA (SYMEVAL AREA)))
-	(SETQ TEM (SETQ VAL (MAKE-LIST AREA (LENGTH ELEMENTS))))
-  L	(RPLACA TEM (CAR ELEMENTS))
-	(COND ((NULL (SETQ TEM (CDR TEM))) (RETURN VAL)))
-	(SETQ ELEMENTS (CDR ELEMENTS))
-	(GO L)))
-	
-(DEFUN LIST (&REST ELEMENTS)
-  (PROG (VAL TEM)
-	(COND ((ATOM ELEMENTS) (RETURN NIL)))
-	(SETQ TEM (SETQ VAL (MAKE-LIST DEFAULT-CONS-AREA (LENGTH ELEMENTS))))
-  L	(RPLACA TEM (CAR ELEMENTS))
-	(COND ((NULL (SETQ TEM (CDR TEM))) (RETURN VAL)))
-	(SETQ ELEMENTS (CDR ELEMENTS))
-	(GO L)))
+;These are in microcode now. 
+;(DEFUN LIST-IN-AREA (AREA &REST ELEMENTS)
+;  (PROG (VAL TEM)
+;	(OR ELEMENTS (RETURN NIL))
+;	(OR (NUMBERP AREA) (SETQ AREA (SYMEVAL AREA)))
+;	(SETQ TEM (SETQ VAL (MAKE-LIST AREA (LENGTH ELEMENTS))))
+;  L	(RPLACA TEM (CAR ELEMENTS))
+;	(COND ((NULL (SETQ TEM (CDR TEM))) (RETURN VAL)))
+;	(SETQ ELEMENTS (CDR ELEMENTS))
+;	(GO L)))
+;	
+;(DEFUN LIST (&REST ELEMENTS)
+;  (PROG (VAL TEM)
+;	(COND ((ATOM ELEMENTS) (RETURN NIL)))
+;	(SETQ TEM (SETQ VAL (MAKE-LIST DEFAULT-CONS-AREA (LENGTH ELEMENTS))))
+;  L	(RPLACA TEM (CAR ELEMENTS))
+;	(COND ((NULL (SETQ TEM (CDR TEM))) (RETURN VAL)))
+;	(SETQ ELEMENTS (CDR ELEMENTS))
+;	(GO L)))
 
 (DEFUN TAILP (TAIL LIST)
     (DO LIST LIST (CDR LIST) (NULL LIST)
@@ -870,12 +1001,19 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 		   CHANGEDP))
 	  (T (RETURN LIST NIL)))))
 
-(DEFUN ELIMINATE-DUPLICATES (L)
-  "Delq's out any duplicate elements in the list.
+(DEFF REM-IF-NOT (FUNCTION SUBSET))
+(DEFF REM-IF (FUNCTION SUBSET-NOT))
+
+(DEFUN ELIMINATE-DUPLICATES (L &OPTIONAL (PREDICATE #'EQ) &AUX (MARKER '(DUPLICATE)))
+  "Destructively takes out any duplicate elements in the list.
    Leaves the first instance where it is and removes following instances."
   (DO ((L1 L (CDR L1)))
-      ((NULL L1) L)
-    (RPLACD L1 (DELQ (CAR L1) (CDR L1)))))
+      ((NULL L1)
+       (DELQ MARKER L))
+    (OR (EQ (CAR L1) MARKER)
+	(DO ((TEM (CDR L1) (CDR TEM)))
+	    ((NULL (SETQ TEM (MEM PREDICATE (CAR L1) TEM))))
+	  (RPLACA TEM MARKER)))))
 
 (DEFUN NSUBST (NEW OLD S-EXP &AUX TEM)
     (COND ((EQ OLD S-EXP) NEW)
@@ -928,86 +1066,159 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	  (T FORM)))
 
 (DEFVAR TYPEP-ALIST `((,DTP-SYMBOL . :SYMBOL)
-		      (,DTP-LIST . LIST)
+		      (,DTP-LIST . :LIST)
 		      (,DTP-FIX . :FIXNUM)
 		      (,DTP-SMALL-FLONUM . :SMALL-FLONUM)
-		      (,DTP-LOCATIVE . LOCATIVE)
+		      (,DTP-LOCATIVE . :LOCATIVE)
 		      (,DTP-FEF-POINTER . :COMPILED-FUNCTION)
-		      (,DTP-CLOSURE . CLOSURE)
+		      (,DTP-CLOSURE . :CLOSURE)
+		      (,DTP-ENTITY . :ENTITY)
+		      (,DTP-INSTANCE . :INSTANCE)
 		      (,DTP-U-ENTRY . :MICROCODE-FUNCTION)
-		      (,DTP-SELECT-METHOD . SELECT-METHOD)
+		      (,DTP-SELECT-METHOD . :SELECT-METHOD)
 		      (,DTP-STACK-GROUP . :STACK-GROUP)))
 
-(DEFPROP STRING STRINGP TYPEP)
-(DEFPROP ARRAY ARRAYP TYPEP)
-(DEFPROP ATOM ATOM TYPEP)
-(DEFPROP ENTITY ENTITYP TYPEP)
+(DEFPROP :STRING STRINGP TYPEP)
+(DEFPROP :ARRAY ARRAYP TYPEP)
+(DEFPROP :ATOM ATOM TYPEP)
 (DEFPROP :BIGNUM BIGP TYPEP)
 (DEFPROP :FIX FIXP TYPEP)
 (DEFPROP :FLOAT FLOATP TYPEP)
 (DEFPROP :NUMBER NUMBERP TYPEP)
 (DEFPROP :FLONUM FLONUMP TYPEP)   ;true if full precision flonum
+(DEFPROP :RATIONAL RATIONALP TYPEP)
 
-;must not use defun of non-atomic function name since real FSET-CAREFULLY not available
-; when this loaded
+;;; Pretty names for types.  This is used by the CHECK-ARG-TYPE macro.
+(DEFPROP :SYMBOL "a symbol" TYPE-NAME)
+(DEFPROP :LIST "a list" TYPE-NAME)
+(DEFPROP :FIXNUM "a fixnum" TYPE-NAME)
+(DEFPROP :SMALL-FLONUM "a small flonum" TYPE-NAME)
+(DEFPROP :LOCATIVE "a locative" TYPE-NAME)
+(DEFPROP :COMPILED-FUNCTION "a compiled function" TYPE-NAME)
+(DEFPROP :CLOSURE "a closure" TYPE-NAME)
+(DEFPROP :ENTITY "an entity" TYPE-NAME)
+(DEFPROP :INSTANCE "an instance" TYPE-NAME)
+(DEFPROP :MICROCODE-FUNCTION "a microcode function" TYPE-NAME)
+(DEFPROP :SELECT-METHOD "a select-method" TYPE-NAME)
+(DEFPROP :STACK-GROUP "a stack group" TYPE-NAME)
+(DEFPROP :STRING "a string" TYPE-NAME)
+(DEFPROP :ARRAY "an array" TYPE-NAME)
+(DEFPROP :ATOM "an atom" TYPE-NAME)
+(DEFPROP :BIGNUM "a bignum" TYPE-NAME)
+(DEFPROP :FIX "a fixed-point number" TYPE-NAME)
+(DEFPROP :FLOAT "a floating-point number" TYPE-NAME)
+(DEFPROP :NUMBER "a number" TYPE-NAME)
+(DEFPROP :FLONUM "a flonum" TYPE-NAME)
+(DEFPROP :RATIONAL "a rational" TYPE-NAME)
+
+(DEFSUBST FIXNUMP (X) "Unlike FIXP, true only for fixnums, not bignums"
+  (= (%DATA-TYPE X) DTP-FIX))
+
 (DEFUN FLONUMP (X)  "true if full precision flonum"
   (AND (= (%DATA-TYPE X) DTP-EXTENDED-NUMBER)
        (= (%P-LDB-OFFSET %%HEADER-TYPE-FIELD X 0) %HEADER-TYPE-FLONUM)))
 ;; These are redundant, but exist because LISTP is faster than = DTP-LIST
 ;; in compiled code.  The compiler uses TYPEP props before TYPEP-ALIST.
-(DEFPROP LIST LISTP TYPEP)
-(DEFPROP SYMBOL SYMBOLP TYPEP)
+(DEFPROP :LIST LISTP TYPEP)
+(DEFPROP :SYMBOL SYMBOLP TYPEP)
 
-(DEFUN TYPEP (X &OPTIONAL TYPE &AUX PRED FL)
+(DEFUN TYPEP (X &OPTIONAL TYPE &AUX PRED FL D (DTP (%DATA-TYPE X)))
   "(TYPEP x) => its type.  (TYPEP x y) => T if x is of type y"
   (COND (TYPE
-	 (SETQ PRED (OR (CAR (RASSOC TYPE TYPEP-ALIST)) (GET TYPE 'TYPEP)))
-	 (COND ((NUMBERP PRED)
-		(= (%DATA-TYPE X) PRED))
+	 (SETQ PRED (OR (CAR (RASSQ TYPE TYPEP-ALIST)) (GET TYPE 'TYPEP)))
+	 (COND ((NUMBERP PRED) (= DTP PRED))
 	       (PRED (FUNCALL PRED X))
 	       ((GET TYPE 'FLAVOR)
-		(AND (= (%DATA-TYPE X) DTP-INSTANCE)
-		     (= (%P-DATA-TYPE (SETQ FL (%P-CONTENTS-AS-LOCATIVE X)))
+		(AND (= DTP DTP-INSTANCE)
+		     (= (%P-DATA-TYPE (SETQ FL (%P-CONTENTS-AS-LOCATIVE-OFFSET X 0)))
 			DTP-ARRAY-HEADER)
-		     (EQ 'FLAVOR (NAMED-STRUCTURE-SYMBOL
-				     (SETQ FL (%MAKE-POINTER DTP-ARRAY-POINTER FL))))
+		     (EQ (AREF (SETQ FL (%MAKE-POINTER DTP-ARRAY-POINTER FL)) 0) 'FLAVOR)
 		     (NOT (NULL (MEMQ TYPE (FLAVOR-DEPENDS-ON-ALL FL))))))
-	       ((FBOUNDP TYPE)
-		(COND ((NAMED-STRUCTURE-P X)
-		       (EQ (NAMED-STRUCTURE-SYMBOL X) TYPE))))
+	       ((OR (AND (SETQ D (GET TYPE 'DEFSTRUCT-DESCRIPTION))
+			 (DEFSTRUCT-DESCRIPTION-NAMED-P D))
+		    (GET TYPE 'DEFSTRUCT-NAMED-P))
+		(DO ((SYMBOL (NAMED-STRUCTURE-P X)
+			     (AND (SETQ D (GET SYMBOL 'DEFSTRUCT-DESCRIPTION))
+				  (CAR (DEFSTRUCT-DESCRIPTION-INCLUDE D)))))
+		    ((NULL SYMBOL) NIL)
+		  (AND (EQ TYPE SYMBOL) (RETURN T))))
 	       ((CLASS-SYMBOLP TYPE)
 		(AND (ENTITYP X)
 		     (SUBCLASS-OF-CLASS-SYMBOL-P (CLASS X) TYPE)))
 	       (T (TYPEP X (CERROR T NIL ':WRONG-TYPE-ARG
 				   "~1G~S is not a type known to TYPEP" 'TYPEP TYPE)))))
 	 
-	(T
-	 (LET ((DTP (%DATA-TYPE X)))
-	   (COND ((CDR (ASSQ DTP TYPEP-ALIST)))
+	(T (COND ((= DTP DTP-INSTANCE)
+		  (%P-CONTENTS-OFFSET
+		    (%P-CONTENTS-AS-LOCATIVE-OFFSET X 0)   ;Follow forwarding pointers.
+		    %INSTANCE-DESCRIPTOR-TYPENAME))
+		 ((= DTP DTP-ARRAY-POINTER)
+		  (COND ((NAMED-STRUCTURE-P X))
+			((STRINGP X) ':STRING)
+			(T ':ARRAY)))
 		 ((= DTP DTP-ENTITY)
-		  (COND ((AND (SYMBOLP (SETQ PRED (CAR (%MAKE-POINTER DTP-LIST X))))
-			      (GET PRED 'FLAVOR))
-			 PRED)
-			(T (CLASS-SYMBOL X))))
-		 ((= DTP DTP-INSTANCE)
-		  (%P-CONTENTS-OFFSET (%P-CONTENTS-AS-LOCATIVE X)
-				      %INSTANCE-DESCRIPTOR-TYPENAME))
+		  (CLASS-SYMBOL X))
 		 ((= DTP DTP-EXTENDED-NUMBER) 
 		  (SELECT (%P-LDB-OFFSET %%HEADER-TYPE-FIELD X 0)
 		    (%HEADER-TYPE-FLONUM ':FLONUM)
 		    (%HEADER-TYPE-BIGNUM ':BIGNUM)
+		    (%HEADER-TYPE-RATIONAL-BIGNUM ':RATIONAL)
 		    (OTHERWISE ':RANDOM)))
-		 ((= DTP DTP-ARRAY-POINTER)
-		  (COND ((NAMED-STRUCTURE-P X)
-			 (NAMED-STRUCTURE-SYMBOL X))
-			((STRINGP X) ':STRING)
-			(T ':ARRAY)))
-		 (T ':RANDOM))))))
+		 ((CDR (ASSQ DTP TYPEP-ALIST)))
+		 (T ':RANDOM)))))
+
+;;; These next two functions get called by compiler optimization of calls to TYPEP
+(DEFUN TYPEP-STRUCTURE (X TYPE &AUX XNAME D)
+  (COND ((SETQ XNAME (NAMED-STRUCTURE-P X))
+	 (DO () ((EQ XNAME TYPE) T)
+	   (OR (AND (SETQ D (GET XNAME 'DEFSTRUCT-DESCRIPTION))
+		    (DEFSTRUCT-DESCRIPTION-NAMED-P D)
+		    (SETQ XNAME (CAR (DEFSTRUCT-DESCRIPTION-INCLUDE D))))
+	       (RETURN NIL))))
+	((AND (SETQ D (GET TYPE 'DEFSTRUCT-DESCRIPTION))
+	      (DEFSTRUCT-DESCRIPTION-NAMED-P D))
+	 NIL)
+	(T (TYPEP X TYPE))))			;Optimization turned out to be wrong
+
+(DEFUN TYPEP-FLAVOR (X TYPE &AUX FL)
+  (COND ((AND (= (%DATA-TYPE X) DTP-INSTANCE)
+	      (= (%P-DATA-TYPE (SETQ FL (%P-CONTENTS-AS-LOCATIVE-OFFSET X 0)))
+		 DTP-ARRAY-HEADER)
+	      (EQ (AREF (SETQ FL (%MAKE-POINTER DTP-ARRAY-POINTER FL)) 0) 'FLAVOR))
+	 (NOT (NULL (MEMQ TYPE (FLAVOR-DEPENDS-ON-ALL FL)))))
+	((GET TYPE 'FLAVOR) NIL)
+	(T (TYPEP X TYPE))))			;Optimization turned out to be wrong
 
 (DEFUN SUBRP (X &AUX TEM)
     (SETQ TEM (%DATA-TYPE X))
     (OR (= TEM DTP-U-ENTRY)
 	(= TEM DTP-FEF-POINTER)))
+
+;T if X is something that can be applied to arguments,
+;but abstract objects and stack groups are excluded
+;because they are not normally thought of as functions
+;even though they interface like functions.
+;If ALLOW-SPECIAL-FORMS is NIL, this is only true of real functions.
+;Otherwise it is also true of macros and special-form functions.
+(DEFUN FUNCTIONP (X &OPTIONAL ALLOW-SPECIAL-FORMS)
+  (PROG ()
+   LOOP
+    (RETURN (SELECT (%DATA-TYPE X)
+	      ((DTP-FEF-POINTER DTP-U-ENTRY)
+	       (OR ALLOW-SPECIAL-FORMS
+		   (NOT (BIT-TEST (LOGIOR %ARG-DESC-QUOTED-REST %ARG-DESC-FEF-QUOTE-HAIR)
+				  (%ARGS-INFO X)))))
+	      ((DTP-LIST)
+	       (COND ((EQ (CAR X) 'LAMBDA)
+		      (OR ALLOW-SPECIAL-FORMS (NOT (MEMQ '&QUOTE (CADR X)))))
+		     ((EQ (CAR X) 'NAMED-LAMBDA)
+		      (OR ALLOW-SPECIAL-FORMS (NOT (MEMQ '&QUOTE (CADDR X)))))
+		     ((MEMQ (CAR X) '(SUBST NAMED-SUBST CURRY-BEFORE CURRY-AFTER)) T)))
+	      ((DTP-SELECT-METHOD DTP-CLOSURE) T)
+	      ((DTP-SYMBOL)
+	       (COND ((NOT (FBOUNDP X)) NIL)
+		     ((ARRAYP (SETQ X (FSYMEVAL X))))
+		     (T (GO LOOP))))))))
 
 (DEFUN PLIST (SYMBOL)
   (IF (SYMBOLP SYMBOL)
@@ -1016,16 +1227,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 
 ;;; Number functions.
 
-;FIXP NEEDED BY PRINT, SO IS IN COLD LOAD AND QRAND
-
-(DEFUN FLOATP (X)
-    (LET ((DTP (%DATA-TYPE X)))
-      (OR (= DTP DTP-SMALL-FLONUM)
-	  (AND (= DTP DTP-EXTENDED-NUMBER)
-	       (= (%P-LDB-OFFSET %%HEADER-TYPE-FIELD X 0) %HEADER-TYPE-FLONUM)))))
-
-(DEFUN SMALL-FLOATP (X)
-  (= (%DATA-TYPE X) DTP-SMALL-FLONUM))
+(DEFSUBST SMALL-FLOATP (X)
+  (= (%DATA-TYPE X) #.DTP-SMALL-FLONUM))	;#, would lose with cold-load generator
 
 (DEFUN BIGP (X)
   (LET ((DTP (%DATA-TYPE X)))
@@ -1047,6 +1250,30 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
       ((NULL B) T)
     (SETQ C (CAR B))
     (OR (< A C) (RETURN NIL))))
+
+(DEFF > #'GREATERP)
+
+(DEFF < #'LESSP)
+
+(DEFUN <= (NUMBER &REST NUMBERS)
+  (DO ((A NUMBER C)
+       (B NUMBERS (CDR B))
+       (C))
+      ((NULL B) T)
+    (SETQ C (CAR B))
+    (IF (> A C) (RETURN NIL))))
+
+(DEFUN >= (NUMBER &REST NUMBERS)
+  (DO ((A NUMBER C)
+       (B NUMBERS (CDR B))
+       (C))
+      ((NULL B) T)
+    (SETQ C (CAR B))
+    (IF (< A C) (RETURN NIL))))
+
+(DEFF  #'>=)
+
+(DEFF  #'<=)
 
 (DEFUN PLUS (&REST NUMBERS)
     (DO ((NUMBERS NUMBERS (CDR NUMBERS))
@@ -1096,6 +1323,14 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 
 (DEFF //$ #'//)
 
+(DEFUN \\ (X Y &REST ARGS)
+  (LOOP WITH ANSWER = (SYS:INTERNAL-\\ X Y)
+	FOR Z IN ARGS
+	DO (SETQ ANSWER (SYS:INTERNAL-\\ ANSWER Z))
+	FINALLY (RETURN ANSWER)))
+
+(DEFF GCD #'\\)
+
 ;MAX and MIN must be written with a single REST arg, otherwise,
 ; the hack of (APPLY #'MAX xx) can lose because it will try to
 ; copy the arglist to the stack.
@@ -1128,17 +1363,24 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (L ARGS (CDR L)))
 	((NULL L) ANS)))
 
+(DEFSUBST LOGNOT (NUMBER) (LOGXOR NUMBER -1))
+
+(DEFUN LOAD-BYTE (FROM-VALUE POSITION WIDTH)
+  (LDB (+ (LSH POSITION 6) WIDTH) FROM-VALUE))
+
+(DEFUN DEPOSIT-BYTE (INTO-VALUE POSITION WIDTH BYTE-VALUE)
+  (DPB BYTE-VALUE (+ (LSH POSITION 6) WIDTH) INTO-VALUE))
+
 (DEFF ADD1 #'1+)
 (DEFF SUB1 #'1-)
 (DEFF 1+$ #'1+)
 (DEFF 1-$ #'1-)
 (DEFF REMAINDER #'\)
-(DEFF GCD #'\\)
 (DEFF ^$ #'^)
 (DEFF EXPT #'^)
 
 (DEFUN FIXR (FLONUM)
-    (FIX (+ FLONUM .5)))
+  (FIX (+ FLONUM 0.5s0)))
 
 (DEFUN BOOLE (OP ARG1 &REST ARGS)
   (DO ((ANS ARG1 (*BOOLE OP ANS (CAR L)))
@@ -1219,7 +1461,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (SETQ *GENSYM-PREFIX (AR-1 ARG 0))))
   (AND (> (SETQ *GENSYM-COUNTER (1+ *GENSYM-COUNTER)) 9999.)
        (SETQ *GENSYM-COUNTER 0))
-  (SETQ PNAME (MAKE-ARRAY NIL 'ART-STRING 5))
+  (SETQ PNAME (MAKE-ARRAY 5 ':TYPE 'ART-STRING))
   (AS-1 *GENSYM-PREFIX PNAME 0)
   (AS-1 (+ 60 (// *GENSYM-COUNTER 1000.)) PNAME 1)
   (AS-1 (+ 60 (\ (// *GENSYM-COUNTER 100.) 10.)) PNAME 2)
@@ -1228,7 +1470,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
   (MAKE-SYMBOL PNAME))
 
 (DEFUN MACLISP-MAKE-STRING (CHARL &OPTIONAL AREA &AUX PNAME)
-  (SETQ PNAME (MAKE-ARRAY AREA 'ART-STRING (LENGTH CHARL)))
+  (SETQ PNAME (MAKE-ARRAY (LENGTH CHARL) ':AREA AREA ':TYPE 'ART-STRING))
   (DO ((I 0 (1+ I))
        (L CHARL (CDR L)))
       ((NULL L))
@@ -1248,32 +1490,33 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	(T NIL)))
 
 (DEFUN ASCII (N)
-  (LET ((STR (MAKE-ARRAY P-N-STRING 'ART-STRING 1)))
+  (LET ((STR (MAKE-ARRAY 1 ':AREA P-N-STRING ':TYPE 'ART-STRING)))
     (ASET N STR 0)
     (MULTIPLE-VALUE-BIND (SYM FLAG) (INTERN STR)
       (AND FLAG (RETURN-ARRAY STR))
       SYM)))
 
 (DEFUN STRING (X)
-  (COND ((ARRAYP X)	;ARRAYP rather than STRINGP for the editor's 16-bit strings.
-	 X)
+  (COND ((STRINGP X) X)
         ((SYMBOLP X)
 	 (GET-PNAME X))
 	((AND (FIXP X)
-	      (>= X 0)
+	      ( X 0)
 	      (< X 400))
-	 (AS-1 X (SETQ X (MAKE-ARRAY NIL 'ART-STRING 1)) 0)
+	 (ASET X (SETQ X (MAKE-ARRAY 1 ':TYPE 'ART-STRING)) 0)
 	 X)
+	((AND (TYPEP X ':INSTANCE)
+	      (FUNCALL X ':SEND-IF-HANDLES ':STRING-FOR-PRINTING)))
 	(T 
-	 (STRING (FERROR NIL "Cannot coerce ~S into a string" X)))))
+	 (FERROR NIL "Cannot coerce ~S into a string" X))))
 
 (DEFUN CHARACTER (X)
    (COND ((NUMBERP X)
 	  X)
-	 ((ARRAYP X)					;For 16-bit strings.
-	  (AR-1 X 0))
+	 ((STRINGP X)
+	  (AREF X 0))
 	 ((SYMBOLP X)
-	  (AR-1 (GET-PNAME X) 0))
+	  (AREF (GET-PNAME X) 0))
 	 (T (FERROR NIL "Cannot coerce ~S into a character" X))))
 
 (DEFUN IMPLODE (X)
@@ -1303,12 +1546,13 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (SETQ *IOCH ARG1))
 	((EQ OPERATION ':WHICH-OPERATIONS)
 	 '(:TYI :UNTYI))
-	(T (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER 'READLIST-STREAM
-							OPERATION ARG1 REST)))))
+	(T (STREAM-DEFAULT-HANDLER 'READLIST-STREAM OPERATION ARG1 REST))))
 
-(DEFUN READ-FROM-STRING (*IOLST &OPTIONAL EOF-OPTION (*IOCH 0))
-  (PROG NIL 
-	(RETURN (READ 'READ-FROM-STRING-STREAM EOF-OPTION) *IOCH)))
+(DEFUN READ-FROM-STRING (STRING &OPTIONAL (EOF-OPTION 'NO-EOF-OPTION)
+			 (START-CHAR-POSITION 0)
+			 &AUX (*IOLST STRING) (*IOCH START-CHAR-POSITION))
+  (DECLARE (RETURN-LIST CONTENTS END-CHAR-POSITION))
+  (VALUES (READ 'READ-FROM-STRING-STREAM EOF-OPTION) *IOCH))
 
 (DEFPROP READ-FROM-STRING-STREAM T IO-STREAM-P)
 
@@ -1325,8 +1569,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (SETQ *IOCH (1- *IOCH)))
 	((EQ OPERATION ':WHICH-OPERATIONS)
 	 '(:TYI :UNTYI))
-	(T (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER 'READ-FROM-STRING-STREAM
-							OPERATION ARG1 REST)))))
+	(T (STREAM-DEFAULT-HANDLER 'READ-FROM-STRING-STREAM OPERATION ARG1 REST))))
 
 (SPECIAL *IOLST *IOCH)	;USED BY READLIST, EXPLODE, ETC.
 
@@ -1352,8 +1595,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (SETQ *IOLST (CONS ARG1 *IOLST)))
 	((EQ OPERATION ':WHICH-OPERATIONS)
 	 '(:TYO))
-	(T (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER 'EXPLODE-STREAM
-							OPERATION ARG1 REST)))))
+	(T (STREAM-DEFAULT-HANDLER 'EXPLODE-STREAM OPERATION ARG1 REST))))
 
 (DEFUN FLATSIZE (X &AUX (*IOCH 0))
   (PRIN1 X (FUNCTION FLATSIZE-STREAM))
@@ -1370,39 +1612,49 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (SETQ *IOCH (1+ *IOCH)))
 	((EQ OPERATION ':WHICH-OPERATIONS)
 	 '(:TYO))
-	(T (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER 'FLATSIZE-STREAM
-							OPERATION ARG1 REST)))))
+	(T (STREAM-DEFAULT-HANDLER 'FLATSIZE-STREAM OPERATION ARG1 REST))))
 
-(DEFUN READLINE (&OPTIONAL STREAM EOF-OPTION &AUX CH EOF STRING IDX LEN)
-    (MULTIPLE-VALUE (STREAM EOF-OPTION) (DECODE-READ-ARGS STREAM EOF-OPTION))
-    ;; If stream does rubout handling, get inside the rubout handler
-    (COND ((AND (NOT RUBOUT-HANDLER)
-		(MEMQ ':RUBOUT-HANDLER (FUNCALL STREAM ':WHICH-OPERATIONS)))
-	   ;;Stream with rubouts assumed not to have EOFs
-	   (FUNCALL STREAM ':RUBOUT-HANDLER '() (FUNCTION READLINE) STREAM))
-    ;; If stream does line-reading, let it do it
-	  ((MEMQ ':LINE-IN (FUNCALL STREAM ':WHICH-OPERATIONS))
-	   (MULTIPLE-VALUE (STRING EOF) (FUNCALL STREAM ':LINE-IN T))
-	   (IF EOF EOF-OPTION STRING))
-    ;; Accumulate a string until CR, ignoring control characters
-    ;; If immediate EOF return EOF to caller, otherwise take chars up to EOF as a line
-	  ((NULL (SETQ CH (FUNCALL STREAM ':TYI)))
-	   EOF-OPTION)
-	  (T
-	    (UNWIND-PROTECT
-	      (PROGN (SETQ STRING (MAKE-ARRAY NIL 'ART-STRING (SETQ LEN 200.))
-			   IDX 0)
-		     (DO () (NIL)
-		       (COND ((OR (NULL CH) (= CH #\CR))
-			      (ADJUST-ARRAY-SIZE STRING IDX)
-			      (RETURN (PROG1 STRING (SETQ STRING NIL))))
-			     ((LDB-TEST %%KBD-CONTROL-META CH) ) ;Ignore controls
-			     (T (AND (= IDX LEN)
-				     (ADJUST-ARRAY-SIZE STRING (SETQ LEN (+ LEN 100))))
-				(ASET CH STRING IDX)
-				(SETQ IDX (1+ IDX))))
-		       (SETQ CH (FUNCALL STREAM ':TYI))))
-	      (AND STRING (RETURN-ARRAY STRING))))))
+(DEFUN READLINE (&REST READ-ARGS &AUX CH EOF STRING IDX LEN)
+  (DECLARE (ARGLIST &OPTIONAL STREAM EOF-OPTION OPTIONS))
+  (LET ((OPTIONS NIL))
+    ;; This kludge is to let us take a third, optional argument.
+    (COND ((> (LENGTH READ-ARGS) 2)
+	   (SETQ OPTIONS (THIRD READ-ARGS))
+	   (SETQ READ-ARGS (LIST (FIRST READ-ARGS) (SECOND READ-ARGS)))))
+    (MULTIPLE-VALUE-BIND (STREAM EOF-OPTION)
+	(DECODE-READ-ARGS READ-ARGS)
+      ;; If stream does rubout handling, get inside the rubout handler
+      (COND ((AND (NOT RUBOUT-HANDLER)
+		  (MEMQ ':RUBOUT-HANDLER (FUNCALL STREAM ':WHICH-OPERATIONS)))
+	     ;;Stream with rubouts assumed not to have EOFs
+	     (FUNCALL STREAM ':RUBOUT-HANDLER OPTIONS #'READLINE STREAM EOF-OPTION))
+	    ;; If stream does line-reading, let it do it
+	    ((MEMQ ':LINE-IN (FUNCALL STREAM ':WHICH-OPERATIONS))
+	     (MULTIPLE-VALUE (STRING EOF) (FUNCALL STREAM ':LINE-IN T))
+	     (IF EOF
+		 (IF (EQ EOF-OPTION 'NO-EOF-OPTION)
+		     (FERROR NIL "End of file encountered on stream ~S" STREAM)
+		     EOF-OPTION)
+		 STRING))
+	    ;; Accumulate a string until CR, ignoring control characters
+	    ;; If immediate EOF return EOF to caller, otherwise take chars up to EOF as a line
+	    ((NULL (SETQ CH (FUNCALL STREAM ':TYI)))
+	     EOF-OPTION)
+	    (T
+	     (UNWIND-PROTECT
+	       (PROGN (SETQ STRING (MAKE-ARRAY (SETQ LEN 200.) ':TYPE 'ART-STRING)
+			    IDX 0)
+		      (DO () (NIL)
+			(COND ((OR (NULL CH) (= CH #\CR))
+			       (ADJUST-ARRAY-SIZE STRING IDX)
+			       (RETURN (PROG1 STRING (SETQ STRING NIL))))
+			      ((LDB-TEST %%KBD-CONTROL-META CH) )	;Ignore controls
+			      (T (AND (= IDX LEN)
+				      (ADJUST-ARRAY-SIZE STRING (SETQ LEN (+ LEN 100))))
+				 (ASET CH STRING IDX)
+				 (SETQ IDX (1+ IDX))))
+			(SETQ CH (FUNCALL STREAM ':TYI))))
+	       (AND STRING (RETURN-ARRAY STRING))))))))
 
 ;;; Array functions.
 
@@ -1428,7 +1680,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
   (SETQ TYPE (NTH (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0) ARRAY-TYPES))
   (CONS TYPE (ARRAY-DIMENSIONS ARRAY)))
 
-(DEFUN ARRAY-DIMENSIONS (ARRAY &AUX INDEX-LENGTH NDIMS LONG-ARRAY-P DIMS)
+(DEFUN ARRAY-DIMENSIONS (ARRAY &AUX INDEX-LENGTH NDIMS LONG-ARRAY-P DIMS PRODUCT)
   (AND (SYMBOLP ARRAY) (SETQ ARRAY (FSYMEVAL ARRAY)))
   (CHECK-ARG ARRAY ARRAYP "an array")
 	;SHOULD CHECK FOR INVZ
@@ -1442,11 +1694,14 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
        (I (1+ LONG-ARRAY-P) (1+ I)))
       ((<= N 1))
       (SETQ DIMS (CONS (%P-LDB-OFFSET %%Q-POINTER ARRAY I) DIMS)))
-  (NRECONC DIMS (NCONS (// INDEX-LENGTH (LIST-PRODUCT DIMS)))))
+  (SETQ PRODUCT (LIST-PRODUCT DIMS))
+  (NRECONC DIMS (NCONS (COND ((ZEROP PRODUCT) 0)
+			     (T (// INDEX-LENGTH PRODUCT))))))
 
 ;Returns the number of bits that fit in an element of an array.
 (DEFUN ARRAY-ELEMENT-SIZE (ARRAY)
-  (OR (AR-1 ARRAY-BITS-PER-ELEMENT (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0))
+  (OR (CDR (ASSQ (AREF #'ARRAY-TYPES (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0))
+		 ARRAY-BITS-PER-ELEMENT))
       24.))	;Q-type, assume going to use unsigned fixnums.
 
 (DEFUN ARRAY-PUSH-EXTEND (ARRAY DATA &OPTIONAL EXTENSION
@@ -1462,9 +1717,12 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	     (ARRAY-PUSH ARRAY DATA))))
 
 (DEFUN ARRAY-IN-BOUNDS-P (ARRAY &REST POINT)
-    (NOT (OR (SOME POINT (FUNCTION MINUSP))
-	     (ITER-FETCHR ((MAPC X POINT) (STEP Y (ARRAY-#-DIMS ARRAY))) NIL
-			(AND (>= X (ARRAY-DIMENSION-N (1+ Y) ARRAY)) (RETURN T))))))
+  (OR (= (LENGTH POINT) (ARRAY-#-DIMS ARRAY))
+      (FERROR NIL "~S~:S wrong number of array subscripts" ARRAY POINT))
+  (LOOP FOR SUBSCRIPT IN POINT AS I UPFROM 1
+	DO (IF (OR (MINUSP SUBSCRIPT) ( SUBSCRIPT (ARRAY-DIMENSION-N I ARRAY)))
+	       (RETURN NIL))
+	FINALLY (RETURN T)))
 
 (DEFUN ARRAY-DISPLACED-P (ARRAY)
     (= (%P-LDB-OFFSET %%ARRAY-DISPLACED-BIT ARRAY 0) 1))
@@ -1490,15 +1748,21 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
     (AND (MEMQ TYPE '(READTABLE OBARRAY))
 	 (FERROR NIL "The array type ~S is not yet in" TYPE))
     (SETQ ARRAY
-	  (MAKE-ARRAY NIL 'ART-Q DIMLIST))
-    (COND ((EQ TYPE 'FIXNUM) (FILLARRAY ARRAY '(0)))
-	  ((EQ TYPE 'FLONUM) (FILLARRAY ARRAY '(0.0))))
+	  (MAKE-ARRAY DIMLIST ':TYPE (IF (EQ TYPE 'FLONUM) 'ART-FLOAT 'ART-Q)))
+    (IF (EQ TYPE 'FIXNUM)
+	(FILL-ARRAY ARRAY (APPLY #'* DIMLIST) 0))
     (COND ((NULL X)
 	   ARRAY)
 	  ((SYMBOLP X)
 	   (RPLACA (FUNCTION-CELL-LOCATION X) ARRAY)
 	   X)
 	  (T (FERROR NIL "~S is not a legal first arg for *ARRAY" X))))
+
+(DEFUN FILL-ARRAY (ARRAY SIZE VAL)
+  (DO ((ARY (MAKE-ARRAY SIZE ':DISPLACED-TO ARRAY))
+       (I 0 (1+ I)))
+      ((= I SIZE) (RETURN-ARRAY ARY))
+    (ASET VAL ARY I)))
 
 (DEFUN MAKE-ARRAY-INTO-NAMED-STRUCTURE (ARRAY)
     (COND ((ARRAYP ARRAY)
@@ -1525,11 +1789,10 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	(AND (NULL (CDR DIMENSIONS))
 	     (RETURN (ADJUST-ARRAY-SIZE ARRAY (CAR DIMENSIONS))))
 	;; Make the new array.
-	(SETQ NEW-ARRAY (MAKE-ARRAY (%AREA-NUMBER ARRAY)
-				    (ARRAY-TYPE ARRAY)
-				    DIMENSIONS
-				    NIL
-				    (ARRAY-LEADER-LENGTH ARRAY)))
+	(SETQ NEW-ARRAY (MAKE-ARRAY DIMENSIONS
+				    ':AREA (%AREA-NUMBER ARRAY)
+				    ':TYPE (ARRAY-TYPE ARRAY)
+				    ':LEADER-LENGTH (ARRAY-LEADER-LENGTH ARRAY)))
 	;; Copy the array leader.
         (DO ((I 0 (1+ I))
              (N (OR (ARRAY-LEADER-LENGTH ARRAY) 0) (1- N)))
@@ -1610,6 +1873,19 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 			    DTP-ONE-Q-FORWARD
 			    (VALUE-CELL-LOCATION TO-SYMBOL)))
 
+;Like FOLLOW-STRUCTURE-FORWARDING
+(DEFUN FOLLOW-CELL-FORWARDING (LOC EVCP-P)
+  (DO () (NIL)
+    (SELECT (%P-DATA-TYPE LOC)
+      ((DTP-HEADER-FORWARD DTP-BODY-FORWARD)
+       (SETQ LOC (FOLLOW-STRUCTURE-FORWARDING LOC)))
+      (DTP-ONE-Q-FORWARD
+       (SETQ LOC (%MAKE-POINTER (%DATA-TYPE LOC) (%P-CONTENTS-AS-LOCATIVE LOC))))
+      (DTP-EXTERNAL-VALUE-CELL-POINTER
+       (OR EVCP-P (RETURN LOC))
+       (SETQ LOC (%MAKE-POINTER (%DATA-TYPE LOC) (%P-CONTENTS-AS-LOCATIVE LOC))))
+      (OTHERWISE (RETURN LOC)))))
+
 (DEFUN CAR-LOCATION (CONS)
     (CHECK-ARG CONS (= (%DATA-TYPE CONS) DTP-LIST) "a CONS")
     (%MAKE-POINTER DTP-LOCATIVE CONS))
@@ -1631,180 +1907,213 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	   (DOLIST (FORM FORMS) (SETQ VAL (EVAL FORM)))
 	   VAL)))
 
-;; The first value is the arglist of FUNCTION: a list of the names
+;; ARGLIST returns the list of argument names and the list of
+;; returned value names of the definition of a function spec.
+;; The first value is the arglist: a list of the names
 ;; of the arguments, together with lambda list keywords.
-;; REAL-FLAG is T meaning don't use any debugging-info ARGLIST
-;; which is there for the benefit of humans.
+;; The second value is the list of returned value names.
+;; This list is present only if the definition of the function
+;; supplies one, and it is just a comment.  Those names play no
+;; actual role in execution.
+
+;; The argument REAL-FLAG is T to inhibit the use of any declared
+;; (comment only) arglist information.  Only the actual arglist of the function
+;; is returned.  Normally the arglist specified for human comsumption
+;; with an arglist declaration overrides the real one.
+
+;; REAL-FLAG also inhibits following encapsulations.
+;; So you get the arglist of the encapsulation rather than the
+;; original definition.
+
 ;; T should be used by anything that requires a "legitimate" arglist
 ;; that reliably corresponds to what the function does with its args.
 
-;; The second value is the "return-list", a list of names for the values
-;; which FUNCTION returns.  These names are just for documentation,
-;; and are obtained from a local declaration (RETURN-LIST names) in the function.
-;; See the sample declaration in this function.
+;; We accept both functions and function specs.
 
 (DEFUN ARGLIST (FUNCTION &OPTIONAL REAL-FLAG &AUX TYPE TEM DEBUG-INFO ARG-MAP LOCAL-MAP)
- (DECLARE (RETURN-LIST ARGLIST RETURN-LIST))
- (PROG ARGLIST ()
+  (DECLARE (RETURN-LIST ARGLIST RETURN-LIST TYPE))
   (SETQ TYPE (%DATA-TYPE FUNCTION))
-  (RETURN
-   (COND
-    ((SYMBOLP FUNCTION)
-     (ARGLIST (FSYMEVAL FUNCTION) REAL-FLAG))
-    ((LISTP FUNCTION) (COND ((EQ (CAR FUNCTION) 'LAMBDA)
-			     (CADR FUNCTION))
-			    ((EQ (CAR FUNCTION) 'SUBST)
-			     (CADR FUNCTION))
-			    ((EQ (CAR FUNCTION) 'NAMED-LAMBDA)
-			     (SETQ TEM (FUNCTION-DEBUGGING-INFO FUNCTION))
-			     (COND ((ASSQ 'TRACE TEM)
-				    (ARGLIST (CADR (ASSQ 'TRACE TEM)) REAL-FLAG))
-				   (T
-				    (PROG ()
-				      (RETURN-FROM ARGLIST
-					 (OR (AND (NOT REAL-FLAG) (CADR (ASSQ 'ARGLIST TEM)))
-					     (CADDR FUNCTION))
-					 (CADR (ASSQ 'RETURN-LIST TEM)))))))
-			    ((MEMQ (CAR FUNCTION) '(CURRY-BEFORE CURRY-AFTER))
-			     '(&REST ARGLIST))
-			    ((EQ (CAR FUNCTION) 'MACRO)
-			     ;; Look for (LOCAL-DECLARE ((ARGLIST ...))) type arglist
-			     (OR (AND (NOT REAL-FLAG)
-				      (CADR (ASSQ 'ARGLIST
-						  (FUNCTION-DEBUGGING-INFO (CDR FUNCTION)))))
-				 'MACRO))
-			    ((FDEFINEDP FUNCTION)
-			     (ARGLIST (FDEFINITION FUNCTION) REAL-FLAG))
-			    (T (FERROR NIL "~S not a recognized function" FUNCTION))))
-    ((= TYPE DTP-STACK-GROUP) '(STACK-GROUP-ARG))
-    ((ARRAYP FUNCTION)
-     (DO ((I (%P-LDB %%ARRAY-NUMBER-DIMENSIONS FUNCTION) (1- I))
-	  (L NIL))
-	 ((<= I 0) L)
-       (SETQ L (CONS (FORMAT NIL "DIM-~D" I) L))))
-    ((OR (= TYPE DTP-CLOSURE) (= TYPE DTP-ENTITY))
-     (ARGLIST (CAR (%MAKE-POINTER DTP-LIST FUNCTION)) REAL-FLAG))
-    ((OR (= TYPE DTP-SELECT-METHOD) (= TYPE DTP-INSTANCE))
-     '(KEYWORD &REST SELECT-METHOD-ARGS-VARY)) ;Can't tell arglist, shouldn't give error though
-    ((= TYPE DTP-FEF-POINTER)
-     (SETQ DEBUG-INFO (FUNCTION-DEBUGGING-INFO FUNCTION))
-     (SETQ ARG-MAP (CADR (ASSQ 'COMPILER:ARG-MAP DEBUG-INFO)))
-     (SETQ LOCAL-MAP (CADR (ASSQ 'COMPILER:LOCAL-MAP DEBUG-INFO)))
-     (RETURN-FROM ARGLIST
-       (COND ((AND (NOT REAL-FLAG) (CADR (ASSQ 'ARGLIST DEBUG-INFO))))
-	     ((SETQ TEM (GET-MACRO-ARG-DESC-POINTER FUNCTION))
-	      (DO ((ADL TEM (CDR ADL))
-		   (ARGNUM 0 (1+ ARGNUM))
-		   (ARGNAME)
-		   (OPTIONALP NIL)
-		   (QUOTEP NIL)
-		   (DES-DT FEF-DT-DONTCARE)
-		   (SPECIAL FEF-LOCAL)
-		   (INIT)
-		   (INITP T T)
-		   (ADLWORD)
-		   (ARGLIS NIL))
-		  ((NULL ADL)
-		   (NREVERSE ARGLIS))
-		(SETQ ADLWORD (CAR ADL))
-		(SELECT
-		  (MASK-FIELD %%FEF-ARG-SYNTAX ADLWORD)
-		  (FEF-ARG-REQ
-		    (AND OPTIONALP
-			 (FERROR NIL "Required args after optionals in ~S" FUNCTION)))
-		  (FEF-ARG-OPT (OR OPTIONALP (SETQ ARGLIS (CONS '&OPTIONAL
-								ARGLIS)))
-			       (SETQ OPTIONALP T))
-		  (FEF-ARG-REST (SETQ ARGLIS (CONS '&REST ARGLIS)))
-		  (OTHERWISE (RETURN (NREVERSE ARGLIS))))
-		(SELECT (MASK-FIELD %%FEF-QUOTE-STATUS ADLWORD)
-		  (FEF-QT-QT (OR QUOTEP (SETQ ARGLIS (CONS '&QUOTE
-							   ARGLIS)))
-			     (SETQ QUOTEP T))
-		  (FEF-QT-EVAL (AND QUOTEP (SETQ ARGLIS (CONS '&EVAL
-							      ARGLIS)))
-			       (SETQ QUOTEP NIL)))
-		(SETQ TEM (LDB %%FEF-DES-DT ADLWORD))
-		(COND ((NEQ TEM DES-DT)
-		       (SETQ DES-DT TEM)
-		       (SETQ ARGLIS (CONS (NTH TEM '(&DT-DONTCARE &DT-NUMBER 
-								  &DT-FIXNUM &DT-SYMBOL 
-								  &ATOM &LIST &DT-FRAME))
-					  ARGLIS))))
-		(SETQ TEM (LDB %%FEF-SPECIAL-BIT ADLWORD)) ;handle remote some time?
-		(COND ((NEQ TEM SPECIAL)
-		       (SETQ SPECIAL TEM)
-		       (SETQ ARGLIS (CONS (NTH TEM '(&LOCAL &SPECIAL))
-					  ARGLIS))))
-		(SETQ ARGNAME (COND ((= (LOGAND ADLWORD %FEF-NAME-PRESENT)
-					FEF-NM-YES)
-				     (SETQ ADL (CDR ADL))
-				     (CAR ADL))
-				    (T
-				      (SETQ ARGNAME (COND (( (MASK-FIELD %%FEF-ARG-SYNTAX ADLWORD)
-							      FEF-ARG-REST)
-							   (NTH ARGNUM ARG-MAP))
-							  (T (CAR LOCAL-MAP))))
-				      (IF (SYMBOLP ARGNAME) ARGNAME (CAR ARGNAME)))))
-		(SELECT (MASK-FIELD %%FEF-INIT-OPTION ADLWORD)
-		  (FEF-INI-NONE (SETQ INITP NIL))
-		  (FEF-INI-NIL (SETQ INIT NIL))
-		  (FEF-INI-PNTR (SETQ ADL (CDR ADL))
-				(SETQ INIT (LIST 'QUOTE (CAR ADL))))
-		  (FEF-INI-C-PNTR
-		    (SETQ ADL (CDR ADL))
-		    (COND ;((= (%P-DATA-TYPE ADL) DTP-EXTERNAL-VALUE-CELL-POINTER)
-		      ; (SETQ INIT			;THIS IS A BIT OF A KLUDGE
-		      ;       (%FIND-STRUCTURE-HEADER (%P-CONTENTS-AS-LOCATIVE ADL))))
-		      ((= (%DATA-TYPE (CAR ADL)) DTP-LOCATIVE)	;HOPE IT'S VALUE-CELL-LOCATION
-		       (SETQ INIT (%FIND-STRUCTURE-HEADER (CAR ADL))))
-		      ((SETQ INIT (CAAR ADL)))))
-		  (FEF-INI-OPT-SA (SETQ ADL (CDR ADL))
-				  (SETQ INIT '*HAIRY*))
-		  (FEF-INI-COMP-C (SETQ INIT '*HAIRY*))
-		  (FEF-INI-EFF-ADR (SETQ ADL (CDR ADL))
-				   (SETQ INIT '*HAIRY*))
-		  (FEF-INI-SELF (SETQ INIT ARGNAME)))
-		(SETQ ARGLIS (CONS (COND (INITP
-					   (LIST ARGNAME INIT))
-					 (T ARGNAME)) ARGLIS))))
-	     (T ;No ADL.  Use the fast-arg-option to get the general pattern
-	       ;and the argmap for the names.
-	       (LET ((FAST-OPT (%ARGS-INFO FUNCTION))
-		     (RES NIL))
-		 (LET ((MIN-ARGS (LDB %%ARG-DESC-MIN-ARGS FAST-OPT))
-		       (MAX-ARGS (LDB %%ARG-DESC-MAX-ARGS FAST-OPT))
-		       (EVALED-REST (LDB %%ARG-DESC-EVALED-REST FAST-OPT))
-		       (QUOTED-REST (LDB %%ARG-DESC-QUOTED-REST FAST-OPT)))
-		   (DOTIMES (I MIN-ARGS)
-		     (PUSH (CAAR ARG-MAP) RES)
-		     (SETQ ARG-MAP (CDR ARG-MAP)))
-		   (OR (= MIN-ARGS MAX-ARGS)
-		       (PUSH '&OPTIONAL RES))
-		   (DOTIMES (I (- MAX-ARGS MIN-ARGS))
-		     (PUSH (CAAR ARG-MAP) RES)
-		     (SETQ ARG-MAP (CDR ARG-MAP)))
-		   (OR (ZEROP QUOTED-REST)
-		       (PUSH '&QUOTE RES))
-		   (COND ((OR (NOT (ZEROP QUOTED-REST)) (NOT (ZEROP EVALED-REST)))
-			  (PUSH '&REST RES)
-			  (PUSH (CAAR LOCAL-MAP) RES)))
-		   (NREVERSE RES)))))
-       (CADR (ASSQ 'RETURN-LIST DEBUG-INFO))))
-    ((= TYPE DTP-U-ENTRY)
-     (MICRO-CODE-ENTRY-ARGLIST-AREA (%POINTER FUNCTION)))
-    ((FERROR NIL "~S is not a function" FUNCTION))))))
+  (COND ((SYMBOLP FUNCTION)
+	 (ARGLIST (FSYMEVAL FUNCTION) REAL-FLAG))
+	((LISTP FUNCTION)
+	 (COND ((EQ (CAR FUNCTION) 'LAMBDA)
+		(LDIFF (CADR FUNCTION) (MEMQ '&AUX (CADR FUNCTION))))
+	       ((EQ (CAR FUNCTION) 'SUBST)
+		(VALUES (CADR FUNCTION) NIL 'SUBST))
+	       ((OR (EQ (CAR FUNCTION) 'NAMED-SUBST)
+		    (EQ (CAR FUNCTION) 'NAMED-LAMBDA))
+		(SETQ DEBUG-INFO (FUNCTION-DEBUGGING-INFO FUNCTION))
+		(COND ((AND (NOT REAL-FLAG)
+			    (ASSQ 'ENCAPSULATED-DEFINITION DEBUG-INFO))
+		       (ARGLIST (CADR (ASSQ 'ENCAPSULATED-DEFINITION DEBUG-INFO))))
+		      (T
+		       (VALUES
+			 (OR (AND (NOT REAL-FLAG)
+				  ;Take this check out someday after everything recompiled
+				  (LET ((AL (CDR (ASSQ 'ARGLIST DEBUG-INFO))))
+				    (IF (ATOM (CAR AL)) AL	;New format
+					(CAR AL))))		;Old format
+			     (LDIFF (CADDR FUNCTION) (MEMQ '&AUX (CADDR FUNCTION))))
+			 ;Take this check out someday after everything recompiled
+			 (LET ((RL (CDR (ASSQ 'RETURN-LIST DEBUG-INFO))))
+			   (IF (ATOM (CAR RL)) RL		;New format
+			       (CAR RL)))			;Old format
+			 (AND (EQ (CAR FUNCTION) 'NAMED-SUBST) 'SUBST)))))
+	       ((MEMQ (CAR FUNCTION) '(CURRY-BEFORE CURRY-AFTER))
+		'(&REST ARGLIST))
+	       ((EQ (CAR FUNCTION) 'MACRO)
+		;; Look for (LOCAL-DECLARE ((ARGLIST ...))) type arglist
+		(VALUES (OR (AND (NOT REAL-FLAG)
+				  ;Take this check out someday after everything recompiled
+				  (LET ((AL (CDR (ASSQ 'ARGLIST (FUNCTION-DEBUGGING-INFO
+								   (CDR FUNCTION))))))
+				    (IF (ATOM (CAR AL)) AL	;New format
+					(CAR AL))))		;Old format
+			    'MACRO)
+			NIL
+			'MACRO))
+	       ((FDEFINEDP FUNCTION)
+		(ARGLIST (FDEFINITION FUNCTION) REAL-FLAG))
+	       (T (FERROR NIL "~S not a recognized function" FUNCTION))))
+	((= TYPE DTP-STACK-GROUP) '(STACK-GROUP-ARG))
+	((ARRAYP FUNCTION)
+	 (DO ((I (%P-LDB %%ARRAY-NUMBER-DIMENSIONS FUNCTION) (1- I))
+	      (L NIL))
+	     ((<= I 0) L)
+	   (SETQ L (CONS (FORMAT NIL "DIM-~D" I) L))))
+	((OR (CLOSUREP FUNCTION) (ENTITYP FUNCTION))
+	 (ARGLIST (CAR (%MAKE-POINTER DTP-LIST FUNCTION)) REAL-FLAG))
+	((OR (= TYPE DTP-SELECT-METHOD) (= TYPE DTP-INSTANCE))
+	 '(KEYWORD &REST SELECT-METHOD-ARGS-VARY))	;Can't tell arglist, shouldn't give error though
+	((= TYPE DTP-FEF-POINTER )
+	 (SETQ DEBUG-INFO (FUNCTION-DEBUGGING-INFO FUNCTION))
+	 (SETQ ARG-MAP (CADR (ASSQ 'COMPILER:ARG-MAP DEBUG-INFO)))
+	 (SETQ LOCAL-MAP (CADR (ASSQ 'COMPILER:LOCAL-MAP DEBUG-INFO)))
+	 (VALUES
+	   (COND ((AND (NOT REAL-FLAG)
+		       ;Take this check out someday after everything recompiled
+		       (LET ((AL (CDR (ASSQ 'ARGLIST DEBUG-INFO))))
+			 (IF (ATOM (CAR AL)) AL		;New format
+			     (CAR AL)))))		;Old format
+		 ((SETQ TEM (GET-MACRO-ARG-DESC-POINTER FUNCTION))
+		  (DO ((ADL TEM (CDR ADL))
+		       (ARGNUM 0 (1+ ARGNUM))
+		       (ARGNAME)
+		       (OPTIONALP NIL)
+		       (QUOTEP NIL)
+		       (DES-DT FEF-DT-DONTCARE)
+		       (SPECIAL FEF-LOCAL)
+		       (INIT)
+		       (INITP T T)
+		       (ADLWORD)
+		       (ARGLIS NIL))
+		      ((NULL ADL)
+		       (NREVERSE ARGLIS))
+		    (SETQ ADLWORD (CAR ADL))
+		    (SELECT
+		      (MASK-FIELD %%FEF-ARG-SYNTAX ADLWORD)
+		      (FEF-ARG-REQ
+		       (AND OPTIONALP
+			    (FERROR NIL "Required args after optionals in ~S" FUNCTION)))
+		      (FEF-ARG-OPT (OR OPTIONALP (SETQ ARGLIS (CONS '&OPTIONAL
+								    ARGLIS)))
+				   (SETQ OPTIONALP T))
+		      (FEF-ARG-REST (SETQ ARGLIS (CONS '&REST ARGLIS)))
+		      (OTHERWISE (RETURN (NREVERSE ARGLIS))))
+		    (SELECT (MASK-FIELD %%FEF-QUOTE-STATUS ADLWORD)
+		      (FEF-QT-QT (OR QUOTEP (SETQ ARGLIS (CONS '&QUOTE ARGLIS)))
+				 (SETQ QUOTEP T))
+		      (FEF-QT-EVAL (AND QUOTEP (SETQ ARGLIS (CONS '&EVAL
+								  ARGLIS)))
+				   (SETQ QUOTEP NIL)))
+		    (SETQ TEM (LDB %%FEF-DES-DT ADLWORD))
+		    (COND ((NEQ TEM DES-DT)
+			   (SETQ DES-DT TEM)
+			   (SETQ ARGLIS (CONS (NTH TEM '(&DT-DONTCARE &DT-NUMBER 
+								      &DT-FIXNUM &DT-SYMBOL 
+								      &ATOM &LIST &DT-FRAME))
+					      ARGLIS))))
+		    (SETQ TEM (LDB %%FEF-SPECIAL-BIT ADLWORD))	;handle remote some time?
+		    (COND ((NEQ TEM SPECIAL)
+			   (SETQ SPECIAL TEM)
+			   (SETQ ARGLIS (CONS (NTH TEM '(&LOCAL &SPECIAL))
+					      ARGLIS))))
+		    (SETQ ARGNAME (COND ((= (LOGAND ADLWORD %FEF-NAME-PRESENT)
+					    FEF-NM-YES)
+					 (SETQ ADL (CDR ADL))
+					 (CAR ADL))
+					(T
+					 (SETQ ARGNAME (COND (( (MASK-FIELD %%FEF-ARG-SYNTAX ADLWORD)
+								 FEF-ARG-REST)
+							      (NTH ARGNUM ARG-MAP))
+							     (T (CAR LOCAL-MAP))))
+					 (IF (SYMBOLP ARGNAME) ARGNAME (CAR ARGNAME)))))
+		    (SELECT (MASK-FIELD %%FEF-INIT-OPTION ADLWORD)
+		      (FEF-INI-NONE (SETQ INITP NIL))
+		      (FEF-INI-NIL (SETQ INIT NIL))
+		      (FEF-INI-PNTR (SETQ ADL (CDR ADL))
+				    (SETQ INIT (LIST 'QUOTE (CAR ADL))))
+		      (FEF-INI-C-PNTR
+		       (SETQ ADL (CDR ADL))
+		       (COND			;((= (%P-DATA-TYPE ADL) DTP-EXTERNAL-VALUE-CELL-POINTER)
+						; (SETQ INIT			;THIS IS A BIT OF A KLUDGE
+						;       (%FIND-STRUCTURE-HEADER (%P-CONTENTS-AS-LOCATIVE ADL))))
+			 ((= (%DATA-TYPE (CAR ADL)) DTP-LOCATIVE)	;HOPE IT'S VALUE-CELL-LOCATION
+			  (SETQ INIT (%FIND-STRUCTURE-HEADER (CAR ADL))))
+			 ((SETQ INIT (CAAR ADL)))))
+		      (FEF-INI-OPT-SA (SETQ ADL (CDR ADL))
+				      (SETQ INIT '*HAIRY*))
+		      (FEF-INI-COMP-C (SETQ INIT '*HAIRY*))
+		      (FEF-INI-EFF-ADR (SETQ ADL (CDR ADL))
+				       (SETQ INIT '*HAIRY*))
+		      (FEF-INI-SELF (SETQ INIT ARGNAME)))
+		    (SETQ ARGLIS (CONS (COND (INITP
+					      (LIST ARGNAME INIT))
+					     (T ARGNAME)) ARGLIS))))
+		 (T ;No ADL.  Use the fast-arg-option to get the general pattern
+						;and the argmap for the names.
+		  (LET ((FAST-OPT (%ARGS-INFO FUNCTION))
+			(RES NIL))
+		    (LET ((MIN-ARGS (LDB %%ARG-DESC-MIN-ARGS FAST-OPT))
+			  (MAX-ARGS (LDB %%ARG-DESC-MAX-ARGS FAST-OPT))
+			  (EVALED-REST (LDB %%ARG-DESC-EVALED-REST FAST-OPT))
+			  (QUOTED-REST (LDB %%ARG-DESC-QUOTED-REST FAST-OPT)))
+		      (DOTIMES (I MIN-ARGS)
+			(PUSH (CAAR ARG-MAP) RES)
+			(SETQ ARG-MAP (CDR ARG-MAP)))
+		      (OR (= MIN-ARGS MAX-ARGS)
+			  (PUSH '&OPTIONAL RES))
+		      (DOTIMES (I (- MAX-ARGS MIN-ARGS))
+			(PUSH (CAAR ARG-MAP) RES)
+			(SETQ ARG-MAP (CDR ARG-MAP)))
+		      (OR (ZEROP QUOTED-REST)
+			  (PUSH '&QUOTE RES))
+		      (COND ((OR (NOT (ZEROP QUOTED-REST)) (NOT (ZEROP EVALED-REST)))
+			     (PUSH '&REST RES)
+			     (PUSH (CAAR LOCAL-MAP) RES)))
+		      (NREVERSE RES)))))
+	   ;Take this check out someday after everything recompiled
+	   (LET ((RL (CDR (ASSQ 'RETURN-LIST DEBUG-INFO))))
+	     (IF (ATOM (CAR RL)) RL		;New format
+		 (CAR RL)))))			;Old format
+	((= TYPE DTP-U-ENTRY)
+	 (MICRO-CODE-ENTRY-ARGLIST-AREA (%POINTER FUNCTION)))
+	(T (FERROR NIL "~S is not a function" FUNCTION))))
 
-;LIKE %ARGS-INFO BUT ALSO WORKS FOR INTERPRETED FUNCTIONS
+;Like %ARGS-INFO but also works for interpreted functions
 (DEFUN ARGS-INFO (FCN)
-  (DO NIL ((NOT (SYMBOLP FCN)))
-    (SETQ FCN (CAR (FUNCTION-CELL-LOCATION FCN))))
+  ;; First, convert FCN from a function-spec to a function
+  (LOOP WHILE (OR (SYMBOLP FCN)
+		  (AND (LISTP FCN) (NOT (MEMQ (CAR FCN) '(LAMBDA NAMED-LAMBDA SUBST NAMED-SUBST
+							  CURRY-BEFORE CURRY-AFTER MACRO)))))
+	DO (SETQ FCN (FDEFINITION FCN)))
   (COND ((NLISTP FCN)
 	 (%ARGS-INFO FCN))
-	((MEMQ (CAR FCN) '(LAMBDA NAMED-LAMBDA))
-	 (AND (EQ (CAR FCN) 'NAMED-LAMBDA) (POP FCN))
+	((MEMQ (CAR FCN) '(LAMBDA NAMED-LAMBDA SUBST NAMED-SUBST))
+	 (AND (OR (EQ (CAR FCN) 'NAMED-LAMBDA) (EQ (CAR FCN) 'NAMED-SUBST))
+	      (POP FCN))
 	 (ARGS-INFO-FROM-LAMBDA-LIST (CADR FCN)))
-	(T %%ARG-DESC-EVALED-REST)))
+	(T %%ARG-DESC-EVALED-REST)))		;Most unspecific value
 
 (DEFUN ARGS-INFO-FROM-LAMBDA-LIST (LL &AUX (FLAGS 0) QUOTE MIN (N 0))
   (DO L LL (CDR L) (NULL L)
@@ -1817,11 +2126,11 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 						(COND (QUOTE %ARG-DESC-QUOTED-REST)
 						      (T %ARG-DESC-EVALED-REST))))))
 	     (OTHERWISE					;A VARIABLE
-	      (OR (MEMQ (CAR L) LAMBDA-LIST-KEYWORDS)
-		  (AND QUOTE				;QUOTED REGULAR ARGS PRESENT
-		       (SETQ FLAGS (LOGIOR FLAGS (LOGIOR %ARG-DESC-INTERPRETED
-							 %ARG-DESC-FEF-QUOTE-HAIR))))
-		  (SETQ N (1+ N))))))
+	      (COND ((NOT (MEMQ (CAR L) LAMBDA-LIST-KEYWORDS))
+		     (IF QUOTE				;QUOTED REGULAR ARGS PRESENT
+			 (SETQ FLAGS (LOGIOR FLAGS (LOGIOR %ARG-DESC-INTERPRETED
+							   %ARG-DESC-FEF-QUOTE-HAIR))))
+		     (SETQ N (1+ N)))))))
   (OR MIN (SETQ MIN N)) ;NO OPTIONALS
   (DPB N %%ARG-DESC-MAX-ARGS
        (DPB MIN %%ARG-DESC-MIN-ARGS
@@ -1829,14 +2138,24 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 
 ;; Return the debugging info alist of a function.  NIL if there is none or unreasonable arg.
 ;; Elements of the alist look like one of these things:
-;; (TRACE <trace internal symbol>)
-;;    The internal symbol is a copy of the traced symbol, made by trace, with the same pname.
-;;    Its function cell holds the original function definition.
+;; (SI:ENCAPSULATED-DEFINITION <internal symbol> <type of encapsulation>)
+;;    This means that this definition was made to encapsulate an inner definition.
+;;    See the file LISPM2;ENCAPS > for more info on these.
+;; (SI:RENAMINGS <alist of renamings>)
+;;    This sort of item is used together with (ENCAPSULATED-DEFINITION ... SI:RENAME-WITHIN).
+;;    It specifies what renamings are to be done to the original definition.
+;;    It is an alist of entries of the form (<symbol to rename>  <new name>).
+;;    See LISPM2;ENCAPS > for more information.
 ;; (ARGLIST <arglist>)
 ;;    The CADR of this element is an arglist to give the user when he asks.
 ;;    It is set up by having (LOCAL-DECLARE ((ARGLIST . <arglist>)) ...)
 ;;    around the function definition when it is compiled.
 ;;    This is for when the function's actual arglist is not informative enough.
+;; (RETURN-LIST <return-list>)
+;;    The CADR of this is the list of names of returned values,
+;;    to return as the second value if the user calls ARGLIST.
+;;    It is set up only by a local declare like the one which specifies
+;;    an arglist (above).
 ;; (COMPILER:LOCAL-MAP <local map>)
 ;;    The CADR of this element is a local map which indicates how local variables
 ;;    are assigned to slots in the function's local block.
@@ -1846,21 +2165,39 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 ;; (COMPILER:ARG-MAP <arg map>)
 ;;    This is just like a local map except that it describes slots in the argument block
 ;;    rather than slots in the local block.  It replaces keeping names in the ADL.
+;; (SYS:FUNCTION-PARENT <name>)
+;;    Gives the name of a definition whose source code includes this function.  This
+;;    is for functions automatically generated by defstruct, defflavor, etc.
+;; (:INTERNAL-FEF-OFFSETS <o1> <o2> ...)
+;;    Offsets within the fef of function cells for the :INTERNAL functions
+;;
 ;; The debugging info in a fef is made by the (DEBUG-INFO ...) lap instruction.
 ;; A NAMED-LAMBDA can also have debugging info.  If its CADR is not a symbol,
 ;; then it should be a list whose car is the function name and whose cdr is
 ;; the debugging info alist.
-(DEFUN FUNCTION-DEBUGGING-INFO (FUNCTION)
+
+;; Our arg can be a function or a function spec.
+(DEFUN DEBUGGING-INFO (FUNCTION)
     (DO () ((NOT (SYMBOLP FUNCTION)))
       (SETQ FUNCTION (FSYMEVAL FUNCTION)))
     (COND ((LISTP FUNCTION)
-           (AND (EQ (CAR FUNCTION) 'NAMED-LAMBDA)
-                (LISTP (CADR FUNCTION))
-                (CDADR FUNCTION)))
+           (COND ((AND (OR (EQ (CAR FUNCTION) 'NAMED-LAMBDA)
+			   (EQ (CAR FUNCTION) 'NAMED-SUBST))
+		       (LISTP (CADR FUNCTION)))
+		  (CDADR FUNCTION))
+		 ((MEMQ (CAR FUNCTION) '(LAMBDA NAMED-LAMBDA SUBST NAMED-SUBST
+						CURRY-BEFORE CURRY-AFTER MACRO))
+		  NIL)
+		 (T (DEBUGGING-INFO (FDEFINITION FUNCTION)))))
           ((EQ (%DATA-TYPE FUNCTION) DTP-FEF-POINTER)
            (AND (LDB-TEST %%FEFHI-MS-DEBUG-INFO-PRESENT
 			  (%P-CONTENTS-OFFSET FUNCTION %FEFHI-MISC))
                 (%P-CONTENTS-OFFSET FUNCTION (1- (%P-LDB %%FEFH-PC-IN-WORDS FUNCTION)))))))
+
+;; Old name which should be flushed eventually.
+(DEFF FUNCTION-DEBUGGING-INFO 'DEBUGGING-INFO)
+
+(DEFF LEXICAL-CLOSURE #'QUOTE)
 
 ;;; Macro expansion.
 
@@ -1883,13 +2220,16 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 			(RETURN `(,(CADAR MACRO-CALL) ,@(CDR MACRO-CALL) . ,(CDDAR MACRO-CALL))))
 		       ((EQ (CAAR MACRO-CALL) 'CURRY-BEFORE)
 			(RETURN `(,(CADAR MACRO-CALL) ,@(CDDAR MACRO-CALL) . ,(CDR MACRO-CALL))))
-                       ((EQ (CAAR MACRO-CALL) 'SUBST)
+                       ((OR (EQ (CAAR MACRO-CALL) 'SUBST) (EQ (CAAR MACRO-CALL) 'NAMED-SUBST))
                         (RETURN (SUBST-EXPAND (CAR MACRO-CALL) MACRO-CALL))))
 		 (RETURN MACRO-CALL))
+		((NOT (SYMBOLP (CAR MACRO-CALL))))
 		((SETQ TM (DECLARED-DEFINITION (CAR MACRO-CALL)))
 		 (RETURN (COND ((ATOM TM) MACRO-CALL)
 			       ((EQ (CAR TM) 'MACRO) (FUNCALL (CDR TM) MACRO-CALL))
-			       ((EQ (CAR TM) 'SUBST) (SUBST-EXPAND TM MACRO-CALL))
+			       ((OR (EQ (CAR TM) 'SUBST)
+				    (EQ (CAR TM) 'NAMED-SUBST))
+				(SUBST-EXPAND TM MACRO-CALL))
 			       (T MACRO-CALL))))
 		((SETQ TM (OPEN-CODE-P (CAR MACRO-CALL)))
 		 (RETURN (CONS TM (CDR MACRO-CALL)))))
@@ -1897,17 +2237,23 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 
 ;; Given a function-spec, find any definition it has been declared to have
 ;; for compilation purposes, and return it.
-(DEFUN DECLARED-DEFINITION (FUNCTION)
-  (OR (DOLIST (L LOCAL-DECLARATIONS)
-	(AND (EQ (CAR L) 'DEF)
-	     (EQUAL (CADR L) FUNCTION)	;Not EQ, might be a list
-	     (RETURN (CDDR L))))
-      (DOLIST (L FILE-LOCAL-DECLARATIONS)
-	(AND (EQ (CAR L) 'DEF)
-	     (EQUAL (CADR L) FUNCTION)	;Not EQ, might be a list
-	     (RETURN (CDDR L))))
-      (AND (FDEFINEDP FUNCTION)
-	   (FDEFINITION FUNCTION))))
+;; Unless the definition is a macro, unencapsulate it.
+(DEFUN DECLARED-DEFINITION (FUNCTION &AUX DEF)
+  (SETQ DEF (OR (DOLIST (L LOCAL-DECLARATIONS)
+		  (AND (EQ (CAR L) 'DEF)
+		       (EQUAL (CADR L) FUNCTION)	;Not EQ, might be a list
+		       (RETURN (CDDR L))))
+		(DOLIST (L FILE-LOCAL-DECLARATIONS)
+		  (AND (EQ (CAR L) 'DEF)
+		       (EQUAL (CADR L) FUNCTION)	;Not EQ, might be a list
+		       (RETURN (CDDR L))))
+		(AND (FDEFINEDP FUNCTION)
+		     (SETQ DEF (FDEFINITION FUNCTION))
+		     (COND ((ATOM DEF) DEF)
+			   ((EQ (CAR DEF) 'MACRO) DEF)
+			   (T (FDEFINITION (UNENCAPSULATE-FUNCTION-SPEC FUNCTION)))))))
+  (COND ((AND DEF (SYMBOLP DEF)) (DECLARED-DEFINITION DEF))
+	(T DEF)))
 
 ;; Expand a call to a SUBST function.  SUBST is the function definition to use.
 ;; FORM is the whole form.
@@ -1915,44 +2261,50 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 ;; and then substitute the expressions for the args in the body of the function with SUBLIS.
 
 (DEFUN SUBST-EXPAND (SUBST FORM)
-    (LET (ALIST OPTIONAL-FLAG (LAMBDA-LIST (CADR SUBST)) (BODY (CDDR SUBST)))
-        ;; Provide an implicit PROGN for the body.
-        (COND ((CDR BODY) (SETQ BODY `(PROGN . ,BODY)))
-              (T (SETQ BODY (CAR BODY))))
-        ;; Process the lambda list and args to make the alist.
-        (DO ((VALS (CDR FORM) (CDR VALS)))
-            (NIL)
-           ;; We allow only &OPTIONAL.
-           (DO () ((NEQ (CAR LAMBDA-LIST) '&OPTIONAL))
-	     (SETQ OPTIONAL-FLAG T)
-	     (POP LAMBDA-LIST))
-           ;; Detect runout of lambda list or of args.
-           (COND ((NULL VALS)
-                  (COND ((NULL LAMBDA-LIST)
-                         (RETURN (SUBLIS ALIST BODY)))
-                        ((NOT OPTIONAL-FLAG)
-                         (RETURN (CERROR T NIL ':INVALID-MACRO-CALL
-                                         "Too few arguments for ~S"
-                                         (CAR FORM) FORM)))))
-                 ((NULL LAMBDA-LIST)
-                  (RETURN (CERROR T NIL ':INVALID-MACRO-CALL
-                                  "Too many arguments for ~S"
-                                  (CAR FORM) FORM))))
-           ;; All lambda-list keywords aside from &OPTIONAL are erroneous.
-           (AND (MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS)
-                (RETURN
-                 (CONS (CERROR T NIL ':INVALID-MACRO-CALL
-                               "Subst-function ~S contains inappropriate keyword ~A"
-                               (CAR FORM) (CAR LAMBDA-LIST))
-                       (CDR FORM))))
-           ;; Here we have one more arg.  Add it to the alist.
-           (PUSH (CONS (COND ((ATOM (CAR LAMBDA-LIST)) (CAR LAMBDA-LIST))
-                             (T (CAAR LAMBDA-LIST)))
-                       (COND (VALS (CAR VALS))
-                             ((ATOM (CAR LAMBDA-LIST)) NIL)
-                             (T (CADAR LAMBDA-LIST))))
-                 ALIST)
-           (POP LAMBDA-LIST))))
+  (LET (ALIST OPTIONAL-FLAG LAMBDA-LIST BODY FN-NAME)
+    (COND ((EQ (CAR SUBST) 'NAMED-SUBST)
+	   (SETQ LAMBDA-LIST (CADDR SUBST) BODY (CDDDR SUBST))
+	   (SETQ FN-NAME (COND ((SYMBOLP (CADR SUBST)) (CADR SUBST))
+			       (T (CAADR SUBST)))))
+	  (T (SETQ LAMBDA-LIST (CADR SUBST) BODY (CDDR SUBST)
+		   FN-NAME (CAR FORM))))
+    ;; Provide an implicit PROGN for the body.
+    (COND ((CDR BODY) (SETQ BODY `(PROGN . ,BODY)))
+	  (T (SETQ BODY (CAR BODY))))
+    ;; Process the lambda list and args to make the alist.
+    (DO ((VALS (CDR FORM) (CDR VALS)))
+	(NIL)
+      ;; We allow only &OPTIONAL.
+      (DO () ((NEQ (CAR LAMBDA-LIST) '&OPTIONAL))
+	(SETQ OPTIONAL-FLAG T)
+	(POP LAMBDA-LIST))
+      ;; Detect runout of lambda list or of args.
+      (COND ((NULL VALS)
+	     (COND ((NULL LAMBDA-LIST)
+		    (RETURN (SUBLIS ALIST BODY)))
+		   ((NOT OPTIONAL-FLAG)
+		    (RETURN (CERROR T NIL ':INVALID-MACRO-CALL
+				    "Too few arguments for ~S"
+				    FN-NAME FORM)))))
+	    ((NULL LAMBDA-LIST)
+	     (RETURN (CERROR T NIL ':INVALID-MACRO-CALL
+			     "Too many arguments for ~S"
+			     FN-NAME FORM))))
+      ;; All lambda-list keywords aside from &OPTIONAL are erroneous.
+      (AND (MEMQ (CAR LAMBDA-LIST) LAMBDA-LIST-KEYWORDS)
+	   (RETURN
+	     (CONS (CERROR T NIL ':INVALID-MACRO-CALL
+			   "Subst-function ~S contains inappropriate keyword ~A"
+			   FN-NAME (CAR LAMBDA-LIST))
+		   (CDR FORM))))
+      ;; Here we have one more arg.  Add it to the alist.
+      (PUSH (CONS (COND ((ATOM (CAR LAMBDA-LIST)) (CAR LAMBDA-LIST))
+			(T (CAAR LAMBDA-LIST)))
+		  (COND (VALS (CAR VALS))
+			((ATOM (CAR LAMBDA-LIST)) NIL)
+			(T (CADAR LAMBDA-LIST))))
+	    ALIST)
+      (POP LAMBDA-LIST))))
 
 (DEFPROP :INVALID-MACRO-CALL INVALID-MACRO-CALL-EH-PROCEED EH:PROCEED)
 (DEFUN INVALID-MACRO-CALL-EH-PROCEED (IGNORE IGNORE)
@@ -1982,7 +2334,9 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 ;;;  :REPRESENTATION (:LIST, :STRUCTURE, number) - just for the initial region, default=struc
 ;;;  :GC (:STATIC, :DYNAMIC) - default = dynamic
 ;;;  :READ-ONLY, :PDL - attributes
+;;;  :ROOM - if specified, push this area onto ROOM, so that (ROOM) will list it.
 ;;;   (more attributes to be added, especially for additional region-space-types)
+;;;  :SWAP-RECOMMENDATIONS - swapin quantum size for area minus 1.
 ;;;  SYS:%%REGION-MAP-BITS - over-ride on map bits
 ;;;  SYS:%%REGION-SPACE-TYPE - over-ride on space type 
 ;;;  SYS:%%REGION-SCAVENGE-ENABLE - default 1, 0 disables scavenger
@@ -1990,7 +2344,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 		  &AUX (NAME NIL) (SIZE 37777777) (THE-REGION-SIZE NIL)
 		       (REPRESENTATION %REGION-REPRESENTATION-TYPE-STRUCTURE)
 		       (GC ':DYNAMIC) (READ-ONLY NIL) (PDL NIL)
-		       (MAP-BITS NIL) (SPACE-TYPE NIL) (SCAV-ENB NIL)
+		       (MAP-BITS NIL) (SPACE-TYPE NIL) (SCAV-ENB NIL) (RM NIL)
+		       (SWAP-RECOMMENDATIONS 0)
 		       AREA-NUMBER REGION-NUMBER ARG THE-REGION-BITS)
   ;; Process keyword arguments
   (DO L KEYWORDS (CDDR L) (NULL L)
@@ -2018,6 +2373,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	(SETQ GC ARG))
       (:READ-ONLY (SETQ READ-ONLY ARG))
       (:PDL (SETQ PDL ARG))
+      (:ROOM (SETQ RM ARG))
+      (:SWAP-RECOMMENDATIONS (SETQ SWAP-RECOMMENDATIONS ARG))
       (%%REGION-MAP-BITS (SETQ MAP-BITS ARG))
       (%%REGION-SPACE-TYPE (SETQ SPACE-TYPE ARG))
       (%%REGION-SCAVENGE-ENABLE (SETQ SCAV-ENB ARG))
@@ -2031,8 +2388,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
        (SETQ SPACE-TYPE (IF (EQ GC ':STATIC) %REGION-SPACE-STATIC %REGION-SPACE-NEW)))
   (AND (NULL SCAV-ENB)
        (SETQ SCAV-ENB (SELECT SPACE-TYPE
-			((%REGION-SPACE-STATIC %REGION-SPACE-FIXED %REGION-SPACE-EXIT
-			  %REGION-SPACE-COPY) 1)
+			;; What happens if the user specifies a random space type?
+			((%REGION-SPACE-STATIC %REGION-SPACE-FIXED %REGION-SPACE-COPY) 1)
 			(OTHERWISE 0))))
   (AND (NULL MAP-BITS)
        (SETQ MAP-BITS
@@ -2054,7 +2411,10 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
   (SETQ THE-REGION-BITS
 	(%LOGDPB MAP-BITS %%REGION-MAP-BITS
 		 (%LOGDPB SPACE-TYPE %%REGION-SPACE-TYPE
-			  (%LOGDPB SCAV-ENB %%REGION-SCAVENGE-ENABLE 0))))
+			  (%LOGDPB SCAV-ENB %%REGION-SCAVENGE-ENABLE
+				   (%LOGDPB SWAP-RECOMMENDATIONS
+					    %%REGION-SWAPIN-QUANTUM
+					    0)))))
   (LET ((INHIBIT-SCHEDULING-FLAG T)  ;Lock the area data-structure
 	(INHIBIT-SCAVENGING-FLAG T))
     (AND (MEMQ NAME AREA-LIST)
@@ -2064,14 +2424,213 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	 (FERROR NIL "Out of area numbers, cannot create ~S" NAME))
     (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-FREE-AREA/#-LIST)
 	   (AREA-REGION-LIST AREA-NUMBER))
-    (STORE (AREA-NAME AREA-NUMBER) NAME)
+    ;; Next two lines set up cdr codes correctly and concs onto end of area-list
+    ;; Array leader should be right, but store anyway just in case
+    (STORE-ARRAY-LEADER AREA-NUMBER #'AREA-NAME 0)
+    (ARRAY-PUSH #'AREA-NAME NAME)
     (STORE (AREA-REGION-SIZE AREA-NUMBER) THE-REGION-SIZE)
     (STORE (AREA-MAXIMUM-SIZE AREA-NUMBER) SIZE)
+    (STORE (AREA-SWAP-RECOMMENDATIONS AREA-NUMBER) SWAP-RECOMMENDATIONS)
     (SETQ REGION-NUMBER (%MAKE-REGION THE-REGION-BITS THE-REGION-SIZE))
     (STORE (AREA-REGION-LIST AREA-NUMBER) REGION-NUMBER)
     (STORE (REGION-LIST-THREAD REGION-NUMBER) (+ (LSH 1 23.) AREA-NUMBER))
-    (SETQ AREA-LIST (APPEND AREA-LIST (LIST NAME)))	;Causes it not to share with AREA-NAME
-    (SET NAME AREA-NUMBER)))	;Assign area as requested, return number
+    (AND RM (PUSH NAME ROOM))
+    (SET NAME AREA-NUMBER)))		;Assign area as requested, return number
+
+;;; New version of resource package, subsumes system-window facility
+;;; Note that WITH-RESOURCE is obsolete because it takes its "arguments"
+;;; in the wrong order.  It has been replaced by USING-RESOURCE.
 
-(DEFF REM-IF-NOT (FUNCTION SUBSET))
-(DEFF REM-IF (FUNCTION SUBSET-NOT))
+;;; Old form of DEFRESOURCE:
+;;;	(DEFRESOURCE [name | (name dont-make-initial-copy)] . creator-body)
+;;; New form of DEFRESOURCE:
+;;;	(DEFRESOURCE name parameters keyword value keyword value ...)
+;;;  Keywords are:
+;;;	:CONSTRUCTOR form   (this is required)
+;;;		Sees parameters as arguments.
+;;;	:FINDER form
+;;;		Sees parameters as arguments.
+;;;	:MATCHER form
+;;;		Sees OBJECT (in current package) and parameters as arguments.
+;;;	:CHECKER form
+;;;		Sees OBJECT and IN-USE-P (in current package) and parameters as arguments.
+;;;	  In the above four options, form may also be a symbol which is a function to call.
+;;;	  It gets the resource data structure as its first argument then the specified args.
+;;;	:INITIAL-COPIES number  (default 0)
+;;;		If this is specified, all parameters must be &optional and
+;;;		have suitable defaults.  This is generally a good idea anyway.
+;;;		Specifying NIL here is the same as zero.
+;;;  If :FINDER is specified, we keep no list of free objects and use :FINDER
+;;;  to find a free one by looking through the general environment.
+;;;  Otherwise we keep an a-list of objects and whether they are free.
+;;;  If :MATCHER is specified, we use it to check them against the parameters.
+;;;  Otherwise the a-list also includes the parameter values, which are checked
+;;;  with EQUAL (not EQ).
+;;;  If :CHECKER is specified, then it gets to pass on each object to decide whether
+;;;  or not to reuse it, whether or not it is already marked as in-use.
+;;;
+;;;  The finder, matcher, and checker are called without-interrupts.
+;;;
+;;;  Possible features that might be added: ability to keep a free list threaded
+;;;  through the objects.  Code to be run when something is deallocated, e.g.
+;;;  to deactivate a window.
+;;;
+;;;  Note: for windows, you typically want to use DEFWINDOW-RESOURCE,
+;;;  which supplies the right options to DEFRESOURCE.
+;;;
+;;; DEFRESOURCE no longer uses the value and function cells of the resource's name.
+;;; It puts on a DEFRESOURCE property of the following defstruct.  Note: only the
+;;; functions right here are "allowed" to know what is in this structure.
+
+(DEFSTRUCT (RESOURCE :NAMED :CONC-NAME)
+  NAME				;Symbol which names it
+  PARAMETIZER			;Function which defaults the parameters and returns list
+  CONSTRUCTOR			;Constructor function
+  FINDER			;Optional finder function
+  MATCHER			;Optional matcher function
+  CHECKER			;Optional checker function
+  (OBJECT-LIST NIL))		;List of elements: (object in-use-p parameters)
+
+(DEFMACRO DEFRESOURCE (NAME PARAMETERS &REST OPTIONS)
+  ;; Old format?
+  (IF (OR (LISTP NAME) (NULL OPTIONS) (LISTP (CAR OPTIONS)))
+      (PROGN (FORMAT ERROR-OUTPUT "~&WARNING: Obsolete form of DEFRESOURCE ~S.~%" NAME)
+	     `(DEFRESOURCE ,(IF (LISTP NAME) (CAR NAME) NAME)
+			   ()
+			   :INITIAL-COPIES ,(IF (AND (LISTP NAME) (CADR NAME)) 0 1)
+			   :CONSTRUCTOR (PROGN ,PARAMETERS ,@(COPYLIST OPTIONS))))
+      (LET ((CONSTRUCTOR-FORM NIL) (FINDER-FORM NIL) (MATCHER-FORM NIL) (CHECKER-FORM NIL)
+	    (CONSTRUCTOR-FUNCTION NIL) (FINDER-FUNCTION NIL) (MATCHER-FUNCTION NIL)
+	    (PARAMETIZER-FUNCTION NIL) (CHECKER-FUNCTION NIL) (INITIAL-COPIES 0))
+	(OR (LISTP PARAMETERS) (NULL PARAMETERS)
+	    (FERROR NIL "~S invalid parameter list" PARAMETERS))
+	(LOOP FOR (KEYWORD VALUE) ON OPTIONS BY 'CDDR
+	      DO (SELECTQ KEYWORD
+		   (:CONSTRUCTOR (SETQ CONSTRUCTOR-FORM VALUE))
+		   (:FINDER (SETQ FINDER-FORM VALUE))
+		   (:MATCHER (SETQ MATCHER-FORM VALUE))
+		   (:CHECKER (SETQ CHECKER-FORM VALUE))
+		   (:INITIAL-COPIES
+		     (SETQ INITIAL-COPIES
+			   (COND ((NULL VALUE) 0)
+				 ((NUMBERP VALUE) VALUE)
+				 (T (FERROR NIL ":INITIAL-COPIES ~S - number required"
+						VALUE)))))
+		   (OTHERWISE (FERROR NIL "~S illegal option in DEFRESOURCE" KEYWORD))))
+	(OR CONSTRUCTOR-FORM (FERROR NIL "DEFRESOURCE requires the :CONSTRUCTOR option"))
+	;;Pick function names.  Note that NIL is SYMBOLP.
+	(SETQ CONSTRUCTOR-FUNCTION (IF (SYMBOLP CONSTRUCTOR-FORM) CONSTRUCTOR-FORM
+				       `(:PROPERTY ,NAME RESOURCE-CONSTRUCTOR)))
+	(SETQ FINDER-FUNCTION (IF (SYMBOLP FINDER-FORM) FINDER-FORM
+				  `(:PROPERTY ,NAME RESOURCE-FINDER)))
+	(SETQ MATCHER-FUNCTION (IF (SYMBOLP MATCHER-FORM) MATCHER-FORM
+				   `(:PROPERTY ,NAME RESOURCE-MATCHER)))
+	(SETQ CHECKER-FUNCTION (IF (SYMBOLP CHECKER-FORM) CHECKER-FORM
+				   `(:PROPERTY ,NAME RESOURCE-CHECKER)))
+	(SETQ PARAMETIZER-FUNCTION (IF (AND PARAMETERS (NOT MATCHER-FORM) (NOT FINDER-FORM))
+				       `(:PROPERTY ,NAME RESOURCE-PARAMETIZER)))
+	`(PROGN 'COMPILE
+	   ,(IF (NOT (SYMBOLP CONSTRUCTOR-FORM))
+		`(DEFUN ,CONSTRUCTOR-FUNCTION (IGNORE ,@PARAMETERS)
+		   ,CONSTRUCTOR-FORM))
+	   ,(IF (NOT (SYMBOLP FINDER-FORM))
+		`(DEFUN ,FINDER-FUNCTION (IGNORE ,@PARAMETERS)
+		   ,FINDER-FORM))
+	   ,(IF (NOT (SYMBOLP MATCHER-FORM))
+		`(DEFUN ,MATCHER-FUNCTION (IGNORE ,(INTERN "OBJECT") ,@PARAMETERS)
+		   ,MATCHER-FORM))
+	   ,(IF (NOT (SYMBOLP CHECKER-FORM))
+		`(DEFUN ,CHECKER-FUNCTION (IGNORE ,(INTERN "OBJECT") ,(INTERN "IN-USE-P")
+					   ,@PARAMETERS)
+		   ,CHECKER-FORM))
+	   ,(IF PARAMETIZER-FUNCTION
+		`(DEFUN ,PARAMETIZER-FUNCTION ,PARAMETERS
+		   (LIST ,@(LOOP FOR P IN PARAMETERS
+				 UNLESS (MEMQ P LAMBDA-LIST-KEYWORDS)
+				  COLLECT (IF (SYMBOLP P) P (CAR P))))))
+	   (INITIALIZE-RESOURCE ',NAME ',CONSTRUCTOR-FUNCTION ',FINDER-FUNCTION
+				',MATCHER-FUNCTION ',CHECKER-FUNCTION
+				',PARAMETIZER-FUNCTION ',INITIAL-COPIES)))))
+
+(DEFPROP DEFRESOURCE "Resource" DEFINITION-TYPE-NAME)
+
+(DEFUN INITIALIZE-RESOURCE (NAME CONSTRUCTOR-FUNCTION FINDER-FUNCTION MATCHER-FUNCTION
+			    CHECKER-FUNCTION PARAMETIZER-FUNCTION INITIAL-COPIES)
+  (OR (SYMBOLP CONSTRUCTOR-FUNCTION)
+      (SETQ CONSTRUCTOR-FUNCTION (GET (SECOND CONSTRUCTOR-FUNCTION)
+				      (THIRD CONSTRUCTOR-FUNCTION))))
+  (OR (SYMBOLP FINDER-FUNCTION)
+      (SETQ FINDER-FUNCTION (GET (SECOND FINDER-FUNCTION) (THIRD FINDER-FUNCTION))))
+  (OR (SYMBOLP MATCHER-FUNCTION)
+      (SETQ MATCHER-FUNCTION (GET (SECOND MATCHER-FUNCTION) (THIRD MATCHER-FUNCTION))))
+  (OR (SYMBOLP CHECKER-FUNCTION)
+      (SETQ CHECKER-FUNCTION (GET (SECOND CHECKER-FUNCTION) (THIRD CHECKER-FUNCTION))))
+  (OR (SYMBOLP PARAMETIZER-FUNCTION)
+      (SETQ PARAMETIZER-FUNCTION (GET (SECOND PARAMETIZER-FUNCTION)
+				      (THIRD PARAMETIZER-FUNCTION))))
+  (AND (RECORD-SOURCE-FILE-NAME NAME 'DEFRESOURCE)
+       (LET ((RESOURCE (MAKE-RESOURCE NAME NAME
+				      PARAMETIZER PARAMETIZER-FUNCTION
+				      CONSTRUCTOR CONSTRUCTOR-FUNCTION
+				      FINDER FINDER-FUNCTION
+				      MATCHER MATCHER-FUNCTION
+				      CHECKER CHECKER-FUNCTION))
+	     (OLD-RESOURCE (GET NAME 'DEFRESOURCE)))
+	 (AND OLD-RESOURCE		;Save any old objects when reloading a DEFRESOURCE
+	      (SETF (RESOURCE-OBJECT-LIST RESOURCE) (RESOURCE-OBJECT-LIST OLD-RESOURCE)))
+	 (PUTPROP NAME RESOURCE 'DEFRESOURCE)
+	 (LOOP FOR OBJECT IN (LOOP REPEAT INITIAL-COPIES COLLECT (ALLOCATE-RESOURCE NAME))
+	       DO (DEALLOCATE-RESOURCE NAME OBJECT))))
+  NAME)
+
+(DEFUN CLEAR-RESOURCE (RESOURCE-NAME &AUX RESOURCE)
+  (CHECK-ARG RESOURCE-NAME (SETQ RESOURCE (GET RESOURCE-NAME 'DEFRESOURCE))
+	     "the name of a resource")
+  (SETF (RESOURCE-OBJECT-LIST RESOURCE) NIL))
+
+(DEFUN ALLOCATE-RESOURCE (RESOURCE-NAME &REST PARAMETERS &AUX RESOURCE (PARAMS NIL) TEM)
+  (CHECK-ARG RESOURCE-NAME (SETQ RESOURCE (GET RESOURCE-NAME 'DEFRESOURCE))
+	     "the name of a resource")
+  (AND (SETQ TEM (RESOURCE-PARAMETIZER RESOURCE))
+       (SETQ PARAMS (APPLY TEM PARAMETERS)))
+  (WITHOUT-INTERRUPTS
+    (COND ((SETQ TEM (RESOURCE-FINDER RESOURCE))
+	   (LEXPR-FUNCALL TEM RESOURCE PARAMETERS))
+	  ((LOOP WITH CHECKER = (RESOURCE-CHECKER RESOURCE)
+		 WITH MATCHER = (RESOURCE-MATCHER RESOURCE)
+		 FOR ITEM IN (RESOURCE-OBJECT-LIST RESOURCE)
+		 AS OBJ = (CAR ITEM) AND IN-USE-P = (CADR ITEM)
+		 WHEN (AND (IF CHECKER
+			       (LEXPR-FUNCALL CHECKER RESOURCE OBJ IN-USE-P PARAMETERS)
+			       (NOT IN-USE-P))
+			   (OR (NULL PARAMS) (EQUAL (CADDR ITEM) PARAMS))
+			   (OR (NOT MATCHER) (LEXPR-FUNCALL MATCHER RESOURCE OBJ PARAMETERS)))
+		   DO (SETF (CADR ITEM) T)
+		      (RETURN OBJ)))
+	  (T (SETQ INHIBIT-SCHEDULING-FLAG NIL)
+	     (SETQ TEM (LEXPR-FUNCALL (RESOURCE-CONSTRUCTOR RESOURCE) RESOURCE PARAMETERS))
+	     (SETQ TEM (IF (NULL PARAMS) (LIST TEM T) (LIST TEM T PARAMS)))
+	     (SETQ INHIBIT-SCHEDULING-FLAG T)
+	     (PUSH TEM (RESOURCE-OBJECT-LIST RESOURCE))
+	     (CAR TEM)))))
+
+(DEFUN DEALLOCATE-RESOURCE (RESOURCE-NAME OBJECT &AUX RESOURCE TEM)
+  (CHECK-ARG RESOURCE-NAME (SETQ RESOURCE (GET RESOURCE-NAME 'DEFRESOURCE))
+	     "the name of a resource")
+  (COND ((NOT (RESOURCE-FINDER RESOURCE))
+	 (OR (SETQ TEM (ASSQ OBJECT (RESOURCE-OBJECT-LIST RESOURCE)))
+	     (FERROR NIL "~S is not an object from the ~S resource" OBJECT RESOURCE-NAME))
+	 (SETF (CADR TEM) NIL))))	;Note, this doesn't need any locking
+
+(DEFMACRO USING-RESOURCE ((VAR NAME . PARAMETERS) &BODY BODY)
+  `(LET ((,VAR NIL))
+     (UNWIND-PROTECT
+       (PROGN
+	 (SETQ ,VAR (ALLOCATE-RESOURCE ',NAME . ,PARAMETERS))
+	   . ,BODY)
+       (AND ,VAR (DEALLOCATE-RESOURCE ',NAME ,VAR)))))
+
+;For compatibility with old programs
+(DEFPROP WITH-RESOURCE COMPILER:OBSOLETE COMPILER:STYLE-CHECKER)
+(DEFMACRO WITH-RESOURCE ((NAME VAR) &BODY BODY)
+  `(USING-RESOURCE (,VAR ,NAME) . ,BODY))
