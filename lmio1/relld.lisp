@@ -420,9 +420,9 @@
 	      ((= type 1)
 	       (set form (%p-contents-offset org (setq i (1+ i)))))
 	      ((= type 2)
-	       (prog (tem si:fdefine-file-symbol)
+	       (prog (tem si:fdefine-file-pathname)
 		     (setq tem (%p-contents-offset org (setq i (1+ i)))
-			   si:fdefine-file-symbol (%p-contents-offset org (setq i (1+ i))))
+			   si:fdefine-file-pathname (%p-contents-offset org (setq i (1+ i))))
 		     (fset-carefully form tem))))))))
 
 ;Read the next halfword from the file.

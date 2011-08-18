@@ -19,6 +19,9 @@
 ;;;                          NOTE!!!! A bus grant jumper must be run to the board you are
 ;;;                          debugging in order for interrupts to work!
 
+(DEFVAR CHATST-USE-DEBUG NIL)   ;if T, everything refers to machine on debug interface
+(DEFVAR CHATST-PACKET-LENGTH 20)	;Packet length chatst sends
+
 ;;;  **** NOTE *****
 ;;;  Here are some typical screws encountered in testing chaos boards:
 ;;;  If you get a CRC error, but the contents of the packet is NOT printed out,
@@ -57,6 +60,9 @@
 ;;; 10000	;RCV DONE
 
 
+(DEFMACRO INITIATE-PACKET-TRANSMISSION ()
+  '(%U-READ INITIATE-TRANSFER-REGISTER-TEST))
+
 (DEFUN SET-BASE-ADDRESS (&OPTIONAL (BASE-ADDRESS 764140))
     "Set the base UNIBUS address for the Chaos net device.
 Argument is optional and defaults to 764140.  Defines various
@@ -72,9 +78,7 @@ the device at the specified address."
 	  (+ BASE-ADDRESS (LSH %CHAOS-START-TRANSMIT-OFFSET 1))
 	  INTERVAL-TIMER-REGISTER-TEST
 	  (+ BASE-ADDRESS 20))
-    (FORMAT T "~%My number: ~O" (setq chatst-address (%unibus-read MY-NUMBER-REGISTER-TEST))))
-
-(SET-BASE-ADDRESS)
+    (FORMAT T "~%My number: ~O" (setq chatst-address (%u-read MY-NUMBER-REGISTER-TEST))))
 
 (DEFVAR CHATST-PATTERN (MAKE-ARRAY NIL 'ART-16B 256.))
 
@@ -82,7 +86,7 @@ the device at the specified address."
 
 (DEFUN SET-PATTERN (PAT)
   (SETQ CHATST-PATTERN-TYPE PAT)
-  (DO I 0 (1+ I) (= I 20)
+  (DO I 0 (1+ I) (= I CHATST-PACKET-LENGTH)
     (AS-1 (COND ((EQ PAT 'FLOATING-ONE) (LSH 1 I))
                 ((EQ PAT 'FLOATING-ZERO) (LOGXOR (LSH 1 I) -1))
                 ((EQ PAT 'ADDRESS) I)
@@ -95,7 +99,7 @@ the device at the specified address."
 
 (DEFVAR CHATST-USE-RECEIVE-ALL T)		;reasonable???
 
-(DEFUN CHATST ()
+(DEFUN CHATST (&OPTIONAL (LOOPBACK-COUNT 4) (CABLE-COUNT 4))
     "Standard test function for the chaos network interface.
 If it passes this test, sending and receiving packets from the network
 probably works.  Use SET-NCP-BASE-ADDRESS to give it a full test.
@@ -104,15 +108,18 @@ logic, etc.  This function cycles through several bit patterns, sending
 4 packets with each pattern, both in loopback and out on the cable.
 It does not send a properly formated packet with a header, but just
 a packet of raw bits."
+    (IF CHATST-USE-DEBUG (FORMAT T "~%Using debug interface"))
     (CHATST-RESET)
     (DOLIST (PAT '(FLOATING-ONE FLOATING-ZERO ADDRESS 52525 0 177777))
       (FORMAT T "~%Pattern:  ~A ~%Using Loopback ~%" PAT)
       (SET-PATTERN PAT)
       (LET ((CHATST-USE-RECEIVE-ALL T))
-	(DO I 0 (1+ I) (= I 4) (CHATST-PREP T) (CHATST-XMT) (CHATST-RCV)))
+	(DOTIMES (I LOOPBACK-COUNT)
+	  (CHATST-PREP T) (CHATST-XMT) (CHATST-RCV)))
       (FORMAT T "~%Using the cable ~%")
       (LET ((CHATST-USE-RECEIVE-ALL NIL))
-	(DO I 0 (1+ I) (= I 4) (CHATST-PREP NIL) (CHATST-XMT) (CHATST-RCV T)))))
+	(DOTIMES (I CABLE-COUNT)
+	  (CHATST-PREP NIL) (CHATST-XMT) (CHATST-RCV T)))))
 
 (DEFUN CHATST-ONCE (&OPTIONAL (LOOPBACK NIL) (CHATST-USE-RECEIVE-ALL LOOPBACK))
   "Like CHATST, but only tries the currently defined pattern.  Call SET-PATTERN
@@ -123,75 +130,76 @@ to change the pattern."
 
 (DEFUN CHATST-TR-LOOP (&OPTIONAL LOOPBACK &AUX (CHATST-USE-RECEIVE-ALL LOOPBACK))
   (CHATST-RESET)
-  (DO () ((KBD-TYI-NO-HANG)) (CHATST-PREP LOOPBACK) (CHATST-XMT) (CHATST-RCV T)))
+  (DO () ((FUNCALL TERMINAL-IO ':TYI-NO-HANG)) (CHATST-PREP LOOPBACK)
+      (CHATST-XMT) (CHATST-RCV T)))
 
 (DEFUN CHATST-XMT ()
-    "Send a packet consisting of 16 rotating 1's and my address."
-    (DO I 0 (1+ I) (= I 20)
-	(%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-    (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (%UNIBUS-READ MY-NUMBER-REGISTER-TEST))
-    (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST	;improve chances of avoiding an abort
-		   (LOGIOR 10 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST)))
-    (%UNIBUS-READ INITIATE-TRANSFER-REGISTER-TEST))
+    "Send a packet consisting of 16 words of selected pattern and my address."
+    (DO I 0 (1+ I) (= I CHATST-PACKET-LENGTH)
+	(%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+    (%u-write WRITE-BUFFER-REGISTER-TEST (%U-READ MY-NUMBER-REGISTER-TEST))
+    (%u-write CONTROL-STATUS-REGISTER-TEST	;improve chances of avoiding an abort
+		   (LOGIOR 10 (%U-READ CONTROL-STATUS-REGISTER-TEST)))
+    (INITIATE-PACKET-TRANSMISSION))
 
-(DEFUN CHATST-PACKET (&OPTIONAL (CABLE-DEST 440))	;MC-11
+(DEFUN CHATST-PACKET (&OPTIONAL (CABLE-DEST 3040))	;MC-11
     "Send a packet to some host (defaults to MC) which it will echo back."
-  (DO () ((bit-test 200 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST)))) ;AWAIT TDONE
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST 100000)  ;DATA
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST 40)	;NBYTES
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST 1440)	;MC
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST 0)
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST chatst-address)	;LISPM
+  (DO () ((bit-test 200 (%U-READ CONTROL-STATUS-REGISTER-TEST)))) ;AWAIT TDONE
+  (%u-write WRITE-BUFFER-REGISTER-TEST 100000)  ;DATA
+  (%u-write WRITE-BUFFER-REGISTER-TEST 40)	;NBYTES
+  (%u-write WRITE-BUFFER-REGISTER-TEST 1440)	;MC
+  (%u-write WRITE-BUFFER-REGISTER-TEST 0)
+  (%u-write WRITE-BUFFER-REGISTER-TEST chatst-address)	;LISPM
   (DO I 0 (1+ I) (= I 3)			;SEND THE PATTERN AS IDX, PKT, ACK
-    (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-  (DO I 0 (1+ I) (= I 20)			;SEND THE PATTERN AS 40 BYTES OF DATA
-    (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-  (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST CABLE-DEST)
-  (%UNIBUS-READ INITIATE-TRANSFER-REGISTER-TEST))
+    (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+  (DO I 0 (1+ I) (= I CHATST-PACKET-LENGTH)	;SEND THE PATTERN AS 40 BYTES OF DATA
+    (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+  (%u-write WRITE-BUFFER-REGISTER-TEST CABLE-DEST)
+  (INITIATE-PACKET-TRANSMISSION))
 
 
-(DEFUN CHATST-LOOP (&OPTIONAL (CABLE-DEST 440) (LOOP-BACK-P NIL))	;MC-11, NO LOOPBACK
+(DEFUN CHATST-LOOP (&OPTIONAL (CABLE-DEST 3040) (LOOP-BACK-P NIL))	;MC-11, NO LOOPBACK
     "Scope loop, ignore what is received (defaults to mc)"
-    (DO () ((KBD-TYI-NO-HANG))
+    (DO () ((FUNCALL TERMINAL-IO ':TYI-NO-HANG))
       (CHATST-PREP LOOP-BACK-P)
       (CHATST-PACKET CABLE-DEST)))
 
 ;;; Prepare the interface to receive.
 (DEFUN CHATST-PREP (LOOPBACK-P)
-  (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST
+  (%u-write CONTROL-STATUS-REGISTER-TEST
                  (+ (COND ((NOT LOOPBACK-P) 10) (T 12))
                     (COND ((NOT CHATST-USE-RECEIVE-ALL) 0) (T 4)))))
 
 (DEFUN CHATST-RESET ()
-    (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 20000))
+    (%u-write CONTROL-STATUS-REGISTER-TEST 20000))
 
 (SETQ INBUF (MAKE-ARRAY NIL 'ART-16B 256.))
 (DECLARE (SPECIAL INBUF))
 
 ;;; Look for a received packet, and complain in various ways.
-(DEFUN CHATST-RCV ( &OPTIONAL BUSY-WAIT (CNT 16.) &AUX CSR TEM ME LOSE)
+(DEFUN CHATST-RCV ( &OPTIONAL BUSY-WAIT (CNT CHATST-PACKET-LENGTH) &AUX CSR TEM ME LOSE)
   (IF BUSY-WAIT
       (DO () ((LDB-TEST %%CHAOS-CSR-RECEIVE-DONE
-			(%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))))
+			(%U-READ CONTROL-STATUS-REGISTER-TEST))))
       (PROCESS-SLEEP 10.))  ;Give it time to arrive
-  (SETQ CSR (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
-  (SETQ ME (%UNIBUS-READ MY-NUMBER-REGISTER-TEST))
+  (SETQ CSR (%U-READ CONTROL-STATUS-REGISTER-TEST))
+  (SETQ ME (%U-READ MY-NUMBER-REGISTER-TEST))
   (IF (LDB-TEST %%CHAOS-CSR-TRANSMIT-ABORT CSR)
       (FORMAT t "~%Transmit aborted, then~%"))
   (COND ((NOT (LDB-TEST %%CHAOS-CSR-RECEIVE-DONE CSR))
          (SETQ LOSE T) (PRINT 'NO-RECEIVE))
         (T (AND (LDB-TEST %%CHAOS-CSR-CRC-ERROR CSR)
-                (PROGN (SETQ LOSE T)
+                (PROGN (SETQ LOSE 'CRC)
                        (PRINT '"CRC Error indicated (check the data)")))
-           (OR (= (%UNIBUS-READ BIT-COUNT-REGISTER-TEST) (1- (* 16. (+ 3 CNT))))
+           (OR (= (%U-READ BIT-COUNT-REGISTER-TEST) (1- (* 16. (+ 3 CNT))))
                (PROGN (SETQ LOSE T)
-                      (PRINT (LIST (%UNIBUS-READ BIT-COUNT-REGISTER-TEST) 'BAD-BIT-COUNT))))
+                      (PRINT (LIST (%U-READ BIT-COUNT-REGISTER-TEST) 'BAD-BIT-COUNT))))
            (DO I 0 (1+ I) (= I CNT)
-             (AS-1 (%UNIBUS-READ READ-BUFFER-REGISTER-TEST) INBUF I))
-           (OR (= (SETQ TEM (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)) ME)
+             (AS-1 (%U-READ READ-BUFFER-REGISTER-TEST) INBUF I))
+           (IF ( (SETQ TEM (%U-READ READ-BUFFER-REGISTER-TEST)) ME)
                (PROGN (SETQ LOSE T)
                       (FORMAT T "~% DEST=~O SHOULD=~O" TEM ME)))
-           (OR (= (SETQ TEM (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)) ME)
+           (IF ( (SETQ TEM (%U-READ READ-BUFFER-REGISTER-TEST)) ME)
                (PROGN (SETQ LOSE T)
                       (FORMAT T "~% SOURCE=~O SHOULD=~O" TEM ME)))
            (DO ((I 0 (1+ I))
@@ -203,7 +211,14 @@ to change the pattern."
                     (TERPRI) (PRINC "LOC    GOOD   BAD")
                     (DO I 0 (1+ I) (= I CNT)
                       (FORMAT T "~%~2O  ~6O ~6O" I (AR-1 CHATST-PATTERN I) (AR-1 INBUF I)))
-                    (RETURN NIL))))))
+                    (RETURN NIL))))
+	   (%U-READ READ-BUFFER-REGISTER-TEST)	;gobble the CRC word
+	   (IF (AND (NOT (EQ LOSE 'CRC))	;don't bother pointing this out, if already
+		    (LDB-TEST %%CHAOS-CSR-CRC-ERROR (%U-READ CONTROL-STATUS-REGISTER-TEST)))
+	       (PROGN (FORMAT T "~%CRC error indicated after data readout~:[ even though data is correct~]."
+			      LOSE)
+		      (SETQ LOSE T)))
+	   ))
   (OR LOSE (FORMAT T "~&WIN")))
 
 ;;; Monitor the Net for traffic
@@ -214,28 +229,32 @@ to change the pattern."
   may tell you if something strange is happening on the network, such as
   a random host sending garbage packets, etc."
   (CHATST-RESET)
-      (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 14)        ;reset rcvr, RCV ALL
-  (DO () ((KBD-CHAR-AVAILABLE) (KBD-TYI-NO-HANG))
+  (%u-write CONTROL-STATUS-REGISTER-TEST 14)        ;reset rcvr, RCV ALL
+  (DO () ((FUNCALL TERMINAL-IO ':LISTEN) (FUNCALL TERMINAL-IO ':TYI-NO-HANG))
     (DO ((i 0 (1+ i)))
 	((> I 50.) (FORMAT T "."))
-      (COND ((bit-test 100000 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
+      (COND ((bit-test 100000 (%U-READ CONTROL-STATUS-REGISTER-TEST))
 	     (FORMAT T "~%---------------------~%")
-	     (AND (LDB-TEST %%CHAOS-CSR-CRC-ERROR (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
+	     (AND (LDB-TEST %%CHAOS-CSR-CRC-ERROR (%U-READ CONTROL-STATUS-REGISTER-TEST))
 		  (FORMAT T "CRC-Error "))
-	     (SETQ BITS (1+ (%UNIBUS-READ BIT-COUNT-REGISTER-TEST))
+	     (SETQ BITS (1+ (%U-READ BIT-COUNT-REGISTER-TEST))
 		   CNT (// BITS 16.))
 	     (OR (ZEROP (\  BITS 16.))
 		 (FORMAT T "Bad bit count, is ~O" BITS))
 	     (COND ((AND SHORT-P (> CNT 8))
 		    (DO I 0 (1+ I) (= I 5)
-			(FORMAT T "~&~O   ~O" I (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)))
+			(FORMAT T "~&~O   ~O" I (%U-READ READ-BUFFER-REGISTER-TEST)))
 		    (FORMAT T "~%     ...")
-		    (DO I 0 (1+ I) ( I (- CNT 8))(%UNIBUS-READ READ-BUFFER-REGISTER-TEST))
-		    (DO I (- CNT 3) (1+ I) (= I CNT)
-			(FORMAT T "~%~O   ~O" I (%UNIBUS-READ READ-BUFFER-REGISTER-TEST))))
+		    (DO I 0 (1+ I) ( I (- CNT 8))(%U-READ READ-BUFFER-REGISTER-TEST))
+		    (LET ((D (%U-READ READ-BUFFER-REGISTER-TEST))
+			  (S (%U-READ READ-BUFFER-REGISTER-TEST))
+			  (CRC  (%U-READ READ-BUFFER-REGISTER-TEST)))
+		      (FORMAT T "~% dest ~O  ~A" D (SI:GET-HOST-FROM-ADDRESS D ':CHAOS))
+		      (FORMAT T "~% src  ~O  ~A" S (SI:GET-HOST-FROM-ADDRESS S ':CHAOS))
+		      (FORMAT T "~% CRC ~O" CRC)))
 		   (T (DO I 0 (1+ I) (= I CNT)
-			  (FORMAT T "~&~O   ~O" I (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)))))
-	     (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 14)        ;reset rcvr, RCV ALL
+			  (FORMAT T "~&~O   ~O" I (%U-READ READ-BUFFER-REGISTER-TEST)))))
+	     (%u-write CONTROL-STATUS-REGISTER-TEST 14)        ;reset rcvr, RCV ALL
 	     (RETURN NIL)))))
   (CHATST-RESET))
 
@@ -246,77 +265,82 @@ to change the pattern."
 (DEFUN CHATST-SET-HEADER NIL
    (AS-1 100000 CHATST-HEADER 0)                   ;OPCODE (DATA)
    (AS-1 0 CHATST-HEADER 1)                        ;LENGTH IN BYTES
-   (AS-1 chatst-address CHATST-HEADER 2)               ;DESTINATION (CAUSE FORWARDING)
+   (AS-1 chatst-address CHATST-HEADER 2)           ;DESTINATION (CAUSE FORWARDING)
    (AS-1 0 CHATST-HEADER 3)
-   (AS-1 chatst-address CHATST-HEADER 4)               ;SOURCE
+   (AS-1 chatst-address CHATST-HEADER 4)           ;SOURCE
    (DO I 0 (1+ I) (= I 3)                          ;SRC-IDX, PK#, ACK#
        (AS-1 (AR-1 CHATST-PATTERN I) CHATST-HEADER (+ I 5))))
 
-(CHATST-SET-HEADER)                                ;Setup an echo header
-
-(DEFUN CHATST-ECHO (&OPTIONAL (DEST 440)  (LEN 20))
+(DEFUN CHATST-ECHO (&OPTIONAL (DEST 3040)  (LEN CHATST-PACKET-LENGTH))
   (CHATST-RESET)
-  (SETQ LEN (MIN LEN 248.))         ;4096.-header
+  (CHATST-SET-HEADER)                           ;Setup an echo header
+  (SETQ LEN (MIN LEN 248.))			;4096.-header
   (AS-1 (* LEN 2) CHATST-HEADER 1)
   (DO ((pat1 0 (1+ pat1))
        (pat2 (random) (random)))
-      ((KBD-TYI-NO-HANG))
-    (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 10)        ;reset rcvr
-      (do i 0 (+ i 2) ( i len)
-          (as-1 pat1 chatst-pattern i)
-          (as-1 pat2 chatst-pattern (1+ i)))
-      (format t "~%Patterns ~O, ~O" pat1 pat2)
-      ;;Try this pattern 10. times
-      (do ((j 0 (1+ j))) ((= j 10.))
-          (DO ((i 0 (1+ i)))
-              ((bit-test 200 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))) ;AWAIT TDONE
-              (COND ((> i 50.)
-                     (FORMAT T "~% TDONE timeout")
-                     (RETURN NIL))))
-          (DO I 0 (1+ I) (= I 8)    ;Fill in IDX, PKT, ACK with pattern 
-              (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-HEADER I)))
-          (DO I 0 (1+ I) (= I LEN)
-              (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-          (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 10)    ;reset rcvr
-          (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST DEST)
-          (%UNIBUS-READ INITIATE-TRANSFER-REGISTER-TEST)     ;start xmission
-          (DO ((i 0 (1+ i)))
-              ((> I 1000.) (FORMAT T "~% Rcv-done timeout"))
-              (COND ((BIT-TEST 100000 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
-                     (CHATST-CHECK-PK DEST LEN)
-                     (RETURN NIL)))) )))
+      ((FUNCALL TERMINAL-IO ':TYI-NO-HANG))
+    (%u-write CONTROL-STATUS-REGISTER-TEST 10)	;reset rcvr
+    (do i 0 (+ i 2) ( i len)
+	(as-1 pat1 chatst-pattern i)
+	(as-1 pat2 chatst-pattern (1+ i)))
+    (format t "~%Patterns ~O, ~O" pat1 pat2)
+    ;;Try this pattern 10. times
+    (do ((j 0 (1+ j))) ((= j 10.))
+      (DO ((i 0 (1+ i)))
+	  ((bit-test 200 (%U-READ CONTROL-STATUS-REGISTER-TEST)))	;AWAIT TDONE
+	(COND ((> i 50.)
+	       (FORMAT T "~% TDONE timeout")
+	       (RETURN NIL))))
+      (DO I 0 (1+ I) (= I 8)			;Fill in IDX, PKT, ACK with pattern 
+	  (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-HEADER I)))
+      (DO I 0 (1+ I) (= I LEN)
+	  (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+      (%u-write CONTROL-STATUS-REGISTER-TEST 10)	;reset rcvr
+      (%u-write WRITE-BUFFER-REGISTER-TEST DEST)
+      (INITIATE-PACKET-TRANSMISSION)
+      (DO ((i 0 (1+ i)))
+	  ((OR (bit-test 100 (%U-READ CONTROL-STATUS-REGISTER-TEST))
+	       (> I 1000.))
+	   (IF (bit-test 100 (%U-READ CONTROL-STATUS-REGISTER-TEST))
+	       (FORMAT T "~%Transmit aborted.")
+	       (FORMAT T "~% Rcv-done timeout")))
+	(COND ((BIT-TEST 100000 (%U-READ CONTROL-STATUS-REGISTER-TEST))
+	       (CHATST-CHECK-PK DEST LEN T)
+	       (RETURN NIL)))) )))
 
 ;;Scope trace - echo from some host
 
-(DEFUN CHATST-BUZZ (&OPTIONAL (DEST 440) (LEN 20))
+(DEFUN CHATST-BUZZ (&OPTIONAL (DEST 3040) (LEN CHATST-PACKET-LENGTH))
   (CHATST-RESET)
-  (SETQ LEN (MIN LEN 248.))         ;4096.-header
+  (SETQ LEN (MIN LEN 248.))			;4096.-header
   (AS-1 (* LEN 2) CHATST-HEADER 1)
-  (DO () ((KBD-TYI-NO-HANG)(CHATST-PRINT-STATUS DEST LEN))
-      (as-1 (1+ (ar-1 chatst-pattern 0)) chatst-pattern 0)
-      ;;Try this pattern 10. times
-      (do ((j 0 (1+ j))) ((= j 10.))
-	  ;;Wait for Transmit side idle
-          (DO ((i 0 (1+ i)))
-              ((bit-test 200 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST)))
-              (COND ((> i 50.)
-                     (FORMAT T "~% TDONE timeout")
-                     (RETURN NIL))))
-	  ;;Fill in header, data with pattern
-          (DO I 0 (1+ I) (= I 8)
-              (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-HEADER I)))
-          (DO I 0 (1+ I) (= I LEN)
-              (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-          (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST DEST)
-	  ;;Now wait for echoed packet
-          (DO ((i 0 (1+ i)))
-              ((> I 50.))
-              (COND ((bit-test 100000 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
-                     (RETURN NIL))))
-	  (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST (IF (= DEST 0) 12 10))
-          (%UNIBUS-READ INITIATE-TRANSFER-REGISTER-TEST))))
+  (DO ()
+      ((FUNCALL TERMINAL-IO ':TYI-NO-HANG)
+       (CHATST-PRINT-STATUS DEST LEN))
+    (as-1 (1+ (ar-1 chatst-pattern 0)) chatst-pattern 0)
+    ;;Try this pattern 10. times
+    (do ((j 0 (1+ j))) ((= j 10.))
+      ;;Wait for Transmit side idle
+      (DO ((i 0 (1+ i)))
+	  ((bit-test 200 (%U-READ CONTROL-STATUS-REGISTER-TEST)))
+	(COND ((> i 50.)
+	       (FORMAT T "~% TDONE timeout")
+	       (RETURN NIL))))
+      ;;Fill in header, data with pattern
+      (DO I 0 (1+ I) (= I 8)
+	  (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-HEADER I)))
+      (DO I 0 (1+ I) (= I LEN)
+	  (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+      (%u-write WRITE-BUFFER-REGISTER-TEST DEST)
+      ;;Now wait for echoed packet
+      (DO ((i 0 (1+ i)))
+	  ((> I 50.))
+	(COND ((bit-test 100000 (%U-READ CONTROL-STATUS-REGISTER-TEST))
+	       (RETURN NIL))))
+      (%u-write CONTROL-STATUS-REGISTER-TEST (IF (= DEST 0) 12 10))
+      (INITIATE-PACKET-TRANSMISSION))))
 
-(DEFUN CHATST-PRINT-STATUS ( &OPTIONAL (DEST 100) (LEN 16.))
+(DEFUN CHATST-PRINT-STATUS ( &OPTIONAL (DEST 100) (LEN CHATST-PACKET-LENGTH))
   (TERPRI)
   (PROCESS-SLEEP 30.)  ;Give it time to arrive
   (CHATST-STATUS)                                           ;Decode status
@@ -324,54 +348,57 @@ to change the pattern."
 )
 
 
-(DEFUN CHATST-CHECK-PK (&OPTIONAL (DEST-HOST 100) (CNT 16.) &AUX DEST CSR TEM ME BITS)
-  (SETQ CSR (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST)
-        ME (%UNIBUS-READ MY-NUMBER-REGISTER-TEST)
-        BITS (1- (* 16. (+ 11. CNT)))
-        DEST DEST-HOST)
+(DEFUN CHATST-CHECK-PK (&OPTIONAL (DEST-HOST 100) (CNT CHATST-PACKET-LENGTH) IGNORE-DEST-0
+			&AUX (CSR (%U-READ CONTROL-STATUS-REGISTER-TEST))
+			     ME BITS BITS1 DEST SRC1 DEST1)
+  (SETQ ME (%U-READ MY-NUMBER-REGISTER-TEST)
+	BITS (1- (* 16. (+ 11. CNT)))
+	BITS1 (%U-READ BIT-COUNT-REGISTER-TEST)
+	DEST DEST-HOST
+	SRC1 (%U-READ READ-BUFFER-REGISTER-TEST)
+	DEST1 (%U-READ READ-BUFFER-REGISTER-TEST))
   (AND (LDB-TEST %%CHAOS-CSR-CRC-ERROR CSR)
        (PRINT 'CRC-ERROR))
-  (OR (= (SETQ TEM (%UNIBUS-READ BIT-COUNT-REGISTER-TEST)) BITS)
-      (FORMAT T "~%Bad bit count, is ~O, should be ~O" TEM BITS))
-  (DO I 0 (1+ I) (= I (+ 8 CNT))
-      (AS-1 (%UNIBUS-READ READ-BUFFER-REGISTER-TEST) INBUF I))
-  (OR (= (SETQ TEM (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)) ME)
-         (FORMAT T "~% DEST=~O, should be ~O"  TEM ME))
-  (OR (= (SETQ TEM (%UNIBUS-READ READ-BUFFER-REGISTER-TEST)) DEST)
-         (FORMAT T "~% SOURCE=~O, should be ~O"  TEM DEST))
-  (AS-1 (LOGAND (AR-1 INBUF 1) 7777) INBUF 1)           ;FLUSH FORWARDING COUNT
-  (DO I 0 (1+ I) (= I 8)
-      (COND (( (AR-1 CHATST-HEADER I) (AR-1 INBUF I))
-             (TERPRI) (PRINC "HEADER  SENT    RCVD")
-             (DO I 0 (1+ I) (= I 8)
-                 (FORMAT T "~%~2O  ~6O ~6O" I (AR-1 CHATST-HEADER I) (AR-1 INBUF I)))
-             (RETURN NIL))))
-  (DO ((I 0 (1+ I)) (J 8 (1+ J))) ((= I CNT))
-      (COND (( (AR-1 CHATST-PATTERN I) (AR-1 INBUF J))
-             (TERPRI) (PRINC "LOC    SENT    RCVD")
-             (DO ((I 0 (1+ I))(J 8 (1+ J))) ((= I CNT))
-                 (FORMAT T "~%~2O  ~6O ~6O" I (AR-1 CHATST-PATTERN I) (AR-1 INBUF J)))
-             (RETURN NIL))))
-  (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 10)    ;reset rcvr
-)
+  (DO I 0 (1+ I) (= I (+ 8 CNT))		;skip first words of header
+      (AS-1 (%U-READ READ-BUFFER-REGISTER-TEST) INBUF I))
+  (COND ((AND IGNORE-DEST-0 (= DEST1 0)))
+	(T (OR (= BITS1 BITS)
+	       (FORMAT T "~%Bad bit count, is ~O, should be ~O" BITS1 BITS))
+	   (OR (= DEST1 ME) (FORMAT T "~% DEST=~O, should be ~O"  DEST1 ME))
+	   (OR (= SRC1 DEST) (FORMAT T "~% SOURCE=~O, should be ~O"  SRC1 DEST))
+	   (AS-1 (LOGAND (AR-1 INBUF 1) 7777) INBUF 1)	;FLUSH FORWARDING COUNT
+	   (DO I 0 (1+ I) (= I 8)
+	       (COND (( (AR-1 CHATST-HEADER I) (AR-1 INBUF I))
+		      (TERPRI) (PRINC "HEADER  SENT    RCVD")
+		      (DO I 0 (1+ I) (= I 8)
+			  (FORMAT T "~%~2O  ~6O ~6O" I (AR-1 CHATST-HEADER I) (AR-1 INBUF I)))
+		      (RETURN NIL))))
+	   (DO ((I 0 (1+ I)) (J 8 (1+ J))) ((= I CNT))
+	     (COND (( (AR-1 CHATST-PATTERN I) (AR-1 INBUF J))
+		    (TERPRI) (PRINC "LOC    SENT    RCVD")
+		    (DO ((I 0 (1+ I))(J 8 (1+ J))) ((= I CNT))
+		      (FORMAT T "~%~2O  ~6O ~6O" I (AR-1 CHATST-PATTERN I) (AR-1 INBUF J)))
+		    (RETURN NIL))))))
+  (%u-write CONTROL-STATUS-REGISTER-TEST 10)	;reset rcvr
+	   )
 
-(DEFUN CHATST-ECHO-ONCE (&OPTIONAL (DEST 500) (LEN 20))
-       (DO ()((bit-test 200 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))))
+(DEFUN CHATST-ECHO-ONCE (&OPTIONAL (DEST 500) (LEN CHATST-PACKET-LENGTH))
+       (DO ()((bit-test 200 (%U-READ CONTROL-STATUS-REGISTER-TEST))))
        (DO I 0 (1+ I) (= I LEN)			;SEND THE PATTERN AS 40 BYTES OF DATA
-           (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
-      (%UNIBUS-WRITE WRITE-BUFFER-REGISTER-TEST DEST)
-      (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 10)    ;reset rcvr
-      (%UNIBUS-READ INITIATE-TRANSFER-REGISTER-TEST)
+           (%u-write WRITE-BUFFER-REGISTER-TEST (AR-1 CHATST-PATTERN I)))
+      (%u-write WRITE-BUFFER-REGISTER-TEST DEST)
+      (%u-write CONTROL-STATUS-REGISTER-TEST 10)    ;reset rcvr
+      (INITIATE-PACKET-TRANSMISSION)
       (DO ((i 0 (1+ i)))
-          ((or (bit-test 200 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
+          ((or (bit-test 200 (%U-READ CONTROL-STATUS-REGISTER-TEST))
                (> i 50.)))) ;AWAIT TDONE
-      (%UNIBUS-WRITE CONTROL-STATUS-REGISTER-TEST 14)        ;RCV ALL
+      (%u-write CONTROL-STATUS-REGISTER-TEST 14)        ;RCV ALL
       (CHATST-PRINT-STATUS DEST LEN))
 
 (DEFUN CHATST-STATUS ( &AUX CSR LC)
     "Describes the bits currently on in the control status register for the
 board being tested."
-    (SETQ CSR (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
+    (SETQ CSR (%U-READ CONTROL-STATUS-REGISTER-TEST))
     (FORMAT T "~2%CSR = ~O~%" CSR)
     (AND (LDB-TEST %%CHAOS-CSR-TIMER-INTERRUPT-ENABLE CSR)
 	 (FORMAT T "Timer interrupt enable. ?? ~%"))  ;This bit doesnt seem to do anything.
@@ -397,20 +424,20 @@ board being tested."
 	 (FORMAT T "==> CRC ERROR!!! <==~%"))
     (AND (LDB-TEST %%CHAOS-CSR-RECEIVE-DONE CSR)
 	 (FORMAT T "Receive done.~%"))
-    (FORMAT T "Bit count: ~O~%" (%UNIBUS-READ BIT-COUNT-REGISTER-TEST))
+    (FORMAT T "Bit count: ~O~%" (%U-READ BIT-COUNT-REGISTER-TEST))
     NIL)
 
 (DEFUN CHATST-SOAK (&AUX (M-ONES 0) (OTHERS 0))
-  (%unibus-write control-status-register-test 14)
-  (DO () ((KBD-TYI-NO-HANG) (FORMAT T "~%-1 length packets ~O, others ~O" m-ones others))
-    (COND ((bit-test 100000 (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
+  (%u-write control-status-register-test 14)
+  (DO () ((FUNCALL TERMINAL-IO ':TYI-NO-HANG) (FORMAT T "~%-1 length packets ~O, others ~O" m-ones others))
+    (COND ((bit-test 100000 (%U-READ CONTROL-STATUS-REGISTER-TEST))
 ;	   (DO ((I 0 (1+ I))) ((> I 10.))
-;	     (FORMAT T "~%~O" (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST)))
-	   (let ((tem (%unibus-read bit-count-register-test)))
+;	     (FORMAT T "~%~O" (%U-READ CONTROL-STATUS-REGISTER-TEST)))
+	   (let ((tem (%u-read bit-count-register-test)))
 	     (if (= tem 7777)			;Null packet "received"
 		 (setq m-ones (1+ m-ones))
 		 (setq others (1+ others))))
-	       (%unibus-write control-status-register-test 14)))))
+	       (%u-write control-status-register-test 14)))))
 
 
 (DEFUN SET-NCP-BASE-ADDRESS (ADDR &AUX (OLD-CSR CONTROL-STATUS-REGISTER))
@@ -430,13 +457,25 @@ used for everything, rather than the default."
   (SETQ SI:%CHAOS-CSR-ADDRESS
 	(SI:MAKE-24-BIT-UNSIGNED (+ 77400000 (LSH ADDR -1))))  ; SET THE A MEMORY LOCATION
   (INITIALIZE-NCP-SYSTEM)
-  (%UNIBUS-WRITE OLD-CSR 20010)			;avoid interrupt hang screw
-  (%UNIBUS-WRITE CONTROL-STATUS-REGISTER 20010)
+  (%u-write OLD-CSR 20010)			;avoid interrupt hang screw
+  (%u-write CONTROL-STATUS-REGISTER 20010)
   (FORMAT NIL "NCP now using ~6O as the network interface base address." ADDR))
 
 
 (DEFUN TIMER-LOOP (&OPTIONAL (COUNT 511.) (SLEEP-TIME 1))
   "Scope loop for looking at the interval timer."
-  (DO NIL ((KBD-TYI-NO-HANG))
-    (%UNIBUS-WRITE INTERVAL-TIMER-REGISTER-TEST COUNT)
+  (DO NIL ((FUNCALL TERMINAL-IO ':TYI-NO-HANG))
+    (%u-write INTERVAL-TIMER-REGISTER-TEST COUNT)
     (PROCESS-SLEEP SLEEP-TIME)))
+
+(DEFUN %U-READ (ADR)
+  (IF CHATST-USE-DEBUG
+      (CADR:DBG-READ ADR)
+      (%UNIBUS-READ ADR)))
+
+(DEFUN %U-WRITE (ADR DATA)
+  (IF CHATST-USE-DEBUG
+      (CADR:DBG-WRITE ADR DATA)
+      (%UNIBUS-WRITE ADR DATA)))
+
+(SET-BASE-ADDRESS)

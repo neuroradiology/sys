@@ -6,11 +6,16 @@
 	(t (load '|dsk:liblsp;sharpm|))))
 
 (declare (special font-width-data))
+#Q (declare (setq run-in-maclisp-switch t))
 
 ;Interesting functions:
 ; (LOAD-FONT-WIDTHS)
 ;	loads up the file.  Takes an optional argument of the filename
 ;	of the widths file (defaults to FONTS; FONTS WIDTHS).
+;	If a second optional argument is supplied, it is a list of
+;	lists (family-name face-name point-size) and only those
+;	specific fonts are loaded, to avoid running out of pdp-10
+;	address space.
 ;	Merges with pre-existing contents of FONT-WIDTH-DATA (set it
 ;	to NIL first if you want to flush the old data.)
 ; (GET-FONT-WIDTH-DATA family-name face-name point-size)
@@ -46,6 +51,12 @@
 		  `(do ((,var ,val (1- ,var))) ((not (> ,var 0))) ,.forms)))
 
 
+#M (eval-when (compile eval)
+	(defmacro with-open-file ((var filename options) . body)
+		  `(let ((,var (open ,filename ,options)))
+		     ,@body
+		     (close ,var))))
+
 (declare (special widths-file code-alist #M widths-file-next-word))
 
 ;Fixnum array (so no number cons) contains -1 or buffered word
@@ -54,7 +65,7 @@
 
 #M (declare (fixnum (next-word) (widths-file-pos) i j k m n wd))
 
-(eval-when (compile eval)
+(eval-when (compile eval #q load)
 (defmacro high-byte (word)
   `(lsh ,word -8))
 
@@ -73,7 +84,6 @@
 		     (store (arraycall fixnum widths-file-next-word 0) -1))))
   #Q (funcall widths-file ':tyi "Unexpected EOF on widths file"))
 
-
 (defun widths-file-pos ()
    #M (- (* 2 (filepos widths-file))
 	 (cond ((minusp (arraycall fixnum widths-file-next-word 0)) 0)
@@ -87,7 +97,7 @@
     wd))
 
 	     
-(defun bcpl-string (n) ;n = max-length-including-header-byte and is even
+(defun bcpl-string (n widths-file) ;n = max-length-including-header-byte and is even
   (let ((wd (next-word)))
       (do ((chlist #M nil #Q (make-array nil 'art-string (high-byte wd)))
 	   (m (high-byte wd) (1- m))	;Number of characters
@@ -112,9 +122,18 @@
   (or (cdr (assoc code code-alist))
       (list 'code code)))
 
-(defun decode-face (face-code)
-  (declare (fixnum face-code))
-  (let ((l nil))
+;Normal face codes are || for normal, I for italic, B for bold, etc.
+;These are strings rather than symbols on the Lisp machine.
+;Alternatively the face code can be a list of the normal code,
+;the CMU character-set-convention code, and the TEX logical size code.
+(defun decode-face (face-code2)
+  (declare (fixnum face-code2))
+  (let ((l nil)
+	(res nil)
+	(face-code (\ face-code2 18.))
+	(cmu-bullshit (\ (// face-code2 18.) 3))
+	(tex-bullshit (if (< face-code2 54.) -1 (- face-code2 54.))))
+    (declare (fixnum face-code cmu-bullshit tex-bullshit))
     (cond ((> face-code 11.)
 	   (setq face-code (- face-code 12.))
 	   (push #/E l))
@@ -132,101 +151,144 @@
 	   (push #/B l)))
     (cond ((not (zerop face-code))
 	   (error '|extra garbage in face-code| face-code)))
- #M (implode l)
- #Q (fillarray (make-array nil 'art-string (length l)) l)))
+    (setq res #M (implode l)
+	      #Q (fillarray (make-array (length l) ':type 'art-string) l))
+    (cond ((or (not (zerop cmu-bullshit)) (not (minusp tex-bullshit)))
+	   (setq res (list res cmu-bullshit))
+	   (or (minusp tex-bullshit)
+	       (setq res (nconc res (list tex-bullshit))))))
+    res))
 
 ;Load it up and make the data structure mentioned at front of file
-(defun load-font-widths (&optional (filename '|dsk:fonts;fonts widths|))
-  (let ((widths-file (open filename '(read fixnum)))
-	(code-alist nil)
-	(segment-data nil)
-	(wd 0))
- #M (store (arraycall fixnum widths-file-next-word 0) -1)
-    (setq wd (next-word))
-    ;; Read IXN entries (type 1)
-    (do () ((not (= (lsh wd -12.) 1)))
-      (let ((code (next-word))
-	    (name (bcpl-string 20.)))
-	(push (cons code name) code-alist))
-      (setq wd (next-word)))
-    ;; Read WidthIndexEntries (type 4)
-    (do () ((not (= (lsh wd -12.) 4)))
-      (setq wd (next-word))		;family,,face
-      (push (list (code-to-name (high-byte wd))		;Family-name
-		  (decode-face (low-byte wd))		;Face name
-		  (progn (setq wd (next-word))		;bc,,ec
-			 (high-byte wd))		;First code
-		  (low-byte wd)				;Last code
-		  (next-word)				;Size
-		  (next-word)				;Rotation
-		  (+ (lsh (next-word) 16.) (next-word))	;Segment SA
-		  (+ (lsh (next-word) 16.) (next-word)));Segment Len
-	    segment-data)
-      (setq wd (next-word)))
-    ;; Now should have type-0 entry (end of index)
-    (or (zerop (lsh wd -12.))
-	(error '|Bullshit in file where type 0 IX expected| wd))
-    ;; Now read out the WidthSegments, which should follow
-    ;; immediately with no gaps.  Sort segments by SA
-    ;; Hmm, now it seems gaps are allowed, so we skip them.
-    (setq segment-data (sort segment-data
-			     #'(lambda (x y)
-				 (< (cadddr (cdddr x)) (cadddr (cdddr y))))))
-    (or (boundp 'font-width-data)
-	(setq font-width-data nil))
-    (do ((segment-data segment-data (cdr segment-data))
-	 (seg) (bb) (m 0) (xwidths) (ywidths))
-	((null segment-data))
-      (setq seg (car segment-data))
-      (let ((gap (- (cadddr (cdddr seg)) (widths-file-pos))))
-	#M (declare (fixnum gap))
-	(cond ((minusp gap) (break file-out-of-phase t)))
-	(dotimes (i gap) (next-word)))
-      (setq bb (list (next-word2) (next-word2) (next-word2) (next-word2)))
-      (setq m (next-word))				;Flags
-	;Note that the documentation on this flags word is wrong!
-      ;; Process X-data
-      (cond ((not (zerop (boole 1 100000 m)))
-	     (setq xwidths (next-word)))
-	    (t (setq xwidths (*array nil 'fixnum 400))
-	       (fillarray xwidths '(-1))	;Chars not in bc..ec have -1
-	       (do ((j (caddr seg) (1+ j))
-		    (k 0))
-		   ((> j (cadddr seg)))
-		 (setq k (next-word))
-		 (and (= k 100000) (setq k -1))
-		 (store (arraycall fixnum xwidths j) k))))
-      ;; Process Y-data
-      (cond ((not (zerop (boole 1 40000 m)))
-	     (setq ywidths (next-word)))
-	    (t (setq ywidths (*array nil 'fixnum 400))
-	       (fillarray xwidths '(-1))	;Chars not in bc..ec have -1
-	       (do ((j (caddr seg) (1+ j))
-		    (k 0))
-		   ((> j (cadddr seg)))
-		 (setq k (next-word))
-		 (and (= k 100000) (setq k -1))
-		 (store (arraycall fixnum ywidths j) k))))
-      ;; Make the data
-      (push (list (car seg) (cadr seg) (car (cddddr seg)) (cadr (cddddr seg))
-		  bb xwidths ywidths)
-	    font-width-data))
-    (close widths-file)))
+(defun load-font-widths (&optional filename fonts-desired)
+  (with-open-file (widths-file (or filename '((dsk fonts)fonts widths))
+			       '(read fixnum))
+    (let ((code-alist nil)
+	  (segment-data nil)
+       #M (noret t)	; don't play musical corblk while loading stuff
+	  (wd 0))
+      ; guestimate core needed:
+   #M (let ((max-guess (* 3 (lengthf widths-file))))
+	(declare (fixnum max-guess))
+	(and fonts-desired (let ((new-guess (* 800 (length fonts-desired))))
+			     (declare (fixnum new-guess))
+			     (and (< new-guess max-guess)
+				  (setq max-guess new-guess))))
+	(getsp max-guess))
+   #M (store (arraycall fixnum widths-file-next-word 0) -1)
+      (setq wd (next-word))
+      ;; Read IXN entries (type 1)
+      (do () ((not (= (lsh wd -12.) 1)))
+	(let ((code (next-word))
+	      (name (bcpl-string 20. widths-file)))
+	  (push (cons code name) code-alist))
+	(setq wd (next-word)))
+      ;; Read WidthIndexEntries (type 4)
+      (do () ((not (= (lsh wd -12.) 4)))
+	(setq wd (next-word))		;family,,face
+	(push (list (code-to-name (high-byte wd))		;Family-name
+		    (decode-face (low-byte wd))		;Face name
+		    (progn (setq wd (next-word))		;bc,,ec
+			   (high-byte wd))		;First code
+		    (low-byte wd)				;Last code
+		    (next-word)				;Size
+		    (next-word)				;Rotation
+		    (+ (lsh (next-word) 16.) (next-word))	;Segment SA
+		    (+ (lsh (next-word) 16.) (next-word)));Segment Len
+	      segment-data)
+	(setq wd (next-word)))
+      ;; Now should have type-0 entry (end of index)
+      (or (zerop (lsh wd -12.))
+	  (error '|Bullshit in file where type 0 IX expected| wd))
+      ;; Now read out the WidthSegments, which should follow
+      ;; immediately with no gaps.  Sort segments by SA
+      ;; Hmm, now it seems gaps are allowed, so we skip them.
+      ;; Also skip entries for fonts not in fonts-desired if it is non-nil.
+      (setq segment-data (sort segment-data
+			       #'(lambda (x y)
+				   (< (cadddr (cdddr x)) (cadddr (cdddr y))))))
+      (or (boundp 'font-width-data)
+	  (setq font-width-data nil))
+      (do ((segment-data segment-data (cdr segment-data))
+	   (seg) (bb) (m 0) (xwidths) (ywidths))
+	  ((null segment-data))
+	(setq seg (car segment-data))
+	(let ((gap (- (cadddr (cdddr seg)) (widths-file-pos))))
+	  #M (declare (fixnum gap))
+	  (cond ((minusp gap) (break file-out-of-phase t)))
+	  (dotimes (i gap) (next-word)))
+	(setq bb (list (next-word2) (next-word2) (next-word2) (next-word2)))
+	(setq m (next-word))				;Flags
+	  ;Note that the documentation on this flags word is wrong!
+	(cond ((or (null fonts-desired)
+		   (loop for f in fonts-desired
+			 thereis (and (equal (car f) (car seg))  ;family
+				      (equal (cadr f) (cadr seg)) ;face
+				      (or (zerop (car (cddddr seg))) ;general
+					  (point-size-equal	;specific
+					      (car (cddddr seg)) (caddr f)))
+				      (zerop (cadr (cddddr seg))) ;no rotation
+				      )))
+	       ;; Process X-data
+	       (cond ((not (zerop (boole 1 100000 m)))
+		      (setq xwidths (next-word)))
+		     (t (setq xwidths (*array nil 'fixnum 400))
+			(fillarray xwidths '(-1))	;Chars not in bc..ec
+			(do ((j (caddr seg) (1+ j))
+			     (k 0))
+			    ((> j (cadddr seg)))
+			  (setq k (next-word))
+			  (and (= k 100000) (setq k -1))
+			  (store (arraycall fixnum xwidths j) k))))
+	       ;; Process Y-data
+	       (cond ((not (zerop (boole 1 40000 m)))
+		      (setq ywidths (next-word)))
+		     (t (setq ywidths (*array nil 'fixnum 400))
+			(fillarray xwidths '(-1))	;Chars not in bc..ec
+			(do ((j (caddr seg) (1+ j))
+			     (k 0))
+			    ((> j (cadddr seg)))
+			  (setq k (next-word))
+			  (and (= k 100000) (setq k -1))
+			  (store (arraycall fixnum ywidths j) k))))
+	       ;; Make the data
+	       (push (list (car seg) (cadr seg) (car (cddddr seg))
+			   (cadr (cddddr seg)) bb xwidths ywidths)
+		     font-width-data))
+	      (t	;Skip this font
+	       ;; Skip X-data
+	       (cond ((not (zerop (boole 1 100000 m)))
+		      (next-word))
+		     (t (do ((j (caddr seg) (1+ j)))
+			    ((> j (cadddr seg)))
+			  (next-word))))
+	       ;; Skip Y-data
+	       (cond ((not (zerop (boole 1 40000 m)))
+		      (next-word))
+		     (t (do ((j (caddr seg) (1+ j)))
+			    ((> j (cadddr seg)))
+			  (next-word))))))))
+ #Q (si:set-file-loaded-id (funcall widths-file ':pathname) (funcall widths-file ':info)
+			   package)
+    ))
 
 ;This will return the entry for the particular size if it
 ;can find it, otherwise the entry for relative size.
+;Errors out if no info found.
 (defun find-font-data (family-name face-name point-size)
+  (or (find-font-data-1 family-name face-name point-size)
+      (error '|No information for font|
+	     (list family-name face-name point-size))))
+
+;This will return the entry for the particular size if it
+;can find it, otherwise the entry for relative size.
+;Returns NIL if no info found.
+(defun find-font-data-1 (family-name face-name point-size)
  #Q (setq family-name (string family-name) face-name (string face-name))
     (or (do l font-width-data (cdr l) (null l)
 	  (and (equal (caar l) family-name)
 	       (equal (cadar l) face-name)
-	       ;(= (// (* (caddar l) 72.) 2540.) point-size)
-	       ;The above does not work.  Apparently Xerox just plain is not consistent
-	       ;about how many points there are in an inch.  It doesn't help that their
-	       ;font documentation is riddled with errors.  So we'll do something extremely
-	       ;forgiving.
-	       (> (caddar l) (// (- (* point-size 2540.) 1270.) 72.))
-	       (< (caddar l) (// (+ (* point-size 2540.) 1270.) 72.))
+	       (point-size-equal (caddar l) point-size)
 	       (zerop (cadddr (car l)))			;No rotation
 	       (return (car l))))
 	(do l font-width-data (cdr l) (null l)
@@ -234,9 +296,16 @@
 	       (equal (cadar l) face-name)
 	       (zerop (caddar l))
 	       (zerop (cadddr (car l)))			;No rotation
-	       (return (car l))))
-	(error '|No information for font|
-	       (list family-name face-name point-size))))
+	       (return (car l))))))
+
+(defun point-size-equal (internal point-size)
+  (and ;(= (// (* internal 72.) 2540.) point-size)
+       ;The above does not work.  Apparently Xerox just plain is not consistent
+       ;about how many points there are in an inch.  It doesn't help that their
+       ;font documentation is riddled with errors.  So we'll do something
+       ;extremely forgiving.
+       (> internal (// (- (* point-size 2540.) 1270.) 72.))
+       (< internal (// (+ (* point-size 2540.) 1270.) 72.))))
 
 ; (GET-FONT-WIDTH-DATA family-name face-name point-size)
 ;	returns an array of widths in micas (-1 for non-existent chars)
@@ -282,132 +351,3 @@
 	     (list (caddr bb) (cadddr bb)))
 	    ((list (// (* (caddr bb) point-size 2540.) 72000.)
 		   (// (* (cadddr bb) point-size 2540.) 72000.)))))))
-
-(comment ;This does not even compile!
-(if-for-lispm
-;Read in an AC file as a Lisp machine font.
-(defun load-font (filename &optional family-name face-name point-size)
- (unwind-protect
-  (let ((widths-file (open filename '(read fixnum)))
-	(code-alist nil)
-	(segment-data nil)
-	family-code tem segment
-	(wd 0))
-    (setq wd (next-word))
-    ;; Read IXN entries (type 1)
-    (do () ((not (= (lsh wd -12.) 1)))
-      (let ((code (next-word))
-	    (name (bcpl-string 20.)))
-	(push (cons code name) code-alist))
-      (setq wd (next-word)))
-    ;; Find out the code number for the font family to be used,
-    ;; either the specified one or the only one.
-    (cond (family-name (setq family-code (name-to-code family-name)))
-	  ((cdr code-alist)
-	   (ferror nil "Font dictionary ~A: font family not specified" filename))
-	  (t (setq family-code (caar code-alist))))
-    ;; Read Index Entries (type 3) for AC segments.
-    (do () ((not (= (lsh wd -12.) 4)))
-      (setq wd (next-word))		;family,,face
-      (setq tem
-	    (list (high-byte wd)			;Family code number.
-		  (decode-face (low-byte wd))		;Face name
-		  (progn (setq wd (next-word))		;bc,,ec
-			 (high-byte wd))		;First code
-		  (low-byte wd)				;Last code
-		  (next-word)				;Size
-		  (next-word)				;Rotation
-		  (+ (lsh (next-word) 16.) (next-word))	;Segment SA
-		  (+ (lsh (next-word) 16.) (next-word))));Segment Len
-      (next-word) (next-word)			;Ignore resolution values.
-      (and (= (car tem) family-code) (push tem segment-data))
-      (setq wd (next-word)))
-    ;; Now should have type-0 entry (end of index)
-    (or (zerop (lsh wd -12.))
-	(error '|Bullshit in file where type 0 IX expected| wd))
-    ;; Now either there should be only one segment or the face code and size
-    ;; should have been specified.
-    (cond (point-size (dolist (seg segment-data)
-			(and (eq (cadr seg) face-code)
-			     (= (fifth seg) point-size)
-			     (return (setq segment seg)))))
-	  ((cdr segment-data)
-	   (ferror "Font dictionary ~A: point size not specified" filename))
-	  ((setq segment (car segment-data))))
-    (funcall widths-file ':set-pointer (seventh segment))
-    (let ((bc (third segment))
-	  (ec (fourth segment))
-	  line-height)
-      (setq xwidths (make-array nil art-16b 200))
-      (setq ywidths (make-array nil art-16b 200))
-      (setq box-x-offset (make-array nil art-16b 200))
-      (setq box-y-offset (make-array nil art-16b 200))
-      (setq box-x-size (make-array nil art-16b 200))
-      (setq box-y-size (make-array nil art-16b 200))
-      ;; read in the widths info from the segment.
-      (do ((i bc (1+ i))) ((> i ec))
-	(aset (next-word) xwidths i)
-	(next-word)
-	(aset (next-word) ywidths i)
-	(next-word)
-	(aset (next-word) box-x-offset i)
-	(aset (next-word) box-y-offset i)
-	(aset (next-word) box-x-size i)
-	(aset (next-word) box-y-size i))
-      ;; Ignore the table of offsets to the raster info
-      (do ((i bc (1+ i))) ((>i ec))
-	(next-word))
-      (setq fontname (string-append (code-to-name family-code)
-				    (format nil "~D" point-size)
-				    (second segment)))
-      (setq fontname (intern (string-upcase fontname) "FONTS"))
-      (setq fd (fed:make-font-descriptor fed:fd-name fontname))
-      (do ((height 0)
-	   (baseline 0)
-	   (i bc (1+ i)))
-	  ((> i ec)
-	   (setq line-height (+ height baseline))
-	   (setf (fed:fd-line-spacing fd) line-height)
-	   (setf (fed:fd-blinker-height fd) line-height)
-	   (setf (fed:fd-baseline fd) baseline))
-	(cond (( (aref box-y-size i) -1)
-	       (setq height (max height (= (aref box-x-size i) (aref box-x-offset i))))))
-	(cond (( (aref box-y-size i) -1)
-	       (setq baseline (max baseline (- (aref box-y-offset i)))))))
-      (do ((i bc (1+ i))
-	   (char-width)
-	   (raster-height)
-	   (raster-width)
-	   (char-baseline)
-	   (wd)
-	   (cd))
-	  ((> i ec))
-	(cond (( (aref box-y-size i) -1)
-	       (setq char-width (aref xwidths i))
-	       (setq raster-width (aref box-x-size i))
-	       (setq raster-height (aref box-y-size i))
-	       (setq char-y-offset (aref box-y-offset i))
-	       (setq cd (fed:make-char-descriptor make-array (nil art-1b (list line-height
-									   raster-width))))
-	       (setf (cd-char-width cd) char-width)
-	       (and (= ch #\sp) (setf (fed:fd-space-width fd) char-width))
-	       (setf (cd-char-left-kern cd) (aref box-x-offset i))
-	       (aset cd fd ch)
-	       (next-word) (next-word)
-	       (dotimes (hpos raster-width)
-		 ;; Read in the next vertical scan line.
-		 (dotimes (vpos raster-height)
-		  ;; If wd is exhausted, get next word into wd
-		  (cond ((zerop (\ vpos 16.))
-			 (setq wd (next-word))))
-		  (setq tem (logand 1 (lsh wd (- (\ hpos 16.)))))
-		  (as-2 tem cd
-			(+ vpos baseline char-y-offset)
-			hpos))))))
-      (setf (fed:fd-fill-pointer fd) 200)
-      ;; Set width of blinker and space fields from the space character.
-      (setf (fed:fd-blinker-width fd) (fed:fd-space-width fd))
-      (fed:font-name-set-font-and-descriptor fontname fd)
-      fontname))
-  (close widths-file))))
-);end comment

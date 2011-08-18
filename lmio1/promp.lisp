@@ -2,7 +2,8 @@
 
 ;;; Routines to hack the prom programmer
 ;;; Type "Select F1 Start" on the "System 19" to put it in remote mode
-;;; This program operates at 300 baud
+;;; This program operates at 300 baud at MIT but at 1200 baud at Symbolics.
+;;; Other sites should edit in whatever speed they prefer.
 
 ;;; Modified 8/8/79 by Moon to use the IOB serial interface
 ;;; Requires version 9 or later of LMIO;SERIAL.
@@ -72,7 +73,9 @@
 (DEFUN PROGRAMMER-RESET ()
   (OR (BOUNDP 'PROGRAMMER-STREAM)
       (SETQ PROGRAMMER-STREAM (SI:MAKE-SERIAL-STREAM
-				':PARITY NIL ':NUMBER-OF-DATA-BITS 8 ':BAUD 300.)))
+				':PARITY NIL
+				':NUMBER-OF-DATA-BITS 8
+				':BAUD #+MIT 300. #+SYM 1200.)))
   (FUNCALL PROGRAMMER-STREAM ':CLEAR-INPUT)
   (FUNCALL PROGRAMMER-STREAM ':TYO 33)		;This resets the programmer
   (DO ((CHAR (GET-PROGRAMMER-CHAR) (GET-PROGRAMMER-CHAR)))
@@ -101,12 +104,14 @@
 
 (DEFUN PROGRAMMER-READ-RAM (&OPTIONAL (ARRAY (MAKE-ARRAY NIL 'ART-8B
 							 (1+ PROGRAMMER-DEVICE-WORD-LIMIT))))
+  (PROGRAMMER-RESET)
   (MULTIPLE-VALUE-BIND (IGNORE FAILURE)
       (PROGRAMMER-COMMAND "83A" NIL)
     (AND FAILURE
 	 (FERROR NIL "Cannot set transfer format"))
     (PROGRAMMER-COMMAND "O" 'NONE)
-    (DO ((BYTE-COUNT) (PROGRAMMER-CHECKSUM 0 0) (ADR 0) (CS) (RECORD-TYPE))
+    (DO ((BYTE-COUNT) (PROGRAMMER-CHECKSUM 0 0) (ADR 0) (CS) (RECORD-TYPE)
+	 (ARRAY-LEN (ARRAY-LENGTH ARRAY)))
 	(())
       ;Start character is a colon
       (DO CHAR (GET-PROGRAMMER-CHAR) (GET-PROGRAMMER-CHAR) (= CHAR #/:))
@@ -115,8 +120,15 @@
       (SETQ RECORD-TYPE (HEX-READ-BYTE))
       (SELECTQ RECORD-TYPE
 	(00					;Data record
+	 (COND (( ADR ARRAY-LEN)
+		;; With the new software, it seems that the programmer can overrun the array
+		(FORMAT T "~&Programmer sending too much data, resetting.")
+		(PROGRAMMER-RESET)
+		(RETURN NIL)))
 	 (DOTIMES (I BYTE-COUNT)
-	   (ASET (HEX-READ-BYTE) ARRAY (+ ADR I)))
+	   (LET ((BYTE (HEX-READ-BYTE)))
+	     (AND  (< (+ ADR I) ARRAY-LEN)
+		   (ASET BYTE ARRAY (+ ADR I)))))
 	 (SETQ CS (LOGAND (- PROGRAMMER-CHECKSUM) 377))
 	 (COND (( (SETQ RECORD-TYPE (HEX-READ-BYTE)) CS)
 		(FORMAT T "Checksum error, trying again~%")
@@ -237,7 +249,7 @@
    (MULTIPLE-VALUE (VAL FAIL)
      (PROGRAMMER-COMMAND "P"))
    (COND (FAIL
-	  (FORMAT T "&~Programming failed.")
+	  (FORMAT T "~&Programming failed.")
 	  (RETURN NIL)))
    (FORMAT T "~&Verifying device.")
    (MULTIPLE-VALUE (VAL FAIL)
@@ -311,3 +323,4 @@
 	 (SETQ FROM NIL))
     (OR FROM (DO () ((PROGRAMMER-PROGRAM-PROM (CAR PROM))))))
   'DONE)
+    

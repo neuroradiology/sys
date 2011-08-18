@@ -9,7 +9,7 @@
 
 ;;; There are screen, window, and array hardcopy functions, and alternate versions
 ;;; which run in a background process (scanline encoding is SLOW).
-;;; Below <scan-file> is optional and defaults to "AI:.XGPR.;LMSCN >"
+;;; Below <scan-file> is optional and defaults to "AI:.TEMP.;LMSCN >"
 ;;;
 ;;; (SCREEN-XGP-HARDCOPY <screen> <scan-file>)  - foreground hardcopy of <screen>
 ;;;						  (defaults to tv:default-screen)
@@ -28,17 +28,21 @@
 (defvar xgp-delete-scan-file t)			;delete the scan file after printing
 (defvar xgp-queue-scan-file t)			;queue the scan file
 (defvar xgp-queue-filename "AI:.XGPR.;    Q1 >")	;filename for queue requests
+(defvar xgp-scan-file-name "AI:.TEMP.;LMSCN >")	;Filename for scan file
+						;Note that is auto deleted when 1 day old
 
+;;; These functions are mostly subsumed by the general ESC Q mechanism.
+;;; But somebody might want them.
 (defun screen-xgp-hardcopy (&optional (screen tv:default-screen)
-				      (file "AI:.XGPR.;LMSCN >"))
+				      (file xgp-scan-file-name))
    (window-xgp-hardcopy screen file))
 
 (defun screen-xgp-hardcopy-background (&optional (screen tv:default-screen)
-						 (file "AI:.XGPR.;LMSCN >"))
+						 (file xgp-scan-file-name))
    (window-xgp-hardcopy-background screen file))
 
 (defun window-xgp-hardcopy (&optional (window tv:selected-window)
-				      (file "AI:.XGPR.;LMSCN >"))
+				      (file xgp-scan-file-name))
   (multiple-value-bind (width height) (funcall window ':size)
     (let ((array (tv:sheet-screen-array window)))
       (cond ((null array) (ferror nil "Window ~S has no bits now" window))
@@ -48,35 +52,35 @@
 	       "Hardcopy Done")))))
 
 (defun window-xgp-hardcopy-background (&optional (window tv:selected-window)
-						 (file "AI:.XGPR.;LMSCN >"))
+						 (file xgp-scan-file-name))
   (multiple-value-bind (width height) (funcall window ':size)
     (let ((array (tv:sheet-screen-array window)))
       (cond ((null array) (ferror nil "Window ~S has no bits now" window))
 	    (t (start-xgp-hardcopy-background-process file array width height))))))
 
-(defresource (xgp-hardcopy-bit-array not-first-time)
-  (make-array nil 'art-1b '(1400 1600)))
-
 (defun start-xgp-hardcopy-background-process (file array xdim ydim)
-   (let ((inhibit-scheduling-flag t)
-	 (hcarray (allocate-resource 'xgp-hardcopy-bit-array)))
-     (tv:who-line-update)
-     (copy-array-contents array hcarray)
+   (let ((hcarray (allocate-resource 'tv:hardcopy-bit-array)))
+     (tv:snapshot-screen array hcarray xdim ydim)
      (process-run-function "XGP Hardcopy"
-        #'(lambda (file array xdim ydim)
-	    (unwind-protect (progn (setq file (xgp-write-scan-file file array 0 0 xdim ydim))
-				   (if xgp-queue-scan-file (xgp-queue-scan-file file)))
-			    (deallocate-resource 'xgp-hardcopy-bit-array array)))
-	file hcarray xdim ydim)
-     (beep)
+        #'xgp-hardcopy-snapshot-array file hcarray xdim ydim)
      "Hardcopy Process Started"))
+
+(defun xgp-hardcopy-snapshot-array (file array xdim ydim)
+  (unwind-protect
+    (progn
+      (setq file (xgp-write-scan-file file array 0 0 xdim ydim))
+      (if xgp-queue-scan-file (xgp-queue-scan-file file)))
+    (deallocate-resource 'tv:hardcopy-bit-array array)))
+
+(defun (:xgp tv:kbd-esc-q-function) (array xdim ydim)
+  (xgp-hardcopy-snapshot-array xgp-scan-file-name array xdim ydim))
 
 ;;; Write a print request file for the XGP queue
 ;;; Note, this file should use TRUENAME on the file name when that function
 ;;; exists.
-(defun xgp-queue-scan-file (&optional (file "AI:.XGPR.;LMSCN >"))
+(defun xgp-queue-scan-file (&optional (file xgp-scan-file-name))
    (let ((q-stream (open xgp-queue-filename ':out))
-         (date-time (time:what-time nil))
+         (date-time (time:print-current-time nil))
          (midpt))
      (setq midpt (string-search-char #\sp date-time)
 	   date-time (string-append (substring date-time (1+ midpt)) " "
@@ -88,9 +92,6 @@
      (close q-stream)))
 
 ;;; SCAN compress an array into a file with optional offsets
-;;; Note:  This should use its own file output soas not to collide with other
-;;; file requests during background hardcopy.
-;;; *** (If anyone knows what the above comment means, please put a translation here!) ***
 (defun xgp-write-scan-file (file array
                             &optional (left 0) (top 0)
                                       (right  (array-dimension-n 1 array))
@@ -102,10 +103,13 @@
      (if (not (and (array-in-bounds-p array left top)
                    (array-in-bounds-p array (1- right) (1- bottom))))
          (ferror nil "(~s,~s) or (~s,~s) is out of array bounds." top left bottom right))
-     (let ((8buf (make-array nil 'art-8b 208. nil '(0)))
+     (let ((8buf (make-array 208. ':type 'art-8b ':leader-list '(0)))
            (16buf)
            (xgp-stream (open file '(:out :fixnum))))
-          (setq 16buf (make-array nil 'art-16b 104. 8buf '(0)))
+          (setq 16buf (make-array 104.
+				  ':type 'art-16b
+				  ':displaced-to 8buf
+				  ':leader-list '(0)))
           (do ((i top (1+ i)) (lineno topmar (1+ lineno)))
               (( i bottom))
               (if (*catch 'run-length-failed
@@ -123,7 +127,7 @@
           (setf (array-leader 16buf 0) 2)
           (funcall xgp-stream ':string-out 16buf)
           (close xgp-stream)
-	  (funcall xgp-stream ':get ':unique-id)))
+	  (funcall xgp-stream ':truename)))
 
 ;;; Scan line encoding
 

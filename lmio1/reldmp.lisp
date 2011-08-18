@@ -1,4 +1,4 @@
-;-*-Mode: Lisp; Package: QFASL-REL-*-
+;-*-Mode: Lisp; Package: QFASL-REL; Lowercase: T-*-
 
 ;Temporary area for data structures used in dumping.
 (defvar dump-temp-area)
@@ -111,9 +111,17 @@
 
 ;Dump the file property list
 ;as a bunch of defprops to be evaluated at load time.
-(defun dump-file-property-list (file-group-symbol plist)
+(defun dump-file-property-list (generic-pathname plist)
+  (dump-form `(set-generic-pathname-property-list
+		;; Cannot fasd instances yet.
+		,(funcall generic-pathname ':string-for-printing)
+		,plist)))
+
+(defun set-generic-pathname-property-list (generic-pathname-string plist &aux pathname)
+  (setq pathname (funcall (fs:merge-pathname-defaults generic-pathname-string)
+			  ':generic-pathname))
   (do ((l plist (cddr l))) ((null l))
-    (dump-form `(defprop ,file-group-symbol (cadr l) (car l)))))
+    (funcall pathname ':putprop (cadr l) (car l))))
 
 ;Dump a form to be evaluated at load time.
 ;If optimize is set, calls to SETQ and DEFUN are handled specially,
