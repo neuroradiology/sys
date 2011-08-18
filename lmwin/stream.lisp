@@ -469,6 +469,26 @@ SHEET-TRUNCATE-LINE-OUT-FLAG in the window is set."))
 
 (DEFMETHOD (AUTOEXPOSING-MORE-MIXIN :BEFORE :MORE-EXCEPTION) ()
   (FUNCALL-SELF ':EXPOSE))
+
+;;; Stream operations which all streams are required to support or ignore
+;;; I'm afraid these will appear in the :WHICH-OPERATIONS even though they
+;;; aren't "really supported"
+
+;These 3 are ignored since we don't have buffered output
+(DEFMETHOD (STREAM-MIXIN :CLEAR-OUTPUT) ()
+  NIL)
+
+(DEFMETHOD (STREAM-MIXIN :FORCE-OUTPUT) ()
+  NIL)
+
+(DEFMETHOD (STREAM-MIXIN :FINISH) ()
+  NIL)
+
+(DEFMETHOD (STREAM-MIXIN :CLOSE) (&OPTIONAL IGNORE)
+  NIL)
+
+(DEFMETHOD (STREAM-MIXIN :LINE-IN) (&OPTIONAL LEADER)
+  (STREAM-DEFAULT-HANDLER SELF ':LINE-IN LEADER NIL))
 
 (DEFFLAVOR GRAPHICS-MIXIN () ()
   (:INCLUDED-FLAVORS ESSENTIAL-WINDOW))
