@@ -1,4 +1,6 @@
-;-*-LISP-*-
+;;; -*- Mode:Lisp; Package:CADR; Base:8 -*-
+;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
 ;BYTE HACKING ROUTINES
 
 (DECLARE (FIXNUM (LOGLDB-FROM-FIXNUM FIXNUM FIXNUM)
@@ -160,6 +162,12 @@
       (CADDDR X)))
    (COND ((NUMBERP (CADDR X)) (CADDR X))
 	 (T (EVAL (CADDR X))))))
+
+;Really wants to be a bignum LSH.  On LISPM, LSH doesnt win for bignums, ASH does.
+; In MACLISP, LSH wins sufficiently.
+(DEFMACRO CC-SHIFT (QUAN AMT)
+  `(#Q ASH #M LSH ,QUAN ,AMT))
+
 
 ;FUNCTIONS TO EXAMINE AND DEPOSIT FIELDS OF A Q
 

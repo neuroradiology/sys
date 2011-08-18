@@ -1,10 +1,29 @@
-;;; -*- Mode: LISP;  Package: CADR;  Base: 8 -*-
+;;; -*- Mode: LISP; Package: CADR -*-
+;;;Random declarations, etc.
+;(DECLARE (EVAL (READ)))
+;(PROGN (LOAD '(MACROS > DSK LISPM))
+;       (LOAD '(DEFMAC FASL DSK LISPM2))
+;       (LOAD '(LMMAC > DSK LISPM2)))
+;
+;(DECLARE (EVAL (READ)))
+;       (DEFUN **STRING** MACRO (X) `',(CADR X)) ;Bubbles in my brain
+;
+;(INCLUDE ((LMCONS)CADMAC >))
+;
+;(DECLARE (FIXNUM I J K M N NBITS BITNO REGADR PPSS SHIFT RELAD)
+;	 (SPECIAL CC-SUSPECT-BIT-LIST CC-DIAG-TRACE CC-TEST-ADR-BARFED)
+;	 (FIXNUM (CC-SYNC-E FIXNUM)(PHYS-MEM-READ FIXNUM))
+;	 (MUZZLED T))   ;WHY?
+
+;(DEFMACRO LOGAND* (&REST X) `(BOOLE 1 . ,X))
+
+;(DEFMACRO LOGXOR* (&REST X) `(BOOLE 6 . ,X))
 
 ;;;Subrs for data path diagnostics (which don't work) 
 
 (DEFUN CC-SYNC-E (ADR)
 	(PHYS-MEM-WRITE 17377762 ADR)
-	(LOGAND 377 (PHYS-MEM-READ 17377761)))
+	(LDB 0010 (PHYS-MEM-READ 17377761)))
 
 (DEFUN CC-SYNC-D (ADR DATA)
 	(PHYS-MEM-WRITE 17377762 ADR)
@@ -60,10 +79,7 @@
        (DO ((I START (1+ I))
 	    (N N (1- N)))
 	   ((ZEROP N))
-	   (TERPRI)
-	   (PRINC I)
-	   (TYO 11)
-	   (PRIN1 (CC-SYNC-E I))))
+           (format t "~%~O	~O" I (CC-SYNC-E I))))
 
 (DEFUN TV-FIND (WRD MASK)
    (DO I 0 (1+ I) (= I 4096.)
@@ -76,7 +92,7 @@
 ;Takes function to generate pattern
 
 (DECLARE (SPECIAL TV-TEST-SIZE))
-(SETQ TV-TEST-SIZE 100000)
+(SETQ TV-TEST-SIZE 10000)
 
 (DEFUN TV-TEST (FCN)
    (DECLARE (FIXNUM I TVB FCN LIM TEM TV-TEST-SIZE))
@@ -84,16 +100,16 @@
 	 (SETQ LIM (+ TVB TV-TEST-SIZE))
 	 (DO I TVB (1+ I) (>= I LIM)
 	   (PHYS-MEM-WRITE I (BOOLE FCN I 0)))
-	 (DO ((I TVB (1+ I)))
-	     ((>= I LIM))
-	     (COND ((NOT (= (SETQ TEM (LOGAND 37777777 (PHYS-MEM-READ I)))
-			    (LOGAND 37777777 (BOOLE FCN I 0))))
-		    (TERPRI)
-		    (PRIN1 I) (TYO 11)
-		    (PRIN1 TEM)
-		    (PRINC '|, should be |)
-		    (PRIN1 (BOOLE FCN I 0))
-))))
+;	 (DO ((I TVB (1+ I)))
+;	     ((>= I LIM))
+;	     (COND ((NOT (= (SETQ TEM (LOGAND 37777777 (PHYS-MEM-READ I)))
+;			    (LOGAND 37777777 (BOOLE FCN I 0))))
+;		    (TERPRI)
+;		    (PRIN1 I) (TYO 11)
+;		    (PRIN1 TEM)
+;		    (PRINC '|, should be |)
+;		    (PRIN1 (BOOLE FCN I 0)))))
+)
 )
 
 (DEFUN TESTR ()
@@ -101,6 +117,25 @@
        (TV-TEST 17)
        (TV-TEST 5)
 )
+
+
+;;Routine to write 2 16. bits into DBG interface Phys mem
+
+(defun lmtv-phys-mem-write (xbus-loc lh rh)
+   ((lambda (ubus-loc)
+        (dbg-write ubus-loc rh)
+        (dbg-write (+ ubus-loc 2) lh))
+    (dbg-setup-unibus-map 0 xbus-loc)))
+
+(defun tv-copy (&optional (n 100000))
+   (let ((tv-array (screen-buffer-halfword-array tv-default-screen)))
+      (let ((length (max n (array-length tv-array))))
+           (do ((i 0 (+ i 2))
+                (tv-loc tvb (+ tv-loc 1)))
+               (( i length))
+               (lmtv-phys-mem-write tv-loc
+                      (ar-1 tv-array (1+ i))
+                      (ar-1 tv-array i))))))
 
 ;sync program bits
 ;1  HSYNC
@@ -127,27 +162,31 @@
 ;;  6.5 lines blank	160 usec.
 ;; Approx horizontal screen dimensions:
 ;;   Retrace       12 sync cycles
-;;   Left Margin   8 sync cycles
+;;   Left Margin   3 sync cycles
 ;;   Visible:      48 sync cycles
-;;   Right Margin  8 sync cycles
+;;   Right Margin  3 sync cycles
 ;;                 --------------
 ;;   Line          66 sync cycles     32.8 usec.
 
 
+(DECLARE (SPECIAL SYNC-M4408))
+;;use with Mode 1, Vertical Space of 12.
 (setq SYNC-M4408 '(
-   3 (2. 33) (6. 13) (4. 12) (12. 12 12 12 12) 12 (5. 12) 212 112	;vert sync, clr tvma
-   19. (2. 31) (6. 11) (4. 10) (12. 10 10 10 10) 10 (5. 10) 210 10	;vert blank
-   255. (2. 31) (6. 11) (4. 10) (12. 40 0 0 0) 0 (5. 10) 260 10		;visible, step 1 line
-   225.  (2. 31) (6. 11) (4. 10) (12. 40 0 0 0) 0 (5. 10) 260 10	;visible, step 1 line
-   7. (2. 31) (6. 11) (4. 10) (12. 10 10 10 10) 10 (5. 10) 210 10	;vert blank
-   ;;second frame
+   3 (2. 33) (6. 13) (4. 12) (3. 12) (12. 12 12 12 12) 12 212 112	;vert sync, clr tvma
+   11. (2. 31) (6. 11) (4. 10) (3. 10) (12. 10 10 10 10) 10 210 10	;vert blank
+   8. (2. 31) (6. 11) (4. 10) (1. 0) (12. 0 0 0 0) 0 0 0 200 0        ;visible, step 1 line
+   255. (2. 31) (6. 11) (4. 10) (1. 0) (12. 40 0 0 0) 0 0 0 260 0     ;visible, step 1 line
+   225.  (2. 31) (6. 11) (4. 10) (1. 0) (12. 40 0 0 0) 0 0 0 260 0	;visible, step 1 line
+   6. (2. 31) (6. 11) (4. 10) (3. 10) (12. 10 10 10 10) 10 210 10	;vert blank
+   ;;second field
    1 (2. 31) (6. 11) (25. 10) (31. 12) 212 112				;vert sync, clr tvma
-   1 (2. 33) (6. 13) (4. 12) (12. 12 12 12 12) 12 (5. 12) 212 72	;vert sync, step tvma
-   1 (2. 31) (6. 11) (25. 12) (31. 10) 210 10				;vert sync, clr tvma
-   19. (2. 31) (6. 11) (4. 10) (12. 10 10 10 10) 10 (5. 10) 210 10	;vert blank
-   255. (2. 31) (6. 11) (4. 10) (12. 40 0 0 0) 0 (5. 10) 260 10		;visible, step 1 line
-   225.  (2. 31) (6. 11) (4. 10) (12. 40 0 0 0) 0 (5. 10) 260 10	;visible, step 1 line
-   6. (2. 31) (6. 11) (4. 10) (12. 10 10 10 10) 10 (5. 10) 210 10	;vert blank
+   2 (2. 33) (6. 13) (56. 12) 212 12                                    ;vert sync, step tvma
+   1 (2. 33) (6. 13) (24. 12) (32. 10) 210 70				;vert sync, clr tvma
+   11. (2. 31) (6. 11) (4. 10) (3. 10) (12. 10 10 10 10) 10 210 10	;vert blank
+   8. (2. 31) (6. 11) (4. 10) (1. 0) (12. 0 0 0 0) 0 0 0 200 0        ;visible, step 1 line
+   255. (2. 31) (6. 11) (4. 10) (1. 0) (12. 40 0 0 0) 0 0 0 260 0     ;visible, step 1 line
+   225.  (2. 31) (6. 11) (4. 10) (1. 0) (12. 40 0 0 0) 0 0 0 260 0	;visible, step 1 line
+   6. (2. 31) (6. 11) (4. 10) (3. 10) (12. 10 10 10 10) 10 310 10	;vert blank
 ))
 
 
@@ -184,6 +223,8 @@
 ;1037 lines per 16.66 ms frame
 
 
+(DECLARE (SPECIAL SYNC-CPT SYNC-CPT1))
+
 ; 640. X 896.
 (SETQ SYNC-CPT '(
    1.  (2 33) (8 13) (18. 12) 212 112
@@ -217,7 +258,6 @@
    231. (2 32) (7 12) 12 53 (8. 3 43) 3 343 3
 ))
 
-(DEFVAR SYNC-CPT)
 (DEFUN CPT ()
     (PHYS-MEM-WRITE VSP 0)
     (TV-FILL SYNC-CPT)
@@ -225,7 +265,14 @@
     (PHYS-MEM-WRITE TV (+ (LSH BOW 2) 0))
     (PHYS-MEM-WRITE VSP 200))
 
-(SETQ BOW 1)
+(DEFUN M4408 ()
+    (PHYS-MEM-WRITE VSP 0)
+    (TV-FILL SYNC-M4408)
+    (TV-VERIFY SYNC-M4408)
+    (PHYS-MEM-WRITE TV (+ (LSH BOW 2) 1))
+    (PHYS-MEM-WRITE VSP 214))
+
+(SETQ BOW 0)
 
 (DEFUN OLD-TV (RELOAD)
     (PHYS-MEM-WRITE VSP 0)					;DISABLES SYNC PULSES

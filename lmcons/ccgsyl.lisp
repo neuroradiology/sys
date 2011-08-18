@@ -1,4 +1,5 @@
 ;-*- LISP -*-
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 (DECLARE (COND ((STATUS FEATURE LISPM))   ;DO NOTHING ON LISP MACHINE.
 	       ((NULL (MEMQ 'NEWIO (STATUS FEATURES)))
 		(BREAK 'YOU-HAVE-TO-COMPILE-THIS-WITH-QCOMPL T))
