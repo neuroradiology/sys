@@ -365,7 +365,7 @@
     #M (DECLARE (FIXNUM MA))
     (COND ((NOT (= MA 377))
 	   (TERPRI) (PRINC '|MA wrong on read of pattern, correct=377, actual=|)
-	   (PRIN1 MA))))
+	   (PRIN1 MA) (TERPRI))))
   ;; Check pattern read back into core, see if it's correct
   (LET ((DCHECK-AND 37777777777) (DCHECK-IOR 0)  ;Accumulate error bits here
 	(DCHECK-ADR-AND 377) (DCHECK-ADR-IOR 0))
