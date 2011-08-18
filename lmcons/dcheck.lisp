@@ -411,6 +411,11 @@
   (DC-EXEC DC-RECAL 0 0 0 0 NIL 0)
   (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
     (PROCESS-ALLOW-SCHEDULE)))
+
+(DEFUN DC-FAULT-CLEAR NIL
+  (DC-EXEC DC-FAULT-CLEAR 0 0 0 0 NIL 0)
+  (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
+    (PROCESS-ALLOW-SCHEDULE)))
 
 ;;; Compare pattern, set special variables if lose
 ;;; Also obeys CC-DIAG-TRACE
