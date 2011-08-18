@@ -203,7 +203,8 @@
 			  "~&The following functions were referenced but don't seem defined:")
 		  (DOLIST (X FUNCTIONS-REFERENCED)
 		    (FORMAT T "~& ~S referenced by " (CAR X))
-		    (FORMAT:PRINT-LIST T "~S" (CDR X)))))))))
+		    (FORMAT:PRINT-LIST T "~S" (CDR X))
+		    (FORMAT T "~&"))))))))
 
 (IF-FOR-LISPM
 (DEFUN QC-FILE (INFILE &OPTIONAL OUTFILE LOAD-FLAG IN-CORE-FLAG PACKAGE-SPEC

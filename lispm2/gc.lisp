@@ -379,17 +379,17 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
   (OR (BOUNDP 'GC-PROCESS)
       (SETQ GC-PROCESS (PROCESS-CREATE "Garbage Collector")))
   (PROCESS-PRESET GC-PROCESS #'GC-PROCESS)
-  (PROCESS-ENABLE GC-PROCESS 'GC-PROCESS) ;Start flipper process
-  (SETQ INHIBIT-SCAVENGING-FLAG NIL ;Enable scavenging during cons
-        INHIBIT-IDLE-SCAVENGING-FLAG NIL) ;Enable scavenging by scheduler during idle
-  (ADD-INITIALIZATION "GC-PROCESS" '(GC-ON) '(WARM))) ;Do this on future warm boots
+  (PROCESS-ENABLE GC-PROCESS)			;Start flipper process
+  (SETQ INHIBIT-SCAVENGING-FLAG NIL		;Enable scavenging during cons
+        INHIBIT-IDLE-SCAVENGING-FLAG NIL)	;Enable scavenging by scheduler during idle
+  (ADD-INITIALIZATION "GC-PROCESS" '(GC-ON) '(WARM)))	;Do this on future warm boots
 
 ;;; Function to shut off the garbage collector
 (DEFUN GC-OFF ()
-  (DELETE-INITIALIZATION "GC-PROCESS" '(WARM)) ;Don't start GC on warm boots anymore
-  (PROCESS-DISABLE GC-PROCESS 'GC-PROCESS) ;Disable flipper process
-  (SETQ INHIBIT-SCAVENGING-FLAG T ;Disable scavenging during cons
-        INHIBIT-IDLE-SCAVENGING-FLAG T)) ;Disable scavenging during idle time
+  (DELETE-INITIALIZATION "GC-PROCESS" '(WARM))	;Don't start GC on warm boots anymore
+  (PROCESS-DISABLE GC-PROCESS)			;Disable flipper process
+  (SETQ INHIBIT-SCAVENGING-FLAG T		;Disable scavenging during cons
+        INHIBIT-IDLE-SCAVENGING-FLAG T))	;Disable scavenging during idle time
 
 ;;; Function to be called by user if running for a long time with interrupts off.
 ;;; Does a flip if necessary
