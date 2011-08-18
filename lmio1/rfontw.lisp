@@ -41,14 +41,18 @@
 ; On the Lisp machine, strings are used rather than symbols
 ; to avoid any possible package problems.
 
-(declare (special widths-file widths-file-next-word widths-file-pos
-		  code-alist))
+#M (eval-when (compile eval)
+	(defmacro dotimes ((var val) &rest forms)
+		  `(do ((,var ,val (1- ,var))) ((not (> ,var 0))) ,.forms)))
+
+
+(declare (special widths-file code-alist #M widths-file-next-word))
 
 ;Fixnum array (so no number cons) contains -1 or buffered word
 #M (or (boundp 'widths-file-next-word)
        (setq widths-file-next-word (*array nil 'fixnum 1)))
 
-#M (declare (fixnum (next-word) i j k m n wd))
+#M (declare (fixnum (next-word) (widths-file-pos) i j k m n wd))
 
 (eval-when (compile eval)
 (defmacro high-byte (word)
@@ -60,7 +64,6 @@
 
 ;Get next 16-bit word from widths-file
 (defun next-word ()
-  (setq widths-file-pos (1+ widths-file-pos))
   #M (cond ((minusp (arraycall fixnum widths-file-next-word 0))
 	    (let ((wd (in widths-file)))
 	      (store (arraycall fixnum widths-file-next-word 0)
@@ -70,12 +73,20 @@
 		     (store (arraycall fixnum widths-file-next-word 0) -1))))
   #Q (funcall widths-file ':tyi "Unexpected EOF on widths file"))
 
+
+(defun widths-file-pos ()
+   #M (- (* 2 (filepos widths-file))
+	 (cond ((minusp (arraycall fixnum widths-file-next-word 0)) 0)
+	       (t 1)))
+   #Q (funcall widths-file ':read-pointer))
+
 ;2's complement form of next-word
 (defun next-word2 ()
   (let ((wd (next-word)))
     (and (> wd 77777) (setq wd (- wd 200000)))
     wd))
 
+	     
 (defun bcpl-string (n) ;n = max-length-including-header-byte and is even
   (let ((wd (next-word)))
       (do ((chlist #M nil #Q (make-array nil 'art-string (high-byte wd)))
@@ -130,7 +141,6 @@
 	(code-alist nil)
 	(segment-data nil)
 	(wd 0))
-    (setq widths-file-pos 0)
  #M (store (arraycall fixnum widths-file-next-word 0) -1)
     (setq wd (next-word))
     ;; Read IXN entries (type 1)
@@ -168,7 +178,8 @@
 	 (seg) (bb) (m 0) (xwidths) (ywidths))
 	((null segment-data))
       (setq seg (car segment-data))
-      (let ((gap (- (cadddr (cdddr seg)) widths-file-pos)))
+      (let ((gap (- (cadddr (cdddr seg)) (widths-file-pos))))
+	#M (declare (fixnum gap))
 	(cond ((minusp gap) (break file-out-of-phase t)))
 	(dotimes (i gap) (next-word)))
       (setq bb (list (next-word2) (next-word2) (next-word2) (next-word2)))
@@ -282,7 +293,6 @@
 	(segment-data nil)
 	family-code tem segment
 	(wd 0))
-    (setq widths-file-pos 0)
     (setq wd (next-word))
     ;; Read IXN entries (type 1)
     (do () ((not (= (lsh wd -12.) 1)))

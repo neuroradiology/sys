@@ -82,7 +82,7 @@
 	   date-time (string-append (substring date-time (1+ midpt)) " "
 				    (substring date-time 0 midpt)))
      (format q-stream ";Status ~A	LM ~C ~A  1 page	~A ~%"
-	     user-id user-group-affiliation date-time file)
+	     user-id fs:user-group-affiliation date-time file)
      (if xgp-delete-scan-file (format q-stream ";DELETE~%"))
      (format q-stream ";SCAN~2%~A~%" file)
      (close q-stream)))

@@ -325,14 +325,21 @@
 	   (ASET DIG1 STR I)
 	   (ASET DIG2 STR (1+ I)))))
 
-;;; Some useful strings and accessing functions
-(DEFVAR *DAYS-OF-THE-WEEK* '(("Mon" "Monday")
-			     ("Tue" "Tuesday" "Tues")
-			     ("Wed" "Wednesday")
-			     ("Thu" "Thursday" "Thurs")
-			     ("Fri" "Friday")
-			     ("Sat" "Saturday")
-			     ("Sun" "Sunday")))
+;;; Some useful strings and accessing functions.
+
+;;; Days of the week.  Elements must be (in order):
+;;; (1) Three-letter form.
+;;; (2) Full spelling.
+;;; (3) Middle-length form if any, else NIL.
+;;; (4) Francais.
+;;; (5) Deutsch.
+(DEFVAR *DAYS-OF-THE-WEEK* '(("Mon" "Monday" NIL "Lundi" "Montag")
+			     ("Tue" "Tuesday" "Tues" "Mardi" "Dienstag")
+			     ("Wed" "Wednesday" NIL "Mercredi" "Mittwoch")
+			     ("Thu" "Thursday" "Thurs" "Jeudi" "Donnerstag")
+			     ("Fri" "Friday" NIL "Vendredi" "Freitag")
+			     ("Sat" "Saturday" NIL "Samedi" "Samstag")
+			     ("Sun" "Sunday" NIL "Dimanche" "Sonntag")))
 
 (DEFUN DAY-OF-THE-WEEK-STRING (DAY-OF-THE-WEEK &OPTIONAL (MODE ':LONG) &AUX STRINGS)
   (SETQ STRINGS (NTH DAY-OF-THE-WEEK *DAYS-OF-THE-WEEK*))
@@ -340,26 +347,39 @@
     (:SHORT (FIRST STRINGS))
     (:LONG (SECOND STRINGS))
     (:MEDIUM (OR (THIRD STRINGS) (FIRST STRINGS)))
+    (:FRENCH (FOURTH STRINGS))
+    (:GERMAN (FIFTH STRINGS))
     (OTHERWISE (FERROR NIL "~S is not a known mode" MODE))))
 
-(DEFVAR *MONTHS* '(("Jan" "January")
-		   ("Feb" "February")
-		   ("Mar" "March")
-		   ("Apr" "April")
-		   ("May" "May")
-		   ("Jun" "June")
-		   ("Jul" "July")
-		   ("Aug" "August")
-		   ("Sep" "September")
-		   ("Oct" "October")
-		   ("Nov" "November")
-		   ("Dec" "December")))
+
+;;; Months of the year:  Elements must be (in order):
+;;; (1) Three-letter form.
+;;; (2) Full spelling.
+;;; (3) Middle-length form if any, else NIL.
+;;; (4) Francais.
+;;; (5) Roman numberals (used in Europe).
+(DEFVAR *MONTHS* '(("Jan" "January" NIL "Janvier" "I" "Januar")
+		   ("Feb" "February" NIL "Fevrier" "II" "Februar")
+		   ("Mar" "March" NIL "Mars" "III" "Maerz")
+		   ("Apr" "April" NIL "Avril" "IV" "April")
+		   ("May" "May" NIL "Mai" "V" "Mai")
+		   ("Jun" "June" NIL "Juin" "VI" "Juni")
+		   ("Jul" "July" NIL "Juillet" "VII" "Juli")
+		   ("Aug" "August" NIL "Aout" "VIII" "August")
+		   ("Sep" "September" "Sept" "Septembre" "IX" "September")
+		   ("Oct" "October" NIL "Octobre" "X" "Oktober")
+		   ("Nov" "November" "Novem" "Novembre" "XI" "November")
+		   ("Dec" "December" "Decem" "Decembre" "XII" "Dezember")))
 
 (DEFUN MONTH-STRING (MONTH &OPTIONAL (MODE ':LONG) &AUX STRINGS)
   (SETQ STRINGS (NTH (1- MONTH) *MONTHS*))
   (SELECTQ MODE
     (:SHORT (FIRST STRINGS))
     (:LONG (SECOND STRINGS))
+    (:MEDIUM (OR (THIRD STRINGS) (FIRST STRINGS)))
+    (:FRENCH (FOURTH STRINGS))
+    (:ROMAN (FIFTH STRINGS))
+    (:GERMAN (SIXTH STRINGS))
     (OTHERWISE (FERROR NIL "~S is not a known mode" MODE))))
 
 ;;; minutes offset from gmt, normal name, daylight name, miltary character
