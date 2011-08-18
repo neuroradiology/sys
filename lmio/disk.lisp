@@ -23,7 +23,7 @@
 ;;; COPY-DISK-PARTITION - copy a partition from disk to disk
 ;;; COPY-DISK-PARTITION-BACKGROUND - same but in separate process and artificially slowed down
 ;;; COMPARE-DISK-PARTITION - similar to copy, but compares and prints differences.
-;;; FIND-MEASURED-PARTITION-SIZE - Prints how much of LOD is actually used.
+;;; MEASURED-SIZE-OF-PARTITION - Returns how much of LOD is actually used.
 
 ;;; These are interesting if you really want to do I/O
 ;;; GET-DISK-RQB
@@ -32,27 +32,29 @@
 ;;; DISK-READ
 ;;; DISK-WRITE
 
-(DECLARE (SPECIAL DISK-SHOULD-READ-COMPARE DISK-ERROR-RETRY-COUNT
-		  DISK-FIRST-FREE-RQB
-                  DISK-BUFFER-AREA SYSTEM-VERSION-STRING SYSTEM-MODIFICATION-RECORD
-		  PAGE-OFFSET	    ;Disk address of start of PAGE partition
-				    ;The microcode knows this, but it's not telling
-		  CC-REMOTE-DISK-WRITE-CHECK  ;CC remote disk handler does read after write
-		  ))
+(DEFVAR DISK-BUFFER-AREA)	;Area containing wirable buffers and RQBs
 
-(SETQ DISK-SHOULD-READ-COMPARE NIL) ;Unfortunately there is a hardware bug with
-				    ;read compares on transfers longer than 1 block.
-				    ;This didn't find any problems while it was on anyway.
-				    ;(Fixed by DC ECO#1)
+;Vector of free disk RQB threads, indexed by RQB size in pages
+(DEFVAR DISK-FREE-RQB-THREAD-VECTOR (MAKE-ARRAY (- PAGE-SIZE 14)))
 
-(SETQ DISK-ERROR-RETRY-COUNT 5)		;Retry this many times before CERRORing
+(DEFVAR PAGE-OFFSET)		;Disk address of start of PAGE partition
+				; The microcode knows this, but it's not telling
+(DEFVAR VIRTUAL-MEMORY-SIZE)	;Size of paging partition in words
 
-(SETQ CC-REMOTE-DISK-WRITE-CHECK NIL)
+(DEFVAR CURRENT-LOADED-BAND)	;Remembers %LOADED-BAND through warm-booting
+(DEFVAR DISK-PACK-NAME)		;Remembers name of pack for PRINT-LOADED-BAND
 
-(OR (BOUNDP 'DISK-FIRST-FREE-RQB)
-    (SETQ DISK-FIRST-FREE-RQB NIL))
+(DEFVAR CC-REMOTE-DISK-WRITE-CHECK NIL)  ;CC remote disk handler does read after write
+(DEFVAR DISK-SHOULD-READ-COMPARE NIL) ;Unfortunately there is a hardware bug with
+				      ;read compares on transfers longer than 1 block.
+				      ;This didn't find any problems while it was on anyway.
+				      ;(Fixed by DC ECO#1)
+(DEFVAR DISK-ERROR-RETRY-COUNT 5)	;Retry this many times before CERRORing
+(DEFVAR LET-MICROCODE-HANDLE-DISK-ERRORS T)  ;Better be UCADR 795 or later for this to work
 
-(DEFMACRO RQB-BUFFER (RQB) `(ARRAY-LEADER ,RQB %DISK-RQ-LEADER-BUFFER))
+(DEFSUBST RQB-BUFFER (RQB) (ARRAY-LEADER RQB %DISK-RQ-LEADER-BUFFER))
+(DEFSUBST RQB-8-BIT-BUFFER (RQB) (ARRAY-LEADER RQB %DISK-RQ-LEADER-8-BIT-BUFFER))
+(DEFSUBST RQB-NPAGES (RQB) (ARRAY-LEADER RQB %DISK-RQ-LEADER-N-PAGES))
 
 ;;; The next three routines are the simple versions intended to be called
 ;;; by moderately naive people (i.e. clowns).
@@ -60,28 +62,31 @@
 ;;; perform the operation.  This allows the console program to
 ;;; access other machines' disks in a compatible fashion.
 
-(DEFUN DISK-READ (RQB UNIT ADDRESS)
+(DEFUN DISK-READ (RQB UNIT ADDRESS
+		  &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS))
   (COND ((NUMBERP UNIT)
-	 (WIRE-DISK-RQB RQB)
-	 (DISK-READ-WIRED RQB UNIT ADDRESS)
+	 (WIRE-DISK-RQB RQB (ARRAY-LEADER RQB %DISK-RQ-LEADER-N-PAGES) T T) ;set modified bits
+	 (DISK-READ-WIRED RQB UNIT ADDRESS MICROCODE-ERROR-RECOVERY)
 	 (UNWIRE-DISK-RQB RQB)
 	 RQB)
 	((FUNCALL UNIT ':READ RQB ADDRESS))))
 
-(DEFUN DISK-WRITE (RQB UNIT ADDRESS)
+(DEFUN DISK-WRITE (RQB UNIT ADDRESS
+		  &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS))
   (COND ((NUMBERP UNIT)
 	 (WIRE-DISK-RQB RQB)
-	 (DISK-WRITE-WIRED RQB UNIT ADDRESS)
+	 (DISK-WRITE-WIRED RQB UNIT ADDRESS MICROCODE-ERROR-RECOVERY)
 	 (UNWIRE-DISK-RQB RQB)
 	 RQB)
 	((FUNCALL UNIT ':WRITE RQB ADDRESS))))
 
 ;A hardware bug causes this to lose if xfer > 1 page  (Fixed by DC ECO#1)
 ;Returns T if they match and NIL if they don't
-(DEFUN DISK-READ-COMPARE (RQB UNIT ADDRESS)
+(DEFUN DISK-READ-COMPARE (RQB UNIT ADDRESS
+		  &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS))
   (COND ((NUMBERP UNIT)
 	 (WIRE-DISK-RQB RQB)
-	 (DISK-READ-COMPARE-WIRED RQB UNIT ADDRESS)
+	 (DISK-READ-COMPARE-WIRED RQB UNIT ADDRESS MICROCODE-ERROR-RECOVERY)
 	 (UNWIRE-DISK-RQB RQB)
 	 (ZEROP (LDB %%DISK-STATUS-HIGH-READ-COMPARE-DIFFERENCE
 		     (AREF RQB %DISK-RQ-STATUS-HIGH))))
@@ -126,68 +131,143 @@
        (TERPRI))
     (FORMAT T "~%~S  ~O" (CAR L) (AREF RQB I))))
 
-(DEFUN GET-DISK-RQB ( &OPTIONAL (N-PAGES 1) (LEADER-LENGTH (LENGTH DISK-RQ-LEADER-QS)))
+;Move all existing rqbs from the old freelist to the new one.
+(DEFUN XFER-FREE-RQBS ()
+  (LOCAL-DECLARE ((SPECIAL DISK-FIRST-FREE-RQB))
+    (DO (NEXT) ((NULL DISK-FIRST-FREE-RQB))
+      (SETQ NEXT (ARRAY-LEADER DISK-FIRST-FREE-RQB %DISK-RQ-LEADER-THREAD))
+      (SETF (ARRAY-LEADER DISK-FIRST-FREE-RQB %DISK-RQ-LEADER-THREAD) NIL)
+      (RETURN-DISK-RQB DISK-FIRST-FREE-RQB)
+      (SETQ DISK-FIRST-FREE-RQB NEXT))))
+
+(DEFUN GET-DISK-RQB (&OPTIONAL (N-PAGES 1) (LEADER-LENGTH (LENGTH DISK-RQ-LEADER-QS))
+		     &AUX OVERHEAD ARRAY-LENGTH)
   ;; Create static area to contain disk buffer.  We assume everything
   ;; allocated in here is on a page boundary
   (OR (BOUNDP 'DISK-BUFFER-AREA)
       (MAKE-AREA ':NAME 'DISK-BUFFER-AREA
 		 ':GC ':STATIC))
-  (AND (> N-PAGES (- PAGE-SIZE (+ LEADER-LENGTH 4 (// %DISK-RQ-CCW-LIST 2))))
-       (FERROR NIL "CCW list longer than a page, ~S pages is too many" N-PAGES))
-  ;; Kludge around to get array length to be exactly a multiple of page size
-  (LET ((ARRAY-LENGTH (- (* 1000 (1+ N-PAGES)) (* 2 (+ LEADER-LENGTH 3)))))
-    (LET ((LONG-ARRAY-FLAG
-	    (COND ((> ARRAY-LENGTH %ARRAY-MAX-SHORT-INDEX-LENGTH)
-		   (SETQ ARRAY-LENGTH (- ARRAY-LENGTH 2))
-		   (OR (> ARRAY-LENGTH %ARRAY-MAX-SHORT-INDEX-LENGTH)
-		       (FERROR NIL "Foo, you've been screwed, complain to Moon"))
-		   1)
-		  (T 0))))
-      (COND ((DO ((INHIBIT-SCHEDULING-FLAG T)
-		  (B DISK-FIRST-FREE-RQB (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))
-		  (PREV-LOC (VALUE-CELL-LOCATION 'DISK-FIRST-FREE-RQB)
-			    (LOCF (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))))
-		 ((NULL B))
-	       (AND (= (ARRAY-LENGTH B) ARRAY-LENGTH)
-		    (= (ARRAY-LEADER-LENGTH B) LEADER-LENGTH)
-		    (RETURN (PROGN (RPLACD PREV-LOC (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))
-				   (SETF (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD) NIL)
-				   B)))))
-	    (T 
-	      (LET ((RQB (MAKE-ARRAY DISK-BUFFER-AREA 'ART-16B ARRAY-LENGTH
-				     NIL LEADER-LENGTH)))
-		(OR (= (LOGAND 377 (%POINTER RQB)) (+ 2 LEADER-LENGTH))
-		    (FERROR NIL "Foo, not on proper page boundary"))
-		(STORE-ARRAY-LEADER (+ %DISK-RQ-CCW-LIST (* 2 N-PAGES))
-				    RQB
-				    %DISK-RQ-LEADER-N-HWDS)
-		(STORE-ARRAY-LEADER N-PAGES RQB %DISK-RQ-LEADER-N-PAGES)
-		(STORE-ARRAY-LEADER
-		  (MAKE-ARRAY NIL 'ART-16B (* 1000 N-PAGES)
-			      RQB NIL (- 1000 (* 2 (+ LEADER-LENGTH 3 LONG-ARRAY-FLAG))))
-		  RQB %DISK-RQ-LEADER-BUFFER)
-		RQB))))))
+  ;; Compute how much overhead there is in the RQB-BUFFER, RQB-8-BIT-BUFFER, and in the
+  ;; RQB's leader and header.  4 for the RQB-BUFFER indirect-offset array,
+  ;; 4 for the RQB-8-BIT-BUFFER indirect-offset array,
+  ;; 3 for the RQB's header, plus the RQB's leader.  Then set the length
+  ;; (in halfwords) of the array to be sufficient so that it plus the overhead
+  ;; is a multiple of the page size, making it possible to wire down RQB's.
+  (SETQ OVERHEAD (+ 4 4 3 LEADER-LENGTH)
+	ARRAY-LENGTH (* (- (* (1+ N-PAGES) PAGE-SIZE) OVERHEAD) 2))
+  (COND ((> ARRAY-LENGTH %ARRAY-MAX-SHORT-INDEX-LENGTH)
+	 (SETQ OVERHEAD (1+ OVERHEAD) ARRAY-LENGTH (- ARRAY-LENGTH 2))
+	 (OR (> ARRAY-LENGTH %ARRAY-MAX-SHORT-INDEX-LENGTH)
+	     (FERROR NIL "Impossible to make this RQB array fit"))))
+  ;; See if the CCW list will run off the end of the first page, and hence
+  ;; not be stored in consecutive physical addresses.
+  (IF (> (+ OVERHEAD (// %DISK-RQ-CCW-LIST 2) N-PAGES) PAGE-SIZE)
+      (FERROR NIL "CCW list doesn't fit on first RQB page, ~S pages is too many" N-PAGES))
+  ;; See if there is already a suitable free RQB.  If not, make one.
+  (COND ((DO ((INHIBIT-SCHEDULING-FLAG T)
+	      (B (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES)
+		 (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))
+	      (PREV-LOC (LOCF (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES))
+			(LOCF (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))))
+	     ((NULL B))
+	   (AND (= (ARRAY-LENGTH B) ARRAY-LENGTH)
+		(= (ARRAY-LEADER-LENGTH B) LEADER-LENGTH)
+		(RETURN (PROGN (RPLACD PREV-LOC (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))
+			       (SETF (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD) NIL)
+			       B)))))
+	(T 
+	 (PROG (RQB-BUFFER RQB RQB-8-BIT-BUFFER)
+	   L  (SETQ RQB-BUFFER (MAKE-ARRAY (* PAGE-SIZE 2 N-PAGES)
+				       ':TYPE ART-16B
+				       ':AREA DISK-BUFFER-AREA
+				       ':DISPLACED-TO ""
+				       ':DISPLACED-INDEX-OFFSET    ;To second page of RQB
+				           (- ARRAY-LENGTH (* PAGE-SIZE 2 N-PAGES)))
+		    RQB-8-BIT-BUFFER (MAKE-ARRAY (* PAGE-SIZE 4 N-PAGES)
+						 ':TYPE ART-STRING
+						 ':AREA DISK-BUFFER-AREA
+						 ':DISPLACED-TO ""
+						 ':DISPLACED-INDEX-OFFSET
+						 (* 2 (- ARRAY-LENGTH
+							 (* PAGE-SIZE 2 N-PAGES)))))
+	      (SETQ RQB (MAKE-ARRAY ARRAY-LENGTH
+				':AREA DISK-BUFFER-AREA
+				':TYPE ART-16B
+				':LEADER-LENGTH LEADER-LENGTH))
+	      (COND ((NOT (= (%REGION-NUMBER RQB-BUFFER)   ;make sure a new region
+			     (%REGION-NUMBER RQB)))	   ;didnt screw us completely
+		 ;Screwwed! Try again.  Make sure don't lose same way again by
+		 ; using up region that didnt hold it.
+		     (RETURN-ARRAY RQB)
+		     (LET ((RN (%REGION-NUMBER RQB-BUFFER)))
+		       (RETURN-ARRAY RQB-BUFFER)
+		       (%USE-UP-REGION RN))
+		     (GO L)))
+	      (MAKE-SURE-FREE-POINTER-OF-REGION-IS-AT-PAGE-BOUNDARY
+		'DISK-BUFFER-AREA (%REGION-NUMBER RQB))
+	      (%P-STORE-CONTENTS-OFFSET RQB RQB-BUFFER 1)	;Displace RQB-BUFFER to RQB
+	      (%P-STORE-CONTENTS-OFFSET RQB RQB-8-BIT-BUFFER 1)
+	      (STORE-ARRAY-LEADER (+ %DISK-RQ-CCW-LIST (* 2 N-PAGES))
+				  RQB
+				  %DISK-RQ-LEADER-N-HWDS)
+	      (STORE-ARRAY-LEADER N-PAGES RQB %DISK-RQ-LEADER-N-PAGES)
+	      (STORE-ARRAY-LEADER RQB-BUFFER RQB %DISK-RQ-LEADER-BUFFER)
+	      (STORE-ARRAY-LEADER RQB-8-BIT-BUFFER RQB %DISK-RQ-LEADER-8-BIT-BUFFER)
+	      (RETURN RQB)))))
+
+;Use this to recover if the free pointer is off a page boundary.
+(DEFUN %USE-UP-REGION (REGION-NUMBER)
+  (AS-1 (AR-1 #'SYSTEM:REGION-FREE-POINTER REGION-NUMBER)
+	#'SYSTEM:REGION-LENGTH
+	REGION-NUMBER))
+
+;This used to check all the regions of the area, but that loses,
+;because exhausted regions always have free pointers 10 past the page boundary
+;(because the rqb-buffer and rqb-8-bit-buffer had been consed before exhausting it).
+(DEFUN MAKE-SURE-FREE-POINTER-OF-REGION-IS-AT-PAGE-BOUNDARY (AREA REGION-NUMBER)
+  (OR (ZEROP (LOGAND (1- PAGE-SIZE) (REGION-FREE-POINTER REGION-NUMBER)))
+      (FERROR NIL
+	      "~%Area ~A(#~O), region ~O has free pointer ~O, which is not on a page boundary"
+	      AREA (SYMEVAL AREA) REGION-NUMBER (REGION-FREE-POINTER REGION-NUMBER))))
 
 ;; Return a buffer to the free list
 (DEFUN RETURN-DISK-RQB (RQB &AUX (INHIBIT-SCHEDULING-FLAG T))
   (COND ((NOT (NULL RQB))	;Allow NIL's to be handed to the function just in case
 	 (UNWIRE-DISK-RQB RQB)
-	 (DO ((B DISK-FIRST-FREE-RQB (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD)))
-	     ((NULL B)
-	      (SETF (ARRAY-LEADER RQB %DISK-RQ-LEADER-THREAD) DISK-FIRST-FREE-RQB)
-	      (SETQ DISK-FIRST-FREE-RQB RQB))
-	   (AND (EQ B RQB) (RETURN)))))	;Don't get it on the list twice
+	 (LET ((N-PAGES (// (ARRAY-LENGTH (RQB-BUFFER RQB)) 2 PAGE-SIZE)))
+	   (DO ((B (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES)
+		   (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD)))
+	       ((NULL B)
+		(SETF (ARRAY-LEADER RQB %DISK-RQ-LEADER-THREAD)
+		      (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES))
+		(SETF (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES) RQB))
+	     (AND (EQ B RQB) (RETURN))))))	;Don't get it on the list twice
+  NIL)
+
+(DEFUN COUNT-FREE-RQBS (N-PAGES)
+  (DO ((B (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES) (ARRAY-LEADER B %DISK-RQ-LEADER-THREAD))
+       (I 0 (1+ I)))
+      ((NULL B) I)))
+
+;; Return a buffer to the free list, without error checking.
+(DEFUN RISKY-RETURN-DISK-RQB (RQB &AUX (INHIBIT-SCHEDULING-FLAG T))
+  (COND ((NOT (NULL RQB))	;Allow NIL's to be handed to the function just in case
+	 (UNWIRE-DISK-RQB RQB)
+	 (LET ((N-PAGES (// (ARRAY-LENGTH (RQB-BUFFER RQB)) 2 PAGE-SIZE)))
+	   (SETF (ARRAY-LEADER RQB %DISK-RQ-LEADER-THREAD)
+		 (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES))
+	   (SETF (AREF DISK-FREE-RQB-THREAD-VECTOR N-PAGES) RQB))))
   NIL)
 
 ;; Set up ccw list, wire down pages
 (DEFUN WIRE-DISK-RQB (RQB &OPTIONAL (N-PAGES (ARRAY-LEADER RQB %DISK-RQ-LEADER-N-PAGES))
-				       (WIRE-P T)
+				       (WIRE-P T) SET-MODIFIED
 			 &AUX (LONG-ARRAY-FLAG (%P-LDB %%ARRAY-LONG-LENGTH-FLAG RQB))
 			      (LOW (- (%POINTER RQB) (ARRAY-DIMENSION-N 0 RQB) 2))
 			      (HIGH (+ (%POINTER RQB) 1 LONG-ARRAY-FLAG
 				       (// (ARRAY-LENGTH RQB) 2))))
   (DO LOC (LOGAND LOW (- PAGE-SIZE)) (+ LOC PAGE-SIZE) (>= LOC HIGH)
-    (WIRE-PAGE LOC WIRE-P))
+    (WIRE-PAGE LOC WIRE-P SET-MODIFIED))
   ;; Having wired the rqb, if really wiring set up CCW-list N-PAGES long
   ;; and CLP to it, but if really unwiring make CLP point to NXM as err check
   (COND ((NOT WIRE-P) (ASET 177777 RQB %DISK-RQ-CCW-LIST-POINTER-LOW) ;Just below TV buffer
@@ -218,7 +298,8 @@
 ;;; for that unit from the label.  You can also store explicitly
 ;;; in the arrays if you like.
 
-(DECLARE (SPECIAL DISK-SECTORS-PER-TRACK-ARRAY DISK-HEADS-PER-CYLINDER-ARRAY))
+(DEFVAR DISK-SECTORS-PER-TRACK-ARRAY)
+(DEFVAR DISK-HEADS-PER-CYLINDER-ARRAY)
 
 (COND ((NOT (BOUNDP 'DISK-SECTORS-PER-TRACK-ARRAY))
        (SETQ DISK-SECTORS-PER-TRACK-ARRAY (MAKE-ARRAY NIL 'ART-8B 20)
@@ -229,11 +310,17 @@
 ;These must be called with the buffer already wired, which specifies the
 ;number of pages implicitly (usually 1 of course)
 ;For now, error-handling is rudimentary, fix later
+;Note!! If you call this directly, you better make sure the modified bits for the
+; pages transferred get set!!!
 (DEFUN DISK-READ-WIRED (RQB UNIT ADDRESS
-			&OPTIONAL (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
-			       (HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
+			&OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS)
+			&AUX (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
+			     (HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
   
-  (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER %DISK-COMMAND-READ "read")
+  (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER
+	    (LOGIOR %DISK-COMMAND-READ
+		    (IF MICROCODE-ERROR-RECOVERY %DISK-COMMAND-DONE-INTERRUPT-ENABLE 0))
+	    "read")
   (LET ((BFR (ARRAY-LEADER RQB %DISK-RQ-LEADER-BUFFER)))
     (COND ((AND (ZEROP ADDRESS)
 		(= (AREF BFR 0) (+ (LSH #/A 8) #/L))
@@ -243,25 +330,43 @@
   NIL)
 
 (DEFUN DISK-WRITE-WIRED (RQB UNIT ADDRESS
-		   &OPTIONAL (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
-			     (HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
-  (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER %DISK-COMMAND-WRITE "write"))
+		   &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS)
+		   &AUX (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
+			(HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
+  (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER
+	    (LOGIOR %DISK-COMMAND-WRITE
+		    (IF MICROCODE-ERROR-RECOVERY %DISK-COMMAND-DONE-INTERRUPT-ENABLE 0))
+	    "write"))
 
 
 ;A hardware bug causes this to lose if xfer > 1 page  (Fixed by DC ECO#1)
 ;Returns T if read-compare difference detected
 (DEFUN DISK-READ-COMPARE-WIRED (RQB UNIT ADDRESS
-		   &OPTIONAL (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
-			     (HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
+		   &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS)
+		   &AUX (SECTORS-PER-TRACK (AREF DISK-SECTORS-PER-TRACK-ARRAY UNIT))
+			(HEADS-PER-CYLINDER (AREF DISK-HEADS-PER-CYLINDER-ARRAY UNIT)))
   (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER
-			  %DISK-COMMAND-READ-COMPARE "read-compare")
+	    (LOGIOR %DISK-COMMAND-READ-COMPARE
+		    (IF MICROCODE-ERROR-RECOVERY %DISK-COMMAND-DONE-INTERRUPT-ENABLE 0))
+	    "read-compare")
   (LDB-TEST %%DISK-STATUS-HIGH-READ-COMPARE-DIFFERENCE
 	    (AREF RQB %DISK-RQ-STATUS-HIGH)))
 
 (DEFUN DISK-RUN (RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER CMD CMD-NAME
 		 &OPTIONAL NO-ERROR-CHECKING
-		 &AUX ADR CYLINDER SURFACE SECTOR ERROR-COUNT ER)
-  (PROG ()
+		 &AUX ADR CYLINDER SURFACE SECTOR ERROR-COUNT ER-H ER-L)
+  (PROG (FINAL-ADDRESS FINAL-CYLINDER FINAL-SURFACE FINAL-SECTOR MICROCODE-ERROR-RECOVERY)
+    (SETQ FINAL-ADDRESS (+ ADDRESS (1- (DISK-TRANSFER-SIZE RQB)))   ;count length of CCW.
+	  FINAL-SECTOR (\ FINAL-ADDRESS SECTORS-PER-TRACK)
+	  ADR (// FINAL-ADDRESS SECTORS-PER-TRACK)
+	  FINAL-SURFACE (\ ADR HEADS-PER-CYLINDER)
+	  FINAL-CYLINDER (// ADR  HEADS-PER-CYLINDER)
+	  MICROCODE-ERROR-RECOVERY (BIT-TEST %DISK-COMMAND-DONE-INTERRUPT-ENABLE CMD))
+    ;; Temporary error check
+    (AND MICROCODE-ERROR-RECOVERY
+	 (< %MICROCODE-VERSION-NUMBER 795.)
+	 (SETQ MICROCODE-ERROR-RECOVERY NIL
+	       CMD (LOGXOR %DISK-COMMAND-DONE-INTERRUPT-ENABLE CMD)))
  FULL-RETRY
     (SETQ ERROR-COUNT DISK-ERROR-RETRY-COUNT)
  PARTIAL-RETRY
@@ -271,15 +376,19 @@
     (ASET CMD RQB %DISK-RQ-COMMAND)
     (ASET (+ (LSH SURFACE 8) SECTOR) RQB %DISK-RQ-SURFACE-SECTOR)
     (ASET (+ (LSH UNIT 12.) CYLINDER) RQB %DISK-RQ-UNIT-CYLINDER)
+    (AS-1 0 RQB %DISK-RQ-FINAL-UNIT-CYLINDER)
+    (AS-1 0 RQB %DISK-RQ-FINAL-SURFACE-SECTOR)
     (DISK-RUN-1 RQB UNIT)
     (AND NO-ERROR-CHECKING (RETURN NIL))
-    (SETQ ER (AREF RQB %DISK-RQ-STATUS-HIGH))
+    (SETQ ER-H (AREF RQB %DISK-RQ-STATUS-HIGH)
+	  ER-L (AREF RQB %DISK-RQ-STATUS-LOW))
     (AND (= CMD %DISK-COMMAND-READ-COMPARE)
-	 (LDB-TEST %%DISK-STATUS-HIGH-READ-COMPARE-DIFFERENCE ER)
-	 (SETQ ER (DPB 0 %%DISK-STATUS-HIGH-INTERNAL-PARITY ER)))
-    (COND ((OR (BIT-TEST %DISK-STATUS-HIGH-ERROR ER)
-	       (BIT-TEST %DISK-STATUS-LOW-ERROR (AREF RQB %DISK-RQ-STATUS-LOW)))
+	 (LDB-TEST %%DISK-STATUS-HIGH-READ-COMPARE-DIFFERENCE ER-H)
+	 (SETQ ER-H (DPB 0 %%DISK-STATUS-HIGH-INTERNAL-PARITY ER-H)))
+    (COND ((OR (BIT-TEST %DISK-STATUS-HIGH-ERROR ER-H)
+	       (BIT-TEST %DISK-STATUS-LOW-ERROR ER-L))
 	   (OR (ZEROP (SETQ ERROR-COUNT (1- ERROR-COUNT)))
+	       MICROCODE-ERROR-RECOVERY
 	       (GO PARTIAL-RETRY))
 	   (CERROR 0 NIL ':DISK-ERROR
  "Disk ~A error unit ~D, cyl ~D., surf ~D., sec ~D.,~%  status ~A
@@ -290,6 +399,21 @@
 		   (LDB 0010 (AREF RQB %DISK-RQ-FINAL-SURFACE-SECTOR))
 		   (DECODE-DISK-STATUS (AREF RQB %DISK-RQ-STATUS-LOW)
 				       (AREF RQB %DISK-RQ-STATUS-HIGH)))
+	   (GO FULL-RETRY))
+	  ((OR ( FINAL-CYLINDER (LDB 0014 (AREF RQB %DISK-RQ-FINAL-UNIT-CYLINDER)))
+	       ( FINAL-SURFACE (LDB 1010 (AREF RQB %DISK-RQ-FINAL-SURFACE-SECTOR)))
+	       ( FINAL-SECTOR (LDB 0010 (AREF RQB %DISK-RQ-FINAL-SURFACE-SECTOR))))
+	   (CERROR 0 NIL ':DISK-ERROR
+ "Disk ~A error unit ~D, cyl ~D., surf ~D., sec ~D.,~%  status ~A
+ Failed to complete operation, final disk address should be ~D, ~D, ~D.
+ Type control-C to retry."
+		   CMD-NAME UNIT
+		   (LDB 0014 (AREF RQB %DISK-RQ-FINAL-UNIT-CYLINDER))
+		   (LDB 1010 (AREF RQB %DISK-RQ-FINAL-SURFACE-SECTOR))
+		   (LDB 0010 (AREF RQB %DISK-RQ-FINAL-SURFACE-SECTOR))
+		   (DECODE-DISK-STATUS (AREF RQB %DISK-RQ-STATUS-LOW)
+				       (AREF RQB %DISK-RQ-STATUS-HIGH))
+		   FINAL-CYLINDER FINAL-SURFACE FINAL-SECTOR)
 	   (GO FULL-RETRY))
 	  ((AND DISK-SHOULD-READ-COMPARE
 		(OR (= CMD %DISK-COMMAND-READ) (= CMD %DISK-COMMAND-WRITE)))
@@ -347,37 +471,61 @@
 	     (ASET (%P-LDB 0020 A) RQB I)
 	     (ASET (%P-LDB 2020 A) RQB (1+ I))))))
 
+(DEFUN DISK-TRANSFER-SIZE (RQB)
+  (DO ((CCWP %DISK-RQ-CCW-LIST (+ CCWP 2))
+       (COUNT 1 (1+ COUNT)))
+      ((ZEROP (LOGAND (AREF RQB CCWP) 1)) COUNT)))
+
 (DEFUN (:DISK-ERROR EH:PROCEED) (IGNORE IGNORE)
   (FORMAT T "~&Retrying disk operation.~%"))
 
+;Return a string representation of the disk status register (pair of halfwords)
+;Put the most relevant error condition bit first, followed by all other 1 bits
+;Except for Idle, Interrupt, Read Compare Difference (and block-counter) which
+;are not interesting as errors.
+;Also if the transfer is aborted, leave out Internal Parity which is always on.
 (DEFUN DECODE-DISK-STATUS (LOW HIGH)
-  (LET ((STR (MAKE-ARRAY NIL 'ART-STRING '(100) NIL '(0))))
-    (MAPC #'(LAMBDA (PPSS NAME) (AND (LDB-TEST (SYMEVAL PPSS) HIGH) (STRING-NCONC STR NAME)))
-	  '(%%DISK-STATUS-HIGH-INTERNAL-PARITY %%DISK-STATUS-HIGH-READ-COMPARE-DIFFERENCE
-	    %%DISK-STATUS-HIGH-NXM %%DISK-STATUS-HIGH-MEM-PARITY %%DISK-STATUS-HIGH-CCW-CYCLE
-	    %%DISK-STATUS-HIGH-HEADER-COMPARE %%DISK-STATUS-HIGH-HEADER-ECC
-	    %%DISK-STATUS-HIGH-ECC-HARD)
-	  '("internal-parity-error " "(read-compare-difference) "
-	    "non-existent-memory " "memory-parity-error " "(ccw-cycle) "
-	    "header-compare-error " "header-ecc-error " "ecc-hard "))
-    (MAPC #'(LAMBDA (PPSS NAME) (AND (LDB-TEST (SYMEVAL PPSS) LOW) (STRING-NCONC STR NAME)))
-	  '(%%DISK-STATUS-LOW-ECC-SOFT %%DISK-STATUS-LOW-OVERRUN
-	    %%DISK-STATUS-LOW-TRANSFER-ABORTED %%DISK-STATUS-LOW-START-BLOCK-ERROR
-	    %%DISK-STATUS-LOW-TIMEOUT %%DISK-STATUS-LOW-SEEK-ERROR %%DISK-STATUS-LOW-OFF-LINE
-	    %%DISK-STATUS-LOW-OFF-CYLINDER %%DISK-STATUS-LOW-FAULT %%DISK-STATUS-LOW-NO-SELECT
-	    %%DISK-STATUS-LOW-MULTIPLE-SELECT)
-	  '("ECC-soft " "overrun " "transfer-aborted " "start-block-error "
-	    "timeout " "seek-error " "off-line " "off-cylinder " "fault " "no-select "
-	    "multiple-select "))
-    STR))
+  (WITH-OUTPUT-TO-STRING (S)
+    (LOOP FOR (NAME PPSS HALF) IN '(("Nonexistent-Memory" %%DISK-STATUS-HIGH-NXM T)
+				    ("Memory-Parity" %%DISK-STATUS-HIGH-MEM-PARITY T)
+				    ("Multiple-Select" %%DISK-STATUS-LOW-MULTIPLE-SELECT)
+				    ("No-Select" %%DISK-STATUS-LOW-NO-SELECT)
+				    ("Fault" %%DISK-STATUS-LOW-FAULT)
+				    ("Off-line"  %%DISK-STATUS-LOW-OFF-LINE)
+				    ("Off-Cylinder" %%DISK-STATUS-LOW-OFF-CYLINDER)
+				    ("Seek-Error" %%DISK-STATUS-LOW-SEEK-ERROR)
+				    ("Start-Block-Error" %%DISK-STATUS-LOW-START-BLOCK-ERROR)
+				    ("Overrun" %%DISK-STATUS-LOW-OVERRUN)
+				    ("Header-Compare" %%DISK-STATUS-HIGH-HEADER-COMPARE T)
+				    ("Header-ECC" %%DISK-STATUS-HIGH-HEADER-ECC T)
+				    ("ECC-Hard" %%DISK-STATUS-HIGH-ECC-HARD T)
+				    ("ECC-Soft" %%DISK-STATUS-LOW-ECC-SOFT)
+				    ("Timeout" %%DISK-STATUS-LOW-TIMEOUT)
+				    ("Internal-Parity" %%DISK-STATUS-HIGH-INTERNAL-PARITY T)
+				    ("Transfer-Aborted" %%DISK-STATUS-LOW-TRANSFER-ABORTED)
+				    ("CCW-Cycle" %%DISK-STATUS-HIGH-CCW-CYCLE T)
+				    ("Read-Only" %%DISK-STATUS-LOW-READ-ONLY)
+				    ("Sel-Unit-Attention"
+				        %%DISK-STATUS-LOW-SEL-UNIT-ATTENTION)
+				    ("Any-Unit-Attention" %%DISK-STATUS-LOW-ATTENTION))
+	  WITH FLAG = NIL
+	  WHEN (AND (LDB-TEST (SYMEVAL PPSS) (IF (NULL HALF) LOW HIGH))
+		    (OR (NEQ PPSS '%%DISK-STATUS-HIGH-INTERNAL-PARITY)
+			(NOT (LDB-TEST %%DISK-STATUS-LOW-TRANSFER-ABORTED LOW))))
+	    DO (IF FLAG (FUNCALL S ':STRING-OUT "  "))
+	       (FUNCALL S ':STRING-OUT NAME)
+	       (SETQ FLAG T))))
 
-;;; If a unit number typed in by the user is a string, hack that machine's disk--
-;;;  Unless the string starts with CC, in which case hack the disk over the
-;;;  debug interface.
+;;; Unit is unit number on local disk controller or a string.
+;;; If a string, CC means hack over debug interface
+;;;    		 TEST is a source of test data
+;;;		 MT is magtape
+;;;	  otherwise it is assumed to be the chaosnet name of a remote machine.
 (DECLARE (SPECIAL REMOTE-DISK-CONN REMOTE-DISK-STREAM REMOTE-DISK-UNIT
 		  CC-DISK-UNIT CC-DISK-INIT-P CADR:CC-DISK-LOWCORE CADR:CC-DISK-TYPE))
 
-(DEFUN DECODE-UNIT-ARGUMENT (UNIT USE &OPTIONAL (CC-DISK-INIT-P NIL) &AUX TEM)
+(DEFUN DECODE-UNIT-ARGUMENT (UNIT USE &OPTIONAL (CC-DISK-INIT-P NIL) (WRITE-P NIL)
+			     &AUX TEM)
   (COND ((NUMBERP UNIT) UNIT)			;Local disk
 	((AND (STRINGP UNIT) 
 	      (STRING-EQUAL UNIT "CC" 0 0 2))
@@ -387,7 +535,6 @@
 		  (FERROR NIL "CC can only talk to unit zero")))
 	   (COND ((NULL CC-DISK-INIT-P)
 		  (CADR:CC-DISK-INIT)
-		  (COND (CADR:MARKSMAN-P (CADR:DC-RECAL-MARKSMAN)))
 		  (CADR:CC-DISK-WRITE 1 CADR:CC-DISK-LOWCORE 2)) ;Save on block 1,2
 		 (T (SETQ CADR:CC-DISK-TYPE T)))   ;Dont try to read garbage label, etc.
 	   (CLOSURE '(CC-DISK-UNIT CC-DISK-INIT-P)
@@ -398,6 +545,13 @@
 	 (LET ((CC-DISK-UNIT (IF (NULL TEM) 0 (READ-FROM-STRING UNIT NIL (1+ TEM)))))
 	   (CLOSURE '(CC-DISK-UNIT)
 		    'CC-TEST-HANDLER)))
+	((AND (STRINGP UNIT)			;Magtape interface.
+	      (STRING-EQUAL UNIT "MT" 0 0 2))
+	 (SETQ TEM (STRING-SEARCH-CHAR #\SP UNIT))
+	 (LET ((CC-DISK-UNIT (IF (NULL TEM) 0 (READ-FROM-STRING UNIT NIL (1+ TEM)))))
+	   (COND ((NOT (ZEROP CC-DISK-UNIT))
+		  (FERROR NIL "MT can only talk to unit zero")))
+	   (FS:MAKE-BAND-MAGTAPE-HANDLER WRITE-P)))	;Temporarily, this fctn in RG;MT.
 	((STRINGP UNIT)				;Open connection to foreign disk
 	 (LET ((REMOTE-DISK-CONN
 		 (CHAOS:CONNECT (SUBSTRING UNIT 0 (SETQ TEM (STRING-SEARCH-CHAR #\SP UNIT)))
@@ -481,7 +635,9 @@
     (:UNIT-NUMBER REMOTE-DISK-UNIT)
     (:MACHINE-NAME (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS REMOTE-DISK-CONN)))
     (:SAY (FORMAT REMOTE-DISK-STREAM "SAY ~A~%" (CAR ARGS))
-	  (FUNCALL REMOTE-DISK-STREAM ':FORCE-OUTPUT))))
+	  (FUNCALL REMOTE-DISK-STREAM ':FORCE-OUTPUT))
+    (:HANDLES-LABEL NIL)
+    ))
 
 (DEFUN CC-DISK-HANDLER (OP &REST ARGS)
   (SELECTQ OP
@@ -564,11 +720,8 @@
 							; maybe isnt garbage
     (:UNIT-NUMBER 0)
     (:MACHINE-NAME "via CC")
-    (:SAY (FORMAT T "CC-SAY ~A~%" (CAR ARGS)))))
-
-(DEFUN TEST-UNIT-P (UNIT)
-  (AND (CLOSUREP UNIT)
-       (EQ (CAR (%MAKE-POINTER DTP-LIST UNIT)) 'CC-TEST-HANDLER)))
+    (:SAY (FORMAT T "CC-SAY ~A~%" (CAR ARGS)))
+    (:HANDLES-LABEL NIL)))
 
 (DEFUN CC-TEST-HANDLER (OP &REST ARGS)
   (SELECTQ OP
@@ -619,38 +772,13 @@
     (:DISPOSE NIL)
     (:UNIT-NUMBER CC-DISK-UNIT)
     (:MACHINE-NAME "TEST")
-    (:SAY (FORMAT T "CC-TEST-SAY ~A~%" (CAR ARGS)))))
-
-(DECLARE (SPECIAL CURRENT-LOADED-BAND DISK-PACK-NAME))
+    (:SAY (FORMAT T "CC-TEST-SAY ~A~%" (CAR ARGS)))
+    (:HANDLES-LABEL T)
+    (:FIND-DISK-PARTITION (VALUES  0 100000 NIL))
+    (:PARTITION-COMMENT (FORMAT NIL "TEST ~D" CC-DISK-UNIT))
+    (:UPDATE-PARTITION-COMMENT NIL)
+    ))
 
-(DEFUN DISK-INIT (&AUX RQB SIZE)
-  (UNWIND-PROTECT
-   (PROGN (WITHOUT-INTERRUPTS
-	     (SETQ RQB (GET-DISK-RQB)))
-	  (READ-DISK-LABEL RQB 0)
-	  ;; Update things which depend on the location and size of the paging area
-	  (MULTIPLE-VALUE (PAGE-OFFSET SIZE)
-	    (FIND-DISK-PARTITION "PAGE" RQB 0 T))
-	  (GC-CHECK-FREE-REGIONS SIZE)
-	  (SETQ DISK-PACK-NAME (GET-DISK-STRING RQB 20 32.)))
-   (RETURN-DISK-RQB RQB)))
-
-;(ADD-INITIALIZATION "DISK-INIT" '(DISK-INIT) '(SYSTEM))  ;MUST GO AT END SO WINS ON COLD LOAD
-
-(DEFUN PRINT-LOADED-BAND (&OPTIONAL (STREAM T)) ;Can be NIL to return a string
-    (OR (ZEROP %LOADED-BAND) (SETQ CURRENT-LOADED-BAND %LOADED-BAND))
-    (OR (BOUNDP 'CURRENT-LOADED-BAND) (SETQ CURRENT-LOADED-BAND 0))
-    (PROG2  ;If STREAM is NIL, want to return a string with no carriage returns in it
-      (FORMAT STREAM "~&")
-      (FORMAT STREAM "This is band ~C of ~A, with microcode ~D, system ~A"
-          (LDB 2010 CURRENT-LOADED-BAND) ;4th character in char string (only high 3 stored)
-	  DISK-PACK-NAME
-          %MICROCODE-VERSION-NUMBER
-          (IF (BOUNDP 'SYSTEM-VERSION-STRING) SYSTEM-VERSION-STRING
-              "[fresh cold load]"))
-      (FORMAT STREAM "~%")))
-
-;(ADD-INITIALIZATION "PRINT-LOADED-BAND" '(PRINT-LOADED-BAND) '(WARM));at end due to COLD LOAD
 
 ;;; These are internal
 
@@ -666,11 +794,14 @@
 
 (DEFUN GET-DISK-STRING (RQB WORD-ADDRESS N-CHARACTERS &OPTIONAL (SHARE-P NIL)
 			&AUX (AMAZING-KLUDGE (%P-CONTENTS-OFFSET (RQB-BUFFER RQB) 3)))
-  (COND (SHARE-P (MAKE-ARRAY NIL 'ART-STRING N-CHARACTERS
-			     (RQB-BUFFER RQB) NIL (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS))))
-	((LET ((STR (MAKE-ARRAY NIL 'ART-STRING N-CHARACTERS))
-	       (BSTR (MAKE-ARRAY NIL 'ART-STRING N-CHARACTERS
-				 (RQB-BUFFER RQB) NIL (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS)))))
+  (COND (SHARE-P (MAKE-ARRAY N-CHARACTERS ':TYPE 'ART-STRING
+			     ':DISPLACED-TO (RQB-BUFFER RQB)
+			     ':DISPLACED-INDEX-OFFSET (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS))))
+	((LET ((STR (MAKE-ARRAY N-CHARACTERS ':TYPE 'ART-STRING))
+	       (BSTR (MAKE-ARRAY N-CHARACTERS ':TYPE 'ART-STRING
+				 ':DISPLACED-TO (RQB-BUFFER RQB)
+				 ':DISPLACED-INDEX-OFFSET
+				      (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS)))))
 	   (COPY-ARRAY-CONTENTS BSTR STR)
 	   (RETURN-ARRAY BSTR)
 	   (DO ((I 0 (1+ I)))
@@ -682,8 +813,9 @@
 
 (DEFUN PUT-DISK-STRING (RQB STR WORD-ADDRESS N-CHARACTERS
 			&AUX (AMAZING-KLUDGE (%P-CONTENTS-OFFSET (RQB-BUFFER RQB) 3)))
-  (DO ((TEM (MAKE-ARRAY NIL 'ART-STRING N-CHARACTERS (RQB-BUFFER RQB) NIL
-                        (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS))))
+  (DO ((TEM (MAKE-ARRAY N-CHARACTERS ':TYPE 'ART-STRING
+			':DISPLACED-TO (RQB-BUFFER RQB)
+                        ':DISPLACED-INDEX-OFFSET (+ AMAZING-KLUDGE (* 4 WORD-ADDRESS))))
        (I 0 (1+ I))
        (N (MIN (STRING-LENGTH STR) N-CHARACTERS)))
       ((>= I N)
@@ -703,36 +835,124 @@
   (ASET (LDB 2020 VAL) (RQB-BUFFER RQB) (1+ (* 2 WORD-ADDRESS))))
 
 ;Returns NIL if no such partition, or 3 values (FIRST-BLOCK N-BLOCKS LABEL-LOC) if it exists
-(DEFUN FIND-DISK-PARTITION (NAME &OPTIONAL RQB (UNIT 0) (ALREADY-READ-P NIL)
+(DEFUN FIND-DISK-PARTITION (NAME &OPTIONAL RQB (UNIT 0) (ALREADY-READ-P NIL) CONFIRM-WRITE
 			    &AUX (RETURN-RQB NIL))
-  (PROG FIND-DISK-PARTITION ()
-    (COND ((TEST-UNIT-P UNIT)
-	   (RETURN 0 100000 NIL)))
-    (UNWIND-PROTECT
-     (PROGN
-      (COND ((NULL RQB)
-             (WITHOUT-INTERRUPTS
-              (SETQ RETURN-RQB T
-		    RQB (GET-DISK-RQB)))))
-      (OR ALREADY-READ-P (READ-DISK-LABEL RQB UNIT))
-      (DO ((N-PARTITIONS (GET-DISK-FIXNUM RQB 200))
-           (WORDS-PER-PART (GET-DISK-FIXNUM RQB 201))
-           (I 0 (1+ I))
-           (LOC 202 (+ LOC WORDS-PER-PART)))
-          ((= I N-PARTITIONS) NIL)
-         (AND (STRING-EQUAL (GET-DISK-STRING RQB LOC 4) NAME)
-              (RETURN-FROM FIND-DISK-PARTITION
-                           (GET-DISK-FIXNUM RQB (+ LOC 1))
-                           (GET-DISK-FIXNUM RQB (+ LOC 2))
-			   LOC))))
-     (AND RETURN-RQB (RETURN-DISK-RQB RQB)))))
+  (DECLARE (RETURN-LIST FIRST-BLOCK N-BLOCKS LABEL-LOC))
+  (IF (AND (CLOSUREP UNIT)
+	   (FUNCALL UNIT ':HANDLES-LABEL))
+      (FUNCALL UNIT ':FIND-DISK-PARTITION NAME)
+      (PROG FIND-DISK-PARTITION ()
+	(UNWIND-PROTECT
+	  (PROGN
+	    (COND ((NULL RQB)
+		   (WITHOUT-INTERRUPTS
+		     (SETQ RETURN-RQB T
+			   RQB (GET-DISK-RQB)))))
+	    (OR ALREADY-READ-P (READ-DISK-LABEL RQB UNIT))
+	    (DO ((N-PARTITIONS (GET-DISK-FIXNUM RQB 200))
+		 (WORDS-PER-PART (GET-DISK-FIXNUM RQB 201))
+		 (I 0 (1+ I))
+		 (LOC 202 (+ LOC WORDS-PER-PART)))
+		((= I N-PARTITIONS) NIL)
+	      (COND ((STRING-EQUAL (GET-DISK-STRING RQB LOC 4) NAME)
+		     (AND CONFIRM-WRITE
+			  (NOT (FQUERY FORMAT:YES-OR-NO-QUIETLY-P-OPTIONS
+				"Do you really want to clobber partition ~A ~
+				 ~:[~*~;on unit ~D ~](~A)? "
+				NAME (NUMBERP UNIT) UNIT				
+				(GET-DISK-STRING RQB (+ LOC 3) 16.)))
+			  (RETURN-FROM FIND-DISK-PARTITION NIL T))
+		     (RETURN-FROM FIND-DISK-PARTITION
+				  (GET-DISK-FIXNUM RQB (+ LOC 1))
+				  (GET-DISK-FIXNUM RQB (+ LOC 2))
+				  LOC)))))
+	  (AND RETURN-RQB (RETURN-DISK-RQB RQB))))))
+
+;Useful interfaces to FIND-DISK-PARTITION which do your error checking for you
+(DEFUN FIND-DISK-PARTITION-FOR-READ (NAME &OPTIONAL RQB (UNIT 0) (ALREADY-READ-P NIL)
+						    (NUMBER-PREFIX "LOD"))
+  (DECLARE (RETURN-LIST FIRST-BLOCK N-BLOCKS LABEL-LOC NAME))
+  (COND ((NUMBERP NAME) (SETQ NAME (FORMAT NIL "~A~D" NUMBER-PREFIX NAME)))
+	((SYMBOLP NAME) (SETQ NAME (GET-PNAME NAME)))
+	((NOT (STRINGP NAME)) (FERROR NIL "~S is not a valid partition name" NAME)))
+  (MULTIPLE-VALUE-BIND (FIRST-BLOCK N-BLOCKS LABEL-LOC)
+      (FIND-DISK-PARTITION NAME RQB UNIT ALREADY-READ-P)
+    (IF (NOT (NULL FIRST-BLOCK))
+	(VALUES FIRST-BLOCK N-BLOCKS LABEL-LOC NAME)
+	(FERROR NIL "No partition named /"~A/" exists on disk unit ~D." NAME UNIT))))
+
+;Signals error if no partition exists, but returns NIL if it does exist
+;but the user says not to use it.  The caller may check for NIL or blow
+;out trying to do arithmetic on it, as he prefers.
+(DEFUN FIND-DISK-PARTITION-FOR-WRITE (NAME &OPTIONAL RQB (UNIT 0) (ALREADY-READ-P NIL)
+						    (NUMBER-PREFIX "LOD"))
+  (DECLARE (RETURN-LIST FIRST-BLOCK N-BLOCKS LABEL-LOC NAME))
+  (COND ((NUMBERP NAME) (SETQ NAME (FORMAT NIL "~A~D" NUMBER-PREFIX NAME)))
+	((SYMBOLP NAME) (SETQ NAME (GET-PNAME NAME)))
+	((NOT (STRINGP NAME)) (FERROR NIL "~S is not a valid partition name" NAME)))
+  (MULTIPLE-VALUE-BIND (FIRST-BLOCK N-BLOCKS LABEL-LOC)
+      (FIND-DISK-PARTITION NAME RQB UNIT ALREADY-READ-P T)
+    (IF (NOT (NULL FIRST-BLOCK))
+	(VALUES FIRST-BLOCK N-BLOCKS LABEL-LOC NAME)
+	(IF (NULL N-BLOCKS)
+	    (FERROR NIL "No partition named /"~A/" exists on disk unit ~D." NAME UNIT)
+	    NIL))))
+
+;; Returns a list with elements (<name> <base> <size> <comment> <desc-loc>)
+(DEFUN PARTITION-LIST (&OPTIONAL RQB (UNIT 0) ALREADY-READ-P &AUX RETURN-RQB)
+  (UNWIND-PROTECT
+    (PROGN (COND ((NULL RQB)
+		  (WITHOUT-INTERRUPTS
+		    (SETQ RETURN-RQB T
+			  RQB (GET-DISK-RQB)))))
+	   (OR ALREADY-READ-P (READ-DISK-LABEL RQB UNIT))
+	   (LET ((RESULT (MAKE-LIST (GET-DISK-FIXNUM RQB 200)))
+		 (WORDS-PER-PART (GET-DISK-FIXNUM RQB 201)))
+	     (DO ((LOC 202 (+ LOC WORDS-PER-PART))
+		  (R RESULT (CDR R)))
+		 ((NULL R) RESULT)
+	       (SETF (CAR R)
+		     (LIST (GET-DISK-STRING RQB LOC 4)
+			   (GET-DISK-FIXNUM RQB (1+ LOC))
+			   (GET-DISK-FIXNUM RQB (+ LOC 2))
+			   (GET-DISK-STRING RQB (+ LOC 3) 16.)
+			   LOC)))))
+    (AND RETURN-RQB (RETURN-DISK-RQB RQB))))
+
+;; This is a hack to allow one to easily find if a partition he wants is available.
+(DEFUN PRINT-AVAILABLE-BANDS (&OPTIONAL (WHICH "LOD")
+					(MACHINES (CHAOS:FINGER-ALL-LMS 'IGNORE NIL T))
+			      &AUX (WL (AND (STRINGP WHICH)
+					    (MIN (ARRAY-ACTIVE-LENGTH WHICH) 4)))
+				   RQB UNIT TEM PARTITION-LIST PARTITION-LIST-ALIST)
+  (CHECK-ARG WHICH (OR (STRINGP WHICH) (EQ WHICH T)) "a string or T")
+  (UNWIND-PROTECT
+    (PROGN (SETQ RQB (GET-DISK-RQB))
+	   (DOLIST (M MACHINES)
+	     (UNWIND-PROTECT
+	       (SETQ UNIT (DECODE-UNIT-ARGUMENT M "Examining Label")
+		     PARTITION-LIST (PARTITION-LIST RQB UNIT))
+	       (DISPOSE-OF-UNIT UNIT))
+	     (DOLIST (PARTITION PARTITION-LIST)
+	       (AND (OR (EQ WHICH T)
+			(STRING-EQUAL (CAR PARTITION) WHICH 0 0 WL WL))
+		    (PLUSP (STRING-LENGTH (FOURTH PARTITION)))
+		    (IF (SETQ TEM (ASSOC (FOURTH PARTITION) PARTITION-LIST-ALIST))
+			(RPLACD (LAST TEM) (NCONS (LIST M (FIRST PARTITION))))
+			(PUSH (LIST* (FOURTH PARTITION)
+				     (LIST M (FIRST PARTITION))
+				     NIL)
+			      PARTITION-LIST-ALIST))))))
+    (RETURN-DISK-RQB RQB))
+  (SETQ PARTITION-LIST-ALIST (SORTCAR PARTITION-LIST-ALIST #'STRING-LESSP))
+  (DOLIST (P PARTITION-LIST-ALIST)
+    (FORMAT T "~%~A:~20T~:{~<~%~20T~2:;~A ~A~>~:^, ~}" (CAR P) (CDR P))))
 
 ;;; Functions for shipping partitions across the network
 
 ;This should be installed
 (DEFUN SYMBOLIC-CHAOS-ADDRESS (NUM)
-  (OR (CAR (RASSOC NUM CHAOS:HOST-ALIST))
-      NUM))
+  (GET-HOST-FROM-ADDRESS NUM ':CHAOS))
 
 (DEFUN RECEIVE-PARTITION (PART &OPTIONAL (STARTING-HUNDRED 0) (STREAM T) (UNIT 0)
 			       &AUX PART-BASE PART-SIZE RQB
@@ -741,41 +961,35 @@
    (PROGN
     (WITHOUT-INTERRUPTS
      (SETQ RQB (GET-DISK-RQB)))
-    (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION PART RQB UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A" PART))
+    (MULTIPLE-VALUE (PART-BASE PART-SIZE NIL PART)
+      (FIND-DISK-PARTITION-FOR-WRITE PART RQB UNIT))
     (LET ((CONN (CHAOS:LISTEN "PARTITION-TRANSFER" 25.))) ;Window 25, # int buffers 32
-      (CHAOS:WAIT CONN 'CHAOS:LISTENING-STATE (* 60. 120.)) ;2-minute timeout
-      (COND
-       ((EQ (CHAOS:STATE CONN) 'CHAOS:RFC-RECEIVED-STATE)
-	(SETQ RFC-ARG-STRING
-	      (SUBSTRING-AFTER-CHAR 40 (CHAOS:PKT-STRING (CHAOS:READ-PKTS CONN))))
-        (CHAOS:ACCEPT CONN)
-        (FORMAT STREAM "~&Begin transfer of ~A on unit ~D from ~A~%"
-                PART UNIT (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS CONN)))
-        (*CATCH 'EOF
-           (DO ((BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)) (1+ BLOCK))
-                (N (- PART-SIZE (* STARTING-HUNDRED 100.)) (1- N))
-                (BLOCK-PKT-1 (GET-DISK-STRING RQB 0 484. T))
-                (BLOCK-PKT-2 (GET-DISK-STRING RQB 121. 484. T))
-                (BLOCK-PKT-3 (GET-DISK-STRING RQB 242. 56. T)))
-               (NIL)
-               ;Get 3 packets and form a block in the buffer
-               ;RECEIVE-PARTITION-PACKET will throw if it gets to eof.
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-1)
-	       (COND ((ZEROP N) ;Transmitter sent more than we have room for,
-		      (FERROR NIL "Received-partition too big")  ; just close on him
-		      (RETURN NIL)))
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-2)
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-3)
-               (DISK-WRITE RQB UNIT BLOCK)
-               (COND ((ZEROP (\ (- BLOCK PART-BASE) 100.))
-                      (FORMAT STREAM "~D " (// (- BLOCK PART-BASE) 100.))))))
-        (CHAOS:CLOSE CONN)
-	(UPDATE-PARTITION-COMMENT PART RFC-ARG-STRING UNIT)
-        (FORMAT STREAM "~&Receive done~%"))
-       (T (FORMAT STREAM "Attempt to establish connection failed, conn now in ~S"
-                  (CHAOS:STATE CONN))
-          (CHAOS:REMOVE-CONN CONN)))))
+      (SETQ RFC-ARG-STRING
+	    (SUBSTRING-AFTER-CHAR #\SP (CHAOS:PKT-STRING (CHAOS:READ-PKTS CONN))))
+      (CHAOS:ACCEPT CONN)
+      (FORMAT STREAM "~&Begin transfer of ~A on unit ~D from ~A~%"
+	      PART UNIT (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS CONN)))
+      (*CATCH 'EOF
+	 (DO ((BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)) (1+ BLOCK))
+	      (N (- PART-SIZE (* STARTING-HUNDRED 100.)) (1- N))
+	      (BLOCK-PKT-1 (GET-DISK-STRING RQB 0 484. T))
+	      (BLOCK-PKT-2 (GET-DISK-STRING RQB 121. 484. T))
+	      (BLOCK-PKT-3 (GET-DISK-STRING RQB 242. 56. T)))
+	     (NIL)
+	     ;Get 3 packets and form a block in the buffer
+	     ;RECEIVE-PARTITION-PACKET will throw if it gets to eof.
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-1)
+	     (COND ((ZEROP N) ;Transmitter sent more than we have room for,
+		    (FERROR NIL "Received-partition too big")  ; just close on him
+		    (RETURN NIL)))
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-2)
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-3)
+	     (DISK-WRITE RQB UNIT BLOCK)
+	     (COND ((ZEROP (\ (- BLOCK PART-BASE) 100.))
+		    (FORMAT STREAM "~D " (// (- BLOCK PART-BASE) 100.))))))
+      (CHAOS:CLOSE CONN)
+      (UPDATE-PARTITION-COMMENT PART RFC-ARG-STRING UNIT)
+      (FORMAT STREAM "~&Receive done~%")))
    (RETURN-DISK-RQB RQB)))
 
 (DEFUN TRANSMIT-PARTITION (HOST PART &OPTIONAL (STARTING-HUNDRED 0) (STREAM T) (UNIT 0)
@@ -784,23 +998,24 @@
    (PROGN
     (WITHOUT-INTERRUPTS
      (SETQ RQB (GET-DISK-RQB)))
-    (MULTIPLE-VALUE (PART-BASE PART-SIZE DESC-LOC) (FIND-DISK-PARTITION PART RQB UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A" PART))
+    (MULTIPLE-VALUE (PART-BASE PART-SIZE DESC-LOC)
+      (FIND-DISK-PARTITION-FOR-READ PART RQB UNIT))
     (LET ((CONN (CHAOS:CONNECT HOST (STRING-APPEND "PARTITION-TRANSFER "
 						   (PARTITION-COMMENT PART UNIT)))))
       (COND ((STRINGP CONN) CONN) ;Error message
             (T
              (FORMAT STREAM "~&Begin transfer of ~A on unit ~D to ~A"
                      PART UNIT (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS CONN)))
-             (AND (STRING-EQUAL PART "LOD" 0 0 3 3)
-                  (LET ((BUF (RQB-BUFFER (DISK-READ RQB UNIT (1+ PART-BASE)))))
-                    (LET ((SIZE (DPB (AREF BUF (1+ (* 2 %SYS-COM-VALID-SIZE)))
-                                     1010   ;Knows page-size is 2^8
-                                     (LDB 1010 (AREF BUF (* 2 %SYS-COM-VALID-SIZE))))))
-                       (COND ((AND (> SIZE 10) ( SIZE PART-SIZE))
-                              (SETQ PART-SIZE SIZE)
-                              (FORMAT STREAM
-                                      "... using measured size of ~D. blocks." SIZE))))))
+             (COND ((STRING-EQUAL PART "LOD" 0 0 3 3)
+		    (DISK-READ RQB UNIT (1+ PART-BASE))
+		    (LET* ((BUF (RQB-BUFFER RQB))
+			   (SIZE (DPB (AREF BUF (1+ (* 2 %SYS-COM-VALID-SIZE)))
+				      1010	;Knows page-size is 2^8
+				      (LDB 1010 (AREF BUF (* 2 %SYS-COM-VALID-SIZE))))))
+		      (COND ((AND (> SIZE 10) ( SIZE PART-SIZE))
+			     (SETQ PART-SIZE SIZE)
+			     (FORMAT STREAM
+				     "... using measured size of ~D. blocks." SIZE))))))
              (TERPRI)
              (DO ((BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)) (1+ BLOCK))
                   (N (- PART-SIZE (* STARTING-HUNDRED 100.)) (1- N))
@@ -828,50 +1043,43 @@
     (WITHOUT-INTERRUPTS
      (SETQ RQB (GET-DISK-RQB))
      (SETQ RQB2 (GET-DISK-RQB)))
-    (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION PART RQB UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A" PART))
+    (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION-FOR-READ PART RQB UNIT))
     (LET ((CONN (CHAOS:LISTEN "PARTITION-TRANSFER")))
-      (CHAOS:WAIT CONN 'CHAOS:LISTENING-STATE (* 60. 120.)) ;2-minute timeout
-      (COND
-       ((EQ (CHAOS:STATE CONN) 'CHAOS:RFC-RECEIVED-STATE)
-        (CHAOS:ACCEPT CONN)
-        (FORMAT STREAM "~&Begin compare of ~A on unit ~D from ~A~%"
-                PART UNIT (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS CONN)))
-        (*CATCH 'EOF
-           (DO ((BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)) (1+ BLOCK))
-                (N (- PART-SIZE (* STARTING-HUNDRED 100.)) (1- N))
-                (BLOCK-PKT-1 (GET-DISK-STRING RQB 0 484. T))
-                (BLOCK-PKT-2 (GET-DISK-STRING RQB 121. 484. T))
-                (BLOCK-PKT-3 (GET-DISK-STRING RQB 242. 56. T))
-		(BUF (RQB-BUFFER RQB))
-		(BUF2 (RQB-BUFFER RQB2)))
-               (NIL)
-               ;Get 3 packets and form a block in the buffer
-               ;RECEIVE-PARTITION-PACKET will throw if it gets to eof.
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-1)
-               (COND ((ZEROP N) ;Transmitter sent more than we have room for,
-		      (FERROR NIL "Received-partition too big")  ; just close on him
-		      (RETURN NIL)))
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-2)
-               (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-3)
-               (DISK-READ RQB2 UNIT BLOCK)
-	       (DO ((C 0 (1+ C))
-		    (ERRS 0))
-		   ((OR (= C 1000) (= ERRS 3)))
-		 (COND ((NOT (= (AR-1 BUF C) (AR-1 BUF2 C)))
-			(FORMAT T "~%ERR Block ~O Halfword ~O, Part: ~O Rcvd: ~O "
-				(- BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)))
-				C
-				(AR-1 BUF2 C)
-				(AR-1 BUF C))
-			(SETQ ERRS (1+ ERRS)))))
-               (COND ((ZEROP (\ (- BLOCK PART-BASE) 100.))
-                      (FORMAT STREAM "~D " (// (- BLOCK PART-BASE) 100.))))))
-        (CHAOS:CLOSE CONN)
-        (FORMAT STREAM "~&Receive done~%"))
-       (T (FORMAT STREAM "Attempt to establish connection failed, conn now in ~S"
-                  (CHAOS:STATE CONN))
-          (CHAOS:REMOVE-CONN CONN)))))
+      (CHAOS:ACCEPT CONN)
+      (FORMAT STREAM "~&Begin compare of ~A on unit ~D from ~A~%"
+	      PART UNIT (SYMBOLIC-CHAOS-ADDRESS (CHAOS:FOREIGN-ADDRESS CONN)))
+      (*CATCH 'EOF
+	 (DO ((BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)) (1+ BLOCK))
+	      (N (- PART-SIZE (* STARTING-HUNDRED 100.)) (1- N))
+	      (BLOCK-PKT-1 (GET-DISK-STRING RQB 0 484. T))
+	      (BLOCK-PKT-2 (GET-DISK-STRING RQB 121. 484. T))
+	      (BLOCK-PKT-3 (GET-DISK-STRING RQB 242. 56. T))
+	      (BUF (RQB-BUFFER RQB))
+	      (BUF2 (RQB-BUFFER RQB2)))
+	     (NIL)
+	     ;Get 3 packets and form a block in the buffer
+	     ;RECEIVE-PARTITION-PACKET will throw if it gets to eof.
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-1)
+	     (COND ((ZEROP N) ;Transmitter sent more than we have room for,
+		    (FERROR NIL "Received-partition too big")  ; just close on him
+		    (RETURN NIL)))
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-2)
+	     (RECEIVE-PARTITION-PACKET CONN BLOCK-PKT-3)
+	     (DISK-READ RQB2 UNIT BLOCK)
+	     (DO ((C 0 (1+ C))
+		  (ERRS 0))
+		 ((OR (= C 1000) (= ERRS 3)))
+	       (COND ((NOT (= (AR-1 BUF C) (AR-1 BUF2 C)))
+		      (FORMAT T "~%ERR Block ~O Halfword ~O, Part: ~O Rcvd: ~O "
+			      (- BLOCK (+ PART-BASE (* STARTING-HUNDRED 100.)))
+			      C
+			      (AR-1 BUF2 C)
+			      (AR-1 BUF C))
+		      (SETQ ERRS (1+ ERRS)))))
+	     (COND ((ZEROP (\ (- BLOCK PART-BASE) 100.))
+		    (FORMAT STREAM "~D " (// (- BLOCK PART-BASE) 100.))))))
+      (CHAOS:CLOSE CONN)
+      (FORMAT STREAM "~&Receive done~%")))
    (RETURN-DISK-RQB RQB)
    (RETURN-DISK-RQB RQB2)))
 
@@ -906,39 +1114,155 @@
        (N (ARRAY-LENGTH STR)))
       (( I N) (LOGAND 177777 CKSM))))
 
-;return number of pages occupied by saved image stored on band.
+;Return number of pages occupied by saved image stored on band.
+;This really ought to be in the label, like an array-active-length
 (DEFUN MEASURED-SIZE-OF-PARTITION (PART &OPTIONAL (UNIT 0)
 				     &AUX PART-BASE PART-SIZE RQB)
+  (SETQ UNIT (DECODE-UNIT-ARGUMENT UNIT
+				   (FORMAT NIL "sizing ~A partition" PART)))
   (UNWIND-PROTECT
-   (PROGN
-    (WITHOUT-INTERRUPTS
-     (SETQ RQB (GET-DISK-RQB)))
-    (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION PART RQB UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A" PART))
-    (AND (STRING-EQUAL PART "LOD" 0 0 3 3)
-	 (LET ((BUF (RQB-BUFFER (DISK-READ RQB UNIT (1+ PART-BASE)))))
-	   (LET ((SIZE (DPB (AREF BUF (1+ (* 2 %SYS-COM-VALID-SIZE)))
-			    1010   ;Knows page-size is 2^8
-			    (LDB 1010 (AREF BUF (* 2 %SYS-COM-VALID-SIZE))))))
-	     (COND ((AND (> SIZE 10) ( SIZE PART-SIZE))
-		    SIZE))))))
+    (PROGN
+      (WITHOUT-INTERRUPTS
+        (SETQ RQB (GET-DISK-RQB)))
+      (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION-FOR-READ PART RQB UNIT))
+      (COND ((OR (NUMBERP PART) (STRING-EQUAL PART "LOD" 0 0 3 3))
+	     (DISK-READ RQB UNIT (1+ PART-BASE))
+	     (LET ((BUF (RQB-BUFFER RQB)))
+	       (LET ((SIZE (DPB (AREF BUF (1+ (* 2 %SYS-COM-VALID-SIZE)))
+				1010		;Knows page-size is 2^8
+				(LDB 1010 (AREF BUF (* 2 %SYS-COM-VALID-SIZE))))))
+		 (IF (AND (> SIZE 10) ( SIZE PART-SIZE)) SIZE PART-SIZE))))
+	    (T PART-SIZE)))
+    (RETURN-DISK-RQB RQB)))
+
+(DEFUN DISK-INIT (&AUX RQB SIZE)
+  (UNWIND-PROTECT
+   (PROGN (WITHOUT-INTERRUPTS
+	     (SETQ RQB (GET-DISK-RQB)))
+	  (READ-DISK-LABEL RQB 0)
+	  ;; Update things which depend on the location and size of the paging area
+	  (MULTIPLE-VALUE (PAGE-OFFSET SIZE)
+	    (FIND-DISK-PARTITION "PAGE" RQB 0 T))
+	  (SETQ VIRTUAL-MEMORY-SIZE (* (MIN (LDB 1020 A-MEMORY-VIRTUAL-ADDRESS) SIZE)
+				       PAGE-SIZE))
+	  (SETQ DISK-PACK-NAME (GET-DISK-STRING RQB 20 32.)))
    (RETURN-DISK-RQB RQB)))
+
+(DEFUN PRINT-LOADED-BAND (&OPTIONAL (STREAM T)) ;Can be NIL to return a string
+    (OR (ZEROP %LOADED-BAND) (SETQ CURRENT-LOADED-BAND %LOADED-BAND))
+    (OR (BOUNDP 'CURRENT-LOADED-BAND) (SETQ CURRENT-LOADED-BAND 0))
+    (PROG2  ;If STREAM is NIL, want to return a string with no carriage returns in it
+      (FORMAT STREAM "~&")
+      (FORMAT STREAM "This is band ~C of ~A, with ~A"
+          (LDB 2010 CURRENT-LOADED-BAND) ;4th character in char string (only high 3 stored)
+	  DISK-PACK-NAME
+	  (IF (FBOUNDP 'SYSTEM-VERSION-INFO)	;For the cold load
+	      (SYSTEM-VERSION-INFO)
+              "[fresh cold load]"))
+      (FORMAT STREAM "~%")))
+
+;; This is called explicitly by LISP-REINITIALIZE.
+(DEFUN PRINT-HERALD (&OPTIONAL (S STANDARD-OUTPUT))
+  (OR (ZEROP %LOADED-BAND) (SETQ CURRENT-LOADED-BAND %LOADED-BAND))
+  (OR (BOUNDP 'CURRENT-LOADED-BAND) (SETQ CURRENT-LOADED-BAND 0))
+  (FORMAT S "~&This is band ~C of ~A."
+	  (LDB 2010 CURRENT-LOADED-BAND)
+	  DISK-PACK-NAME)
+  (AND (BOUNDP 'SYSTEM-ADDITIONAL-INFO)
+       (PLUSP (ARRAY-ACTIVE-LENGTH SYSTEM-ADDITIONAL-INFO))
+       (FORMAT S " (~A)" SYSTEM-ADDITIONAL-INFO))
+  (IF (NOT (FBOUNDP 'DESCRIBE-SYSTEM-VERSIONS))
+      (FORMAT S "~%Fresh Cold Load~%")
+      (DESCRIBE-SYSTEM-VERSIONS S)
+      (FORMAT S "~%~A ~A, with associated machine ~A.~%"
+	      (OR (GET-SITE-OPTION ':SITE-PRETTY-NAME) SITE-NAME)
+	      LOCAL-PRETTY-HOST-NAME
+	      ASSOCIATED-MACHINE)))
+
+;Must be defined before initialization below
+(DEFUN WIRE-PAGE (ADDRESS &OPTIONAL (WIRE-P T) SET-MODIFIED DONT-BOTHER-PAGING-IN)
+  (IF WIRE-P
+      (DO ()
+	  ((%CHANGE-PAGE-STATUS ADDRESS %PHT-SWAP-STATUS-WIRED NIL)
+	   (IF SET-MODIFIED			;Set modified bit without changing anything
+	       (%P-STORE-DATA-TYPE ADDRESS (%P-DATA-TYPE ADDRESS))))
+	(COND ((NOT DONT-BOTHER-PAGING-IN)
+	       (%P-LDB 1 (%POINTER ADDRESS)))	;Haul it in
+	      ((NULL (%PAGE-STATUS ADDRESS))
+	       (WITHOUT-INTERRUPTS		;Try not to get aborted
+		 (LET ((PFN (%FINDCORE)))
+		   (OR (%PAGE-IN PFN (LSH ADDRESS -8))
+		       ;Page already got in somehow, free up the PFN
+		       (%CREATE-PHYSICAL-PAGE (LSH PFN 8))))))))
+      (UNWIRE-PAGE ADDRESS)))
+
+(DEFUN UNWIRE-PAGE (ADDRESS)
+  (%CHANGE-PAGE-STATUS ADDRESS %PHT-SWAP-STATUS-NORMAL NIL))
+
+(DEFUN WIRE-WORDS (FROM SIZE &OPTIONAL (WIRE-P T) SET-MODIFIED DONT-BOTHER-PAGING-IN)
+  (DO ((ADR (- FROM (LOGAND FROM (1- PAGE-SIZE))) (+ ADR PAGE-SIZE))
+       (N   (- PAGE-SIZE (LOGAND FROM (1- PAGE-SIZE))) (+ N PAGE-SIZE)))
+      ((>= N SIZE))
+    (WIRE-PAGE ADR WIRE-P SET-MODIFIED DONT-BOTHER-PAGING-IN)))
+
+(DEFUN UNWIRE-WORDS (FROM SIZE)
+  (WIRE-WORDS FROM SIZE NIL))
+      
+(DEFUN WIRE-ARRAY  (ARRAY &OPTIONAL FROM TO SET-MODIFIED DONT-BOTHER-PAGING-IN &AUX SIZE)
+  (WITHOUT-INTERRUPTS
+    (MULTIPLE-VALUE (ARRAY FROM SIZE)
+      (PAGE-ARRAY-CALCULATE-BOUNDS ARRAY FROM TO))
+    (AND ARRAY
+	 ;; Have starting word and number of words. 
+	 (WIRE-WORDS FROM SIZE T SET-MODIFIED DONT-BOTHER-PAGING-IN))))
+
+(DEFUN UNWIRE-ARRAY (ARRAY &OPTIONAL FROM TO &AUX SIZE)
+  (WITHOUT-INTERRUPTS
+    (MULTIPLE-VALUE (ARRAY FROM SIZE)
+      (PAGE-ARRAY-CALCULATE-BOUNDS ARRAY FROM TO))
+    (AND ARRAY
+	 ;; Have starting word and number of words. 
+	 (UNWIRE-WORDS FROM SIZE))))
+
+;;; Takes the number of an area and wires down all the allocated
+;;; pages of it, or un-wires, depending on the second argument.
+;;; The area had better have only one region.
+;;; Also doesn't work on downwards-consed list regions (which no longer exist).
+(DEFUN WIRE-AREA (AREA WIRE-P)
+  (LET ((REGION (AREA-REGION-LIST AREA)))
+    (OR (MINUSP (REGION-LIST-THREAD REGION)) ;last region in area
+	(FERROR NIL "Area ~A has more than one region" (AREA-NAME AREA)))
+    (DO ((LOC (REGION-ORIGIN REGION) (%24-BIT-PLUS LOC PAGE-SIZE))
+	 (COUNT (// (+ (REGION-FREE-POINTER REGION) (1- PAGE-SIZE)) PAGE-SIZE) (1- COUNT)))
+	((ZEROP COUNT))
+      (WIRE-PAGE LOC WIRE-P))))
+
+;This must be after main definitions above, but before initialization below!
+(ADD-INITIALIZATION "DISK-INIT" '(DISK-INIT) '(SYSTEM))
 
 ;;; Put a microcode file onto my own disk.
 ;;; Note that the cretinous halfwords are out of order
 (DEFUN LOAD-MCR-FILE (FILENAME PART &OPTIONAL (UNIT 0)
                                     &AUX PART-BASE PART-SIZE RQB)
+  (SETQ FILENAME (IF (NUMBERP FILENAME)
+		     (FUNCALL (FS:PARSE-PATHNAME "SYS:UBIN;UCADR")
+			      ':NEW-TYPE-AND-VERSION "MCR" FILENAME)
+		     (FS:MERGE-PATHNAME-DEFAULTS FILENAME)))
+  (OR (EQUAL (FUNCALL FILENAME ':TYPE-AND-VERSION) "MCR")
+      (FERROR NIL "~A is not a MCR file." FILENAME))
   (SETQ UNIT (DECODE-UNIT-ARGUMENT UNIT
-		(FORMAT NIL "Loading ~A into ~A partition" FILENAME PART)))
+		(FORMAT NIL "Loading ~A into ~A partition" FILENAME PART)
+		NIL
+		T))
   (UNWIND-PROTECT
     (PROGN
       (WITHOUT-INTERRUPTS
 	(SETQ RQB (GET-DISK-RQB)))
-      (MULTIPLE-VALUE (PART-BASE PART-SIZE) (FIND-DISK-PARTITION PART RQB UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A" PART))
-    (*CATCH 'DONE
-       (DO ((FILE (OPEN FILENAME '(READ FIXNUM)))
-            (BUF16 (ARRAY-LEADER RQB %DISK-RQ-LEADER-BUFFER))
+      (MULTIPLE-VALUE (PART-BASE PART-SIZE NIL PART)
+	(FIND-DISK-PARTITION-FOR-WRITE PART RQB UNIT NIL "MCR"))
+    (WITH-OPEN-FILE (FILE FILENAME '(:READ :FIXNUM))
+       (DO-NAMED DONE
+	   ((BUF16 (ARRAY-LEADER RQB %DISK-RQ-LEADER-BUFFER))
             (BLOCK PART-BASE (1+ BLOCK))
             (N PART-SIZE (1- N)))
            ((ZEROP N) (FERROR NIL "Failed to fit in partition"))
@@ -951,40 +1275,44 @@
            (COND ((OR (NULL LH) (NULL RH))
 		  (UPDATE-PARTITION-COMMENT
 		       PART
-		       (FORMAT NIL "~A ~D"
-			       (FUNCALL (FUNCALL FILE ':FILENAME) ':NAME)
-			       (FUNCALL FILE ':GET ':VERSION))
+		       (LET ((PATHNAME (FUNCALL FILE ':TRUENAME)))
+			 (MULTIPLE-VALUE-BIND (NIL VERSION)
+			     (FUNCALL PATHNAME ':TYPE-AND-VERSION)
+			   (FORMAT NIL "~A ~D" (FUNCALL PATHNAME ':NAME) VERSION)))
 		       UNIT)
-                  (CLOSE FILE)
-                  (*THROW 'DONE NIL)))
+		  (RETURN-FROM DONE NIL)))
            (ASET RH BUF16 I)
            (ASET LH BUF16 (1+ I))))))
    (RETURN-DISK-RQB RQB)))
 
 (DEFUN PARTITION-COMMENT (PART UNIT &AUX RQB DESC-LOC)
-  (COND ((TEST-UNIT-P UNIT)
-	 (FORMAT NIL "TEST ~D" (SYMEVAL-IN-CLOSURE UNIT 'CC-DISK-UNIT)))
-	(T 
-	  (UNWIND-PROTECT
-	    (PROGN (WITHOUT-INTERRUPTS
-		     (SETQ RQB (GET-DISK-RQB)))
-		   (MULTIPLE-VALUE (NIL NIL DESC-LOC) (FIND-DISK-PARTITION PART RQB UNIT))
-		   (COND ((>= (GET-DISK-FIXNUM RQB 201) 7)
-			  (GET-DISK-STRING RQB (+ DESC-LOC 3) 16.))
-			 (T "")))
-	    (RETURN-DISK-RQB RQB)))))
+  (IF (AND (CLOSUREP UNIT)
+	   (FUNCALL UNIT ':HANDLES-LABEL))
+      (FUNCALL UNIT ':PARTITION-COMMENT PART)
+      (UNWIND-PROTECT
+	(PROGN (WITHOUT-INTERRUPTS
+		 (SETQ RQB (GET-DISK-RQB)))
+	       (MULTIPLE-VALUE (NIL NIL DESC-LOC) (FIND-DISK-PARTITION PART RQB UNIT))
+	       (COND ((NULL DESC-LOC) NIL)
+		     ((>= (GET-DISK-FIXNUM RQB 201) 7)
+		      (GET-DISK-STRING RQB (+ DESC-LOC 3) 16.))
+		     (T "")))
+	(RETURN-DISK-RQB RQB))))
 
 ;;; Change the comment on a partition
 (DEFUN UPDATE-PARTITION-COMMENT (PART STRING UNIT &AUX RQB DESC-LOC)
- (COND ((NULL (TEST-UNIT-P UNIT))
-  (UNWIND-PROTECT
-     (PROGN (WITHOUT-INTERRUPTS
-	     (SETQ RQB (GET-DISK-RQB)))
-	    (MULTIPLE-VALUE (NIL NIL DESC-LOC) (FIND-DISK-PARTITION PART RQB UNIT))
-	    (AND (>= (GET-DISK-FIXNUM RQB 201) 7)
-		 (PUT-DISK-STRING RQB STRING (+ DESC-LOC 3) 16.))
-	    (WRITE-DISK-LABEL RQB UNIT))
-     (RETURN-DISK-RQB RQB)))))
+  (IF (AND (CLOSUREP UNIT)
+	   (FUNCALL UNIT ':HANDLES-LABEL))
+      (FUNCALL UNIT ':UPDATE-PARTITION-COMMENT PART STRING)
+      (UNWIND-PROTECT
+	(PROGN (WITHOUT-INTERRUPTS
+		 (SETQ RQB (GET-DISK-RQB)))
+	       (MULTIPLE-VALUE (NIL NIL DESC-LOC)
+		 (FIND-DISK-PARTITION-FOR-READ PART RQB UNIT NIL NIL))
+	       (AND (>= (GET-DISK-FIXNUM RQB 201) 7)
+		    (PUT-DISK-STRING RQB STRING (+ DESC-LOC 3) 16.))
+	       (WRITE-DISK-LABEL RQB UNIT))
+	(RETURN-DISK-RQB RQB))))
 
 (DEFUN COPY-DISK-PARTITION-BACKGROUND (FROM-UNIT FROM-PART TO-UNIT TO-PART STREAM
 				       STARTING-HUNDRED)
@@ -998,23 +1326,24 @@
 			    &OPTIONAL (N-PAGES-AT-A-TIME 85.) (DELAY NIL)
 				      (STARTING-HUNDRED 0) (WHOLE-THING-P NIL)
 			    &AUX FROM-PART-BASE FROM-PART-SIZE TO-PART-BASE TO-PART-SIZE RQB
-			         READ-FCN WRITE-FCN PART-COMMENT)
+			         PART-COMMENT)
   (SETQ FROM-UNIT (DECODE-UNIT-ARGUMENT FROM-UNIT
 					(FORMAT NIL "reading ~A partition" FROM-PART))
-	TO-UNIT (DECODE-UNIT-ARGUMENT TO-UNIT (FORMAT NIL "writing ~A partition" TO-PART)))
+	TO-UNIT (DECODE-UNIT-ARGUMENT TO-UNIT
+				      (FORMAT NIL "writing ~A partition" TO-PART)
+				      NIL
+				      T))
   (UNWIND-PROTECT
    (PROGN
     (WITHOUT-INTERRUPTS
      (SETQ RQB (GET-DISK-RQB N-PAGES-AT-A-TIME)))
-    (MULTIPLE-VALUE (FROM-PART-BASE FROM-PART-SIZE)
-	(FIND-DISK-PARTITION FROM-PART NIL FROM-UNIT))
-    (OR FROM-PART-BASE (FERROR NIL "No such partition as ~A on unit ~D" FROM-PART FROM-UNIT))
-    (MULTIPLE-VALUE (TO-PART-BASE TO-PART-SIZE)
-	(FIND-DISK-PARTITION TO-PART NIL TO-UNIT))
-    (OR TO-PART-BASE (FERROR NIL "No such partition as ~A on unit ~D" TO-PART TO-UNIT))
+    (MULTIPLE-VALUE (FROM-PART-BASE FROM-PART-SIZE NIL FROM-PART)
+	(FIND-DISK-PARTITION-FOR-READ FROM-PART NIL FROM-UNIT))
+    (MULTIPLE-VALUE (TO-PART-BASE TO-PART-SIZE NIL TO-PART)
+	(FIND-DISK-PARTITION-FOR-WRITE TO-PART NIL TO-UNIT))
     (SETQ PART-COMMENT (PARTITION-COMMENT FROM-PART FROM-UNIT))
     (FORMAT T "~&Copying ~S" PART-COMMENT)
-    (AND (STRING-EQUAL FROM-PART "LOD" 0 0 3 3)
+    (AND (OR (NUMBERP FROM-PART) (STRING-EQUAL FROM-PART "LOD" 0 0 3 3))
 	 (NOT WHOLE-THING-P)
 	 (LET ((RQB NIL) (BUF NIL))
 	   (UNWIND-PROTECT
@@ -1028,9 +1357,14 @@
 			     (SETQ FROM-PART-SIZE SIZE)
 			     (FORMAT T "... using measured size of ~D. blocks." SIZE)))))
 	     (RETURN-DISK-RQB RQB))))
-    (WIRE-DISK-RQB RQB)
-    (SETQ READ-FCN (IF (CLOSUREP FROM-UNIT) #'DISK-READ #'DISK-READ-WIRED))
-    (SETQ WRITE-FCN (IF (CLOSUREP TO-UNIT) #'DISK-WRITE #'DISK-WRITE-WIRED))
+    (FORMAT T "~%")
+    (UPDATE-PARTITION-COMMENT TO-PART "Incomplete Copy" TO-UNIT)
+    (COND ((AND (CLOSUREP TO-UNIT)	;magtape needs to know this stuff before
+		(FUNCALL TO-UNIT ':HANDLES-LABEL))  ;writing file.
+	   (FUNCALL TO-UNIT ':PUT PART-COMMENT ':COMMENT)
+	   (FUNCALL TO-UNIT ':PUT FROM-PART-SIZE ':SIZE)))
+  ;Old hack which used to move WIRE-DISK-RQB outside loop flushed because
+  ; DISK-READ sets modified bits during WIRE-DISK-RQB, which we may need to do.
     (DO ((FROM-ADR (+ FROM-PART-BASE (* 100. STARTING-HUNDRED)) (+ FROM-ADR AMT))
 	 (TO-ADR (+ TO-PART-BASE (* 100. STARTING-HUNDRED)) (+ TO-ADR AMT))
 	 (FROM-HIGH (+ FROM-PART-BASE FROM-PART-SIZE))
@@ -1042,12 +1376,11 @@
       (SETQ AMT (MIN (- FROM-HIGH FROM-ADR) (- TO-HIGH TO-ADR) N-PAGES-AT-A-TIME))
       (COND ((NOT (= AMT N-PAGES-AT-A-TIME))
 	     (RETURN-DISK-RQB RQB)
-	     (SETQ RQB (GET-DISK-RQB AMT))
-	     (WIRE-DISK-RQB RQB)))
-      (FUNCALL READ-FCN RQB FROM-UNIT FROM-ADR)
-      (FUNCALL WRITE-FCN RQB TO-UNIT TO-ADR)
-      (COND ((NOT (= (// N-BLOCKS 100.) N-HUNDRED))
-	     (SETQ N-HUNDRED (// N-BLOCKS 100.))
+	     (SETQ RQB (GET-DISK-RQB AMT))))
+      (DISK-READ RQB FROM-UNIT FROM-ADR)
+      (DISK-WRITE RQB TO-UNIT TO-ADR)
+      (COND ((NOT (= (// (+ N-BLOCKS AMT) 100.) N-HUNDRED))
+	     (SETQ N-HUNDRED (1+ N-HUNDRED))
 	     (FORMAT T "~D " N-HUNDRED)))
       (IF DELAY (PROCESS-SLEEP DELAY)
 	  (PROCESS-ALLOW-SCHEDULE))) ;kludge
@@ -1062,8 +1395,7 @@
 			    &OPTIONAL (N-PAGES-AT-A-TIME 85.) (DELAY NIL)
 				      (STARTING-HUNDRED 0) (WHOLE-THING-P NIL)
 			    &AUX FROM-PART-BASE FROM-PART-SIZE TO-PART-BASE TO-PART-SIZE
-			         RQB RQB2
-			         READ-FCN1 READ-FCN2)
+			         RQB RQB2)
   (SETQ FROM-UNIT (DECODE-UNIT-ARGUMENT FROM-UNIT
 					(FORMAT NIL "reading ~A partition" FROM-PART))
 	TO-UNIT (DECODE-UNIT-ARGUMENT TO-UNIT (FORMAT NIL "reading ~A partition" TO-PART)))
@@ -1073,11 +1405,9 @@
      (SETQ RQB (GET-DISK-RQB N-PAGES-AT-A-TIME))
      (SETQ RQB2 (GET-DISK-RQB N-PAGES-AT-A-TIME)))
     (MULTIPLE-VALUE (FROM-PART-BASE FROM-PART-SIZE)
-	(FIND-DISK-PARTITION FROM-PART NIL FROM-UNIT))
-    (OR FROM-PART-BASE (FERROR NIL "No such partition as ~A on unit ~D" FROM-PART FROM-UNIT))
+	(FIND-DISK-PARTITION-FOR-READ FROM-PART NIL FROM-UNIT))
     (MULTIPLE-VALUE (TO-PART-BASE TO-PART-SIZE)
-	(FIND-DISK-PARTITION TO-PART NIL TO-UNIT))
-    (OR TO-PART-BASE (FERROR NIL "No such partition as ~A on unit ~D" TO-PART TO-UNIT))
+	(FIND-DISK-PARTITION-FOR-READ TO-PART NIL TO-UNIT))
     (FORMAT T "~&Comparing ~S and ~S"
 	    (PARTITION-COMMENT FROM-PART FROM-UNIT)
 	    (PARTITION-COMMENT TO-PART TO-UNIT))
@@ -1095,10 +1425,6 @@
 			     (SETQ FROM-PART-SIZE SIZE)
 			     (FORMAT T "... using measured size of ~D. blocks." SIZE)))))
 	     (RETURN-DISK-RQB RQB))))
-    (WIRE-DISK-RQB RQB)
-    (WIRE-DISK-RQB RQB2)
-    (SETQ READ-FCN1 (IF (CLOSUREP FROM-UNIT) #'DISK-READ #'DISK-READ-WIRED))
-    (SETQ READ-FCN2 (IF (CLOSUREP TO-UNIT) #'DISK-READ #'DISK-READ-WIRED))
     (DO ((FROM-ADR (+ FROM-PART-BASE (* 100. STARTING-HUNDRED)) (+ FROM-ADR AMT))
 	 (TO-ADR (+ TO-PART-BASE (* 100. STARTING-HUNDRED)) (+ TO-ADR AMT))
 	 (FROM-HIGH (+ FROM-PART-BASE FROM-PART-SIZE))
@@ -1114,13 +1440,11 @@
 	     (RETURN-DISK-RQB RQB)
 	     (RETURN-DISK-RQB RQB2)
 	     (SETQ RQB (GET-DISK-RQB AMT))
-	     (WIRE-DISK-RQB RQB)
 	     (SETQ RQB2 (GET-DISK-RQB AMT))
-	     (WIRE-DISK-RQB RQB2)
 	     (SETQ BUF (RQB-BUFFER RQB))
 	     (SETQ BUF2 (RQB-BUFFER RQB2))))
-      (FUNCALL READ-FCN1 RQB FROM-UNIT FROM-ADR)
-      (FUNCALL READ-FCN2 RQB2 TO-UNIT TO-ADR)
+      (DISK-READ RQB FROM-UNIT FROM-ADR)
+      (DISK-READ RQB2 TO-UNIT TO-ADR)
       (DO ((C 0 (1+ C))
 	   (ERRS 0)
 	   (LIM (* 1000 AMT)))
@@ -1144,98 +1468,6 @@
    (RETURN-DISK-RQB RQB2)
    (DISPOSE-OF-UNIT FROM-UNIT)
    (DISPOSE-OF-UNIT TO-UNIT)))
-
-(DEFUN FIND-MEASURED-PARTITION-SIZE (UNIT PART
-			    &AUX PART-BASE PART-SIZE)
-  (SETQ UNIT (DECODE-UNIT-ARGUMENT UNIT
-				   (FORMAT NIL "reading ~A partition" PART)))
-  (UNWIND-PROTECT
-   (PROGN
-    (MULTIPLE-VALUE (PART-BASE PART-SIZE)
-	(FIND-DISK-PARTITION PART NIL UNIT))
-    (OR PART-BASE (FERROR NIL "No such partition as ~A on unit ~D" PART UNIT))
-    (AND (STRING-EQUAL PART "LOD" 0 0 3 3)
-	 (LET ((RQB NIL) (BUF NIL))
-	   (UNWIND-PROTECT
-	     (PROGN (SETQ RQB (GET-DISK-RQB 1))
-		    (SETQ BUF (RQB-BUFFER RQB))
-		    (DISK-READ RQB UNIT (1+ PART-BASE))
-		    (LET ((SIZE (DPB (AREF BUF (1+ (* 2 %SYS-COM-VALID-SIZE)))
-				     1010   ;Knows page-size is 2^8
-				     (LDB 1010 (AREF BUF (* 2 %SYS-COM-VALID-SIZE))))))
-		      (COND ((AND (> SIZE 10) ( SIZE PART-SIZE))
-			     (SETQ PART-SIZE SIZE)
-			     (FORMAT T "Measured size IS ~D. blocks." SIZE)))))
-	     (RETURN-DISK-RQB RQB))))
-    (DISPOSE-OF-UNIT UNIT)))
-  PART-SIZE)
-
-
-;;; Utilities for SYS:SYSTEM-VERSION-STRING
-;;; This string takes the form of major_number dot minor_number comments
-
-;; Extract just the numeric part of the system versions (eg, "17.7").
-(DEFUN EXTRACT-SYSTEM-VERSION (&AUX (STR SYSTEM-VERSION-STRING))
-  (LET ((DOTX (STRING-SEARCH-CHAR #/. STR)))
-    (LET ((ENDX (STRING-SEARCH-NOT-SET '(#/0 #/1 #/2 #/3 #/4 #/5 #/6 #/7 #/8 #/9)
-                                       STR (1+ DOTX))))
-      (AND (NULL ENDX) (SETQ ENDX (STRING-LENGTH STR)))
-      (SUBSTRING STR 0 ENDX))))
-
-;;; This function increments the minor_number and preserves the rest
-(DEFUN INCREMENT-VERSION-STRING (STR)
-  (LET ((DOTX (STRING-SEARCH-CHAR #/. STR)))
-    (LET ((ENDX (STRING-SEARCH-NOT-SET '(#/0 #/1 #/2 #/3 #/4 #/5 #/6 #/7 #/8 #/9)
-                                       STR (1+ DOTX))))
-      (AND (NULL ENDX) (SETQ ENDX (STRING-LENGTH STR)))
-      (FORMAT NIL "~A.~D~A" (SUBSTRING STR 0 DOTX)
-              (1+ (LET ((IBASE 10.))
-                    (READ-FROM-STRING (SUBSTRING STR (1+ DOTX) ENDX))))
-              (SUBSTRING STR ENDX)))))
-
-;;; This function updates the system version, asking the user.  If this is a fresh
-;;; cold-load, the major_version stored on the file system is incremented.
-(DEFUN GET-NEW-SYSTEM-VERSION ()
-  (SETQ SYSTEM-VERSION-STRING
-        (LET ((NEW (COND ((NOT (BOUNDP 'SYSTEM-VERSION-STRING)) ;fresh cold load
-                          (LET ((FILE (OPEN "LISPM1;SYSTEM VERSIN" '(READ))))
-                            (LET ((VERSION (1+ (LET ((IBASE 10.)) (READ FILE)))))
-                              (CLOSE FILE)
-                              (SETQ FILE (OPEN "LISPM1;SYSTEM VERSIN" '(WRITE)))
-                              (FORMAT FILE "~D~%" VERSION)
-                              (CLOSE FILE)
-			      (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-MAJOR-VERSION)
-				     VERSION)
-                              (SETQ SYSTEM-VERSION-STRING "[fresh cold load]")
-                              (FORMAT NIL "~D.0" VERSION))))
-                         (T (INCREMENT-VERSION-STRING SYSTEM-VERSION-STRING)))))
-          (FORMAT T
-              "~&Current system version=~A, new system version=~A, confirm (CR or version):"
-              SYSTEM-VERSION-STRING NEW)
-          (LET ((USER (READLINE)))
-            (IF (EQUAL USER "") NEW
-                USER))))
-  (COND ((BOUNDP 'SYSTEM-MODIFICATION-RECORD)
-         (FORMAT T "~&Modification made:")
-         (PUSH (LIST SYSTEM-VERSION-STRING (READLINE))
-               SYSTEM-MODIFICATION-RECORD))
-        (T (SETQ SYSTEM-MODIFICATION-RECORD (NCONS (LIST SYSTEM-VERSION-STRING
-                                                         "Fresh Cold Load"))))))
-
-;Must be defined before initialization below
-(DEFUN WIRE-PAGE (ADDRESS &OPTIONAL (WIRE-P T))
-  (IF WIRE-P
-      (DO ()
-	  ((%CHANGE-PAGE-STATUS ADDRESS %PHT-SWAP-STATUS-WIRED NIL))
-	(%P-LDB 1 (%POINTER ADDRESS)))
-      (UNWIRE-PAGE ADDRESS)))
-
-(DEFUN UNWIRE-PAGE (ADDRESS)
-  (%CHANGE-PAGE-STATUS ADDRESS %PHT-SWAP-STATUS-NORMAL NIL))
-
-;This must be after main definitions above, but before initialization below!
-(ADD-INITIALIZATION "DISK-INIT" '(DISK-INIT) '(SYSTEM))
-(ADD-INITIALIZATION "PRINT-LOADED-BAND" '(PRINT-LOADED-BAND) '(WARM))
 
 ;;; User-controlled paging code
 
@@ -1244,12 +1476,8 @@
 ;;; everything in DISK-BUFFER-AREA has to be a multiple of a page.
 ;;; This defines the number of CCWs.
 
-(DECLARE (SPECIAL PAGE-RQB-SIZE PAGE-RQB))
-
-(SETQ PAGE-RQB-SIZE (- PAGE-SIZE 1 (// %DISK-RQ-CCW-LIST 2))) ;NUMBER OF CCWS
-
-(OR (BOUNDP 'PAGE-RQB)
-    (SETQ PAGE-RQB (MAKE-ARRAY DISK-BUFFER-AREA 'ART-16B (* 2 (1- PAGE-SIZE)))))
+(DEFVAR PAGE-RQB-SIZE (- PAGE-SIZE 1 (// %DISK-RQ-CCW-LIST 2))) ;NUMBER OF CCWS
+(DEFVAR PAGE-RQB (MAKE-ARRAY DISK-BUFFER-AREA 'ART-16B (* 2 (1- PAGE-SIZE))))
 
 (DEFUN WIRE-PAGE-RQB () 
   (WIRE-PAGE (%POINTER PAGE-RQB))
@@ -1328,7 +1556,7 @@
 		   (* SIZE (MINUS ELTS-PER-Q))))
     (RETURN-FROM DONE ARRAY START SIZE)))
 
-(DEFUN PAGE-IN-ARRAY (ARRAY &OPTIONAL FROM TO &AUX SIZE)
+(DEFUN PAGE-IN-ARRAY  (ARRAY &OPTIONAL FROM TO &AUX SIZE)
   (WITHOUT-INTERRUPTS
     (MULTIPLE-VALUE (ARRAY FROM SIZE)
       (PAGE-ARRAY-CALCULATE-BOUNDS ARRAY FROM TO))
@@ -1343,45 +1571,9 @@
     (AND ARRAY
 	 ;; Have starting word and number of words.  Page dem words out.
 	 (PAGE-OUT-WORDS FROM SIZE))))
-
-;;*** This function has a lot of things wrong with it, and should be flushed
-;;*** when it is no longer called by the window stuff.
-;; Page in part of a bit array.
-;; LEFT and TOP are co-ords of first bit that's wanted.
-;; RIGHT and BOTTOM are co-ords of first bit that's not wanted.
-(DEFUN PAGE-IN-BIT-ARRAY (BIT-ARRAY LEFT TOP RIGHT BOTTOM)
-  (LET ((WIDTH (ARRAY-DIMENSION-N 1 BIT-ARRAY))
-	(SIZE (%STRUCTURE-TOTAL-SIZE BIT-ARRAY)))
-    (LET ((FIRST (// (+ LEFT (* TOP WIDTH)) 32.))
-	  (LAST (// (+ RIGHT (* BOTTOM WIDTH)) 32.)))
-      ;; FIRST and LAST are the number of words of array elements
-      ;; before the first thing that's needed and the first that's not, resp.
-      (WITHOUT-INTERRUPTS
-	(PAGE-IN-WORDS (+ (%POINTER BIT-ARRAY) FIRST)
-		       ;; Add 5 to LAST to include header words in count.
-		       (- (MIN SIZE (+ 5 LAST)) FIRST))))))
 
-;Given a virtual address, returns NIL if not in, T if copy in, MODIFIED if in and modified
-(DEFUN GET-PAGE-IN-STATUS (ADDRESS)
-  (DO ((PHTX (%COMPUTE-PAGE-HASH ADDRESS) (+ PHTX 2))
-       (PHT-MASK (- SIZE-OF-PAGE-TABLE 2))
-       (PHT1)(PHT2))
-      (NIL)
-    (SETQ PHTX (LOGAND PHTX PHT-MASK))
-    (SETQ PHT1 (PAGE-TABLE-AREA PHTX))
-    (COND ((NOT (BIT-TEST 100 PHT1)) (RETURN NIL))	;Not found
-	  ((= (LDB 1020 PHT1) (LDB 1020 ADDRESS))	;Address match
-	   (SETQ PHT2 (PAGE-TABLE-AREA (1+ PHTX)))
-	   (RETURN (IF (OR (= (LDB %%PHT2-MAP-STATUS-CODE PHT2) %PHT-MAP-STATUS-READ-WRITE)
-			   (LDB-TEST %%PHT1-MODIFIED-BIT PHT1))
-		       'MODIFIED
-		       T))))))
-
-;;;*** Doesn't yet write out unmodified pages in between modified ones
-;;;    when that would be more optimal.
-;;;*** Assumes that you don't give it something in a funny area, since
-;;;    it will un wire them if they had been wired.
-(DEFUN PAGE-OUT-WORDS (ADDRESS NWDS &AUX (CCWX 0) CCWP BASE-ADDR)
+;;;*** Writes pages to disk even if they are not modified.
+(DEFUN PAGE-OUT-WORDS (ADDRESS NWDS &AUX (CCWX 0) CCWP BASE-ADDR STS)
   (WITHOUT-INTERRUPTS
     (SETQ ADDRESS (%POINTER ADDRESS))
     (UNWIND-PROTECT
@@ -1396,7 +1588,9 @@
 	       ;; This DO is over pages to go in a single I/O operation
 	       ;; We wire them down and put their physical addresses into CCWs
 	       (DO () (NIL)
-		 (OR (EQ (GET-PAGE-IN-STATUS ADDR) 'MODIFIED) (RETURN NIL))
+		 (IF (OR (NULL (SETQ STS (%PAGE-STATUS ADDR)))	;Swapped out
+			 ( STS %PHT-SWAP-STATUS-WIRED))	;Wired
+		     (RETURN NIL))		;In either case, leave page alone
 		 (SETQ CCWX (1+ CCWX))
 		 (WIRE-PAGE ADDR)
 		 (LET ((PADR (%PHYSICAL-ADDRESS ADDR)))
@@ -1420,10 +1614,10 @@
 			   (ADDRESS BASE-ADDR (%24-BIT-PLUS ADDRESS PAGE-SIZE)))
 			  ((= I CCWX))
 			(DO ((PHTX (%COMPUTE-PAGE-HASH ADDRESS) (+ PHTX 2))
-			     (PHT-MASK (- SIZE-OF-PAGE-TABLE 2))
+			     (PHT-LIMIT (SYSTEM-COMMUNICATION-AREA %SYS-COM-PAGE-TABLE-SIZE))
 			     (PHT1))
 			    (NIL)
-			  (SETQ PHTX (LOGAND PHTX PHT-MASK))
+			  (AND ( PHTX PHT-LIMIT) (SETQ PHTX (- PHTX PHT-LIMIT)))
 			  (SETQ PHT1 (PAGE-TABLE-AREA PHTX))
 			  (COND ((NOT (BIT-TEST 100 PHT1)) (RETURN NIL))	;Not found
 				((= (LDB 1020 PHT1) (LDB 1020 ADDRESS))	;Address match
@@ -1455,7 +1649,7 @@
 	       ;; We collect some page frames to put them in, remembering the
 	       ;; PFNs as CCWs.
 	       (DO () (NIL)
-		 (OR (EQ (GET-PAGE-IN-STATUS ADDR) NIL) (RETURN NIL))
+		 (OR (EQ (%PAGE-STATUS ADDR) NIL) (RETURN NIL))
 		 (LET ((PFN (%FINDCORE)))
 		   (ASET (1+ (LSH PFN 8)) PAGE-RQB CCWP)
 		   (ASET (LSH PFN -8) PAGE-RQB (1+ CCWP)))

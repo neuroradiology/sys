@@ -1,10 +1,25 @@
 ;;; -*- Mode: Lisp; Package: System-Internals -*-
 
 ;;; Miniature Chaosnet program.  Only good for reading ascii and binary files.
+;;; The following magic number is in this program:  1200
+;;; It also knows the format of a packet and the Chaosnet opcodes non-symbolically
 
 (DECLARE (SPECIAL MINI-PKT MINI-PKT-STRING MINI-FILE-ID MINI-OPEN-P MINI-CH-IDX MINI-UNRCHF
 		  MINI-LOCAL-INDEX MINI-LOCAL-HOST MINI-REMOTE-INDEX MINI-REMOTE-HOST
-		  MINI-IN-PKT-NUMBER MINI-OUT-PKT-NUMBER MINI-EOF-SEEN))
+		  MINI-IN-PKT-NUMBER MINI-OUT-PKT-NUMBER MINI-EOF-SEEN
+		  MINI-DESTINATION-ADDRESS MINI-ROUTING-ADDRESS))
+
+;;; Compile time chaosnet address lookup and routing.
+(DEFMACRO GET-INTERESTING-CHAOSNET-ADDRESSES (HOST-TO-USE)
+  (LET ((ADDRESS (CHAOS:ADDRESS-PARSE HOST-TO-USE)))
+    `(SETQ MINI-DESTINATION-ADDRESS ,ADDRESS
+	   MINI-ROUTING-ADDRESS ,(AREF CHAOS:ROUTING-TABLE (LDB 1010 ADDRESS)))))
+
+;(GET-INTERESTING-CHAOSNET-ADDRESSES #+MIT "AI" #+SYM "SCRC")
+(GET-INTERESTING-CHAOSNET-ADDRESSES "server")
+
+;;; Contact name<space>user<space>password
+(DEFVAR MINI-CONTACT-NAME "MINI LISPM ")
 
 ;;; Initialization, usually only called once.
 (DEFUN MINI-INIT ()
@@ -12,19 +27,22 @@
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-FREE-LIST) NIL)
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-RECEIVE-LIST) NIL)
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-TRANSMIT-LIST) NIL)
-  ;; Fake up a packet buffer for the microcode, locations 200-x through 377
-  (%P-STORE-TAG-AND-POINTER 177 DTP-ARRAY-HEADER
+  ;; Fake up a packet buffer for the microcode, locations 1200-x through 1377
+  ;; I.e. in the unused portions of SCRATCH-PAD-INIT-AREA
+  (%P-STORE-TAG-AND-POINTER 1177 DTP-ARRAY-HEADER
 			    (DPB 1 %%ARRAY-NUMBER-DIMENSIONS
 				 (DPB 400 %%ARRAY-INDEX-LENGTH-IF-SHORT
 				      (DPB 1 %%ARRAY-LEADER-BIT
 					   ART-16B))))
-  (%P-STORE-TAG-AND-POINTER 176 DTP-FIX (LENGTH CHAOS-BUFFER-LEADER-QS))
-  (%P-STORE-TAG-AND-POINTER (- 176 1 (LENGTH CHAOS-BUFFER-LEADER-QS))
+  (%P-STORE-TAG-AND-POINTER 1176 DTP-FIX (LENGTH CHAOS-BUFFER-LEADER-QS))
+  (%P-STORE-TAG-AND-POINTER (- 1176 1 (LENGTH CHAOS-BUFFER-LEADER-QS))
 			    DTP-HEADER
 			    (DPB %HEADER-TYPE-ARRAY-LEADER %%HEADER-TYPE-FIELD
 				 (+ 2 (LENGTH CHAOS-BUFFER-LEADER-QS))))
-  (SETQ MINI-PKT (%MAKE-POINTER DTP-ARRAY-POINTER 177))
-  (SETQ MINI-PKT-STRING (MAKE-ARRAY NIL 'ART-8B 760 204)) ;Just the data part of the packet
+  (SETQ MINI-PKT (%MAKE-POINTER DTP-ARRAY-POINTER 1177))
+  (SETQ MINI-PKT-STRING (MAKE-ARRAY 760
+				    ':TYPE 'ART-STRING
+				    ':DISPLACED-TO 1204)) ;Just the data part of the packet
   (OR (BOUNDP 'MINI-LOCAL-INDEX)
       (SETQ MINI-LOCAL-INDEX 0))
   (SETQ MINI-OPEN-P NIL))
@@ -62,7 +80,7 @@
 (DEFUN MINI-OPEN-FILE (FILENAME BINARY-P)
   (SETQ MINI-CH-IDX 1000 MINI-UNRCHF NIL MINI-EOF-SEEN NIL)
   (OR MINI-OPEN-P
-      (MINI-OPEN-CONNECTION 2026 "MINI")) ;Open server on AI
+      (MINI-OPEN-CONNECTION MINI-DESTINATION-ADDRESS MINI-CONTACT-NAME))
   (DO ((OP)) ;Retransmission loop
       (NIL)
     ;; Send opcode 200 (ascii open) or 201 (binary open) with file name
@@ -76,8 +94,11 @@
 	  ((OR (= OP 202) (= OP 203)) ;Win or Lose
 	   (SETQ MINI-IN-PKT-NUMBER (LOGAND 177777 (1+ MINI-IN-PKT-NUMBER))
 		 MINI-OUT-PKT-NUMBER (LOGAND 177777 (1+ MINI-OUT-PKT-NUMBER)))
-	   (SETQ MINI-FILE-ID (MAKE-ARRAY NIL 'ART-STRING (LOGAND 7777 (AREF MINI-PKT 1))))
-	   (COPY-ARRAY-CONTENTS MINI-PKT-STRING MINI-FILE-ID)
+	   (LET* ((LENGTH (LOGAND 7777 (AREF MINI-PKT 1)))
+		  (CR (STRING-SEARCH-CHAR #\CR MINI-PKT-STRING 0 LENGTH)))
+	     ;; Before pathnames and time parsing is loaded, things are stored as strings.
+	     (SETQ MINI-FILE-ID (CONS (SUBSTRING MINI-PKT-STRING 0 CR)
+				      (SUBSTRING MINI-PKT-STRING (1+ CR) LENGTH))))
 	   (MINI-SEND-STS)	;Acknowledge packet just received
 	   (COND ((= OP 202)
 		  (RETURN T))
@@ -99,8 +120,7 @@
   (ASET MINI-IN-PKT-NUMBER MINI-PKT 7)  ;ACK#
   (LET ((WC (+ 8 (// (1+ N-BYTES) 2) 1))) ;Word count including header and hardware dest word
     (STORE-ARRAY-LEADER WC MINI-PKT %CHAOS-LEADER-WORD-COUNT)
-    (ASET (DPB (LDB 1010 MINI-LOCAL-HOST) 1010 MINI-REMOTE-HOST) ;El cheapo routing
-          MINI-PKT (1- WC))) ;Store hardware destination
+    (ASET MINI-ROUTING-ADDRESS MINI-PKT (1- WC))) ;Store hardware destination
   (STORE-ARRAY-LEADER NIL MINI-PKT %CHAOS-LEADER-THREAD)
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-TRANSMIT-LIST) MINI-PKT)
   (%CHAOS-WAKEUP)
@@ -108,7 +128,8 @@
       ((NULL (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-TRANSMIT-LIST))))
   ;; Disallow use of the packet by the receive side, flush any received packet that snuck in
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-FREE-LIST) NIL)
-  (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-RECEIVE-LIST) NIL))
+  (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-RECEIVE-LIST) NIL)
+  (COPY-ARRAY-CONTENTS "" MINI-PKT))		;Fill with zero
 
 ;; Return opcode of next packet other than those that are no good.
 ;; If the arg is NIL, can return NIL if no packet arrives after a while.
@@ -117,8 +138,10 @@
   (DO ((TIMEOUT 20. (1- TIMEOUT)))	;A couple seconds
       ((AND (ZEROP TIMEOUT) (NOT MUST-RETURN-A-PACKET)) NIL)
     ;; Enable microcode to receive a packet
+    (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-FREE-LIST) NIL)
     (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-RECEIVE-LIST) NIL)
     (STORE-ARRAY-LEADER NIL MINI-PKT %CHAOS-LEADER-THREAD)
+    (COPY-ARRAY-CONTENTS "" MINI-PKT)		;Fill with zero
     (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-CHAOS-FREE-LIST) MINI-PKT)
     (%CHAOS-WAKEUP)
     (DO ((N 2000. (1- N)))	;Give it time
@@ -144,8 +167,8 @@
 			   (MEMQ OP '(2 3 11))))  ;OPN, CLS, LOS
 		  ;; This packet not to be ignored, return to caller
 		  (COND ((MEMQ OP '(3 11))  ;CLS, LOS
-			 (LET ((MSG (MAKE-ARRAY NIL 'ART-STRING
-						(LOGAND 7777 (AREF MINI-PKT 1)))))
+			 (LET ((MSG (MAKE-ARRAY (LOGAND 7777 (AREF MINI-PKT 1))
+						':TYPE 'ART-STRING)))
 			   (COPY-ARRAY-CONTENTS MINI-PKT-STRING MSG)
 			   (MINI-BARF "Connection broken" MSG))))
 		  (RETURN OP)))
@@ -154,11 +177,13 @@
 		(MINI-SEND-STS))	; an old pkt due to lost STS
 	   ))))
 
-;Stream which does only 16-bit TYI, doesn't even need UNTYI
-(DEFUN MINI-BINARY-STREAM (OP &OPTIONAL IGNORE)
+;Stream which does only 16-bit TYI
+(DEFUN MINI-BINARY-STREAM (OP &OPTIONAL ARG1)
   (SELECTQ OP
     (:WHICH-OPERATIONS '(:TYI))
-    (:TYI (COND ((< MINI-CH-IDX (// (LOGAND 7777 (AREF MINI-PKT 1)) 2))
+    (:TYI (COND (MINI-UNRCHF
+		 (PROG1 MINI-UNRCHF (SETQ MINI-UNRCHF NIL)))
+		((< MINI-CH-IDX (// (LOGAND 7777 (AREF MINI-PKT 1)) 2))
 		 (PROG1 (AREF MINI-PKT (+ 10 MINI-CH-IDX))
 			(SETQ MINI-CH-IDX (1+ MINI-CH-IDX))))
 		(T ;Get another packet
@@ -173,6 +198,7 @@
 			(SETQ MINI-CH-IDX 0)
 			(MINI-BINARY-STREAM ':TYI))
 		       (T (MINI-BARF "Bad opcode received" OP))))))
+    (:UNTYI (SETQ MINI-UNRCHF ARG1))
     (OTHERWISE (MINI-BARF "Unknown stream operation" OP))))
 
 (DEFUN MINI-ASCII-STREAM (OP &OPTIONAL ARG1)
@@ -200,152 +226,70 @@
     (OTHERWISE (MINI-BARF "Unknown stream operation" OP))))
 
 (DEFUN MINI-BARF (&REST ARGS)
-  (TERPRI)
-  (PRINC "MINI: ")
-  (DOLIST (ARG ARGS)
-    (PRINC ARG)
-    (TYO #\SP))
-  (SETQ MINI-OPEN-P NIL)	;Force re-open of connection
-  (BREAK MINI-BARF))
+  (SETQ MINI-OPEN-P NIL) ;Force re-open of connection
+  ;; If inside the cold load, this will be FERROR-COLD-LOAD, else make debugging easier
+  (LEXPR-FUNCALL #'FERROR 'MINI-BARF ARGS))
 
 ;;; Higher-level stuff
 
-(DEFUN MINI-LOAD (FILE-NAME PKG &AUX LEN)
-  (COND ((AND (>= (SETQ LEN (ARRAY-ACTIVE-LENGTH FILE-NAME)) 6)
-	      (STRING-EQUAL FILE-NAME "QFASL" (- LEN 5) 0 LEN 5))
-	 (MINI-FASLOAD FILE-NAME PKG))
-	((MINI-READFILE FILE-NAME PKG))))
+;;; Load a file alist as setup by the cold load generator
+(DEFUN MINI-LOAD-FILE-ALIST (ALIST)
+  (LOOP FOR (FILE PACK QFASLP) IN ALIST
+	DO (FUNCALL (IF QFASLP #'MINI-FASLOAD #'MINI-READFILE) FILE PACK)))
 
 (DECLARE (SPECIAL FASL-STREAM FASLOAD-FILE-PROPERTY-LIST-FLAG FASL-GROUP-DISPATCH
-                  FASL-OPS FASL-FILE-GROUP-SYMBOL FDEFINE-FILE-SYMBOL
+                  FASL-OPS FDEFINE-FILE-PATHNAME FASL-GENERIC-PATHNAME-PLIST
 		  FASL-STREAM-BYPASS-P))
 
 (DECLARE (SPECIAL ACCUMULATE-FASL-FORMS))
 
+(DECLARE (SPECIAL *COLD-LOADED-FILE-PROPERTY-LISTS*))
+
 (DEFUN MINI-FASLOAD (FILE-NAME PKG
-		     &AUX FASL-STREAM W1 W2 FILE-SYMBOL FDEFINE-FILE-SYMBOL
-		          FASL-FILE-GROUP-SYMBOL FASLOAD-FILE-PROPERTY-LIST-FLAG
-			  (FASL-TABLE NIL)
-			  (FASL-STREAM-BYPASS-P NIL))
-      (SETQ FILE-SYMBOL (FASL-START FILE-NAME))
-      ;;Open the input stream in binary mode, and start by making sure
-      ;;the file type in the first word is really SIXBIT/QFASL/.
-      (SETQ FASL-STREAM (MINI-OPEN-FILE FILE-NAME T))
-      (SETQ W1 (FUNCALL FASL-STREAM ':TYI)
-	    W2 (FUNCALL FASL-STREAM ':TYI))
-      (COND ((AND (= W1 143150) (= W2 71660))		;If magic ID checks,
-	     (LET ((PACKAGE (IF (FBOUNDP 'INTERN-LOCAL)	;If packages exist now 
-				(PKG-FIND-PACKAGE PKG)
-				NIL)))
-	       (FASL-TOP-LEVEL)			;load it.
-	       ;; Doesn't really read to EOF, must read rest to avoid getting out of phase
-	       (DO () (MINI-EOF-SEEN)
-		 (FUNCALL FASL-STREAM ':TYI))
-	       (AND PACKAGE ;If packages don't exist yet, will be fixed later
-		    (SET-FILE-LOADED-ID FILE-SYMBOL MINI-FILE-ID PACKAGE))))
-	    ((FERROR NIL "~A is not a QFASL file" FILE-NAME)))	;Otherwise, barf out.
-      FILE-NAME)
+		     &AUX FASL-STREAM W1 W2 TEM
+			  (FDEFINE-FILE-PATHNAME FILE-NAME) FASL-GENERIC-PATHNAME-PLIST
+			  FASLOAD-FILE-PROPERTY-LIST-FLAG
+			  (FASL-TABLE NIL) (FASL-STREAM-BYPASS-P NIL))
+  
+  ;; Set it up so that file properties get remembered for when there are pathnames
+  (OR (SETQ TEM (ASSOC FILE-NAME *COLD-LOADED-FILE-PROPERTY-LISTS*))
+      (PUSH (SETQ TEM (LIST FILE-NAME NIL NIL)) *COLD-LOADED-FILE-PROPERTY-LISTS*))
+  (SETQ FASL-GENERIC-PATHNAME-PLIST (LOCF (THIRD TEM)))
+  
+  (FASL-START)
+  
+  ;;Open the input stream in binary mode, and start by making sure
+  ;;the file type in the first word is really SIXBIT/QFASL/.
+  (SETQ FASL-STREAM (MINI-OPEN-FILE FILE-NAME T))
+  (SETQ W1 (FUNCALL FASL-STREAM ':TYI)
+	W2 (FUNCALL FASL-STREAM ':TYI))
+  (COND ((AND (= W1 143150) (= W2 71660))	;If magic ID checks,
+	 (LET ((PACKAGE (IF (FBOUNDP 'INTERN-LOCAL)	;If packages exist now 
+			    (PKG-FIND-PACKAGE PKG)
+			    NIL)))
+	   ;; Read in the file property list in the wrong package list fasload does
+	   (AND PACKAGE
+		(= (LOGAND (FASL-NIBBLE-PEEK) %FASL-GROUP-TYPE) FASL-OP-FILE-PROPERTY-LIST)
+		(FASL-FILE-PROPERTY-LIST))
+	   ;; Call fasload to load it
+	   (FASL-TOP-LEVEL)			;load it.
+	   ;; Doesn't really read to EOF, must read rest to avoid getting out of phase
+	   (DO () (MINI-EOF-SEEN)
+	     (FUNCALL FASL-STREAM ':TYI))
+	   ;; If package is NIL, will be fixed later
+	   (SET-FILE-LOADED-ID (LOCF (SECOND TEM)) MINI-FILE-ID PACKAGE)))
+	((FERROR NIL "~A is not a QFASL file" FILE-NAME)))	;Otherwise, barf out.
+  FILE-NAME)
 
-(DEFUN MINI-READFILE (FILE-NAME PKG)
-  (MULTIPLE-VALUE-BIND (FILE-SYMBOL FDEFINE-FILE-SYMBOL)
-	      (GET-FILE-SYMBOLS FILE-NAME)
-    (LET ((EOF '(()))
-	  (STANDARD-INPUT (MINI-OPEN-FILE FILE-NAME NIL)))
-      (LET ((PACKAGE (PKG-FIND-PACKAGE PKG)))
-	 (DO FORM (READ STANDARD-INPUT EOF) (READ STANDARD-INPUT EOF) (EQ FORM EOF)
-	   (EVAL FORM))
-	 (SET-FILE-LOADED-ID FILE-SYMBOL MINI-FILE-ID PACKAGE)
-	 ))))
+(DEFUN MINI-READFILE (FILE-NAME PKG &AUX (FDEFINE-FILE-PATHNAME FILE-NAME) TEM)
+  (LET ((EOF '(()))
+	(STANDARD-INPUT (MINI-OPEN-FILE FILE-NAME NIL))
+	(PACKAGE (PKG-FIND-PACKAGE PKG)))
+    (DO FORM (READ STANDARD-INPUT EOF) (READ STANDARD-INPUT EOF) (EQ FORM EOF)
+	(EVAL FORM))
+    (OR (SETQ TEM (ASSOC FILE-NAME *COLD-LOADED-FILE-PROPERTY-LISTS*))
+	(PUSH (SETQ TEM (LIST FILE-NAME NIL NIL)) *COLD-LOADED-FILE-PROPERTY-LISTS*))
+    (SET-FILE-LOADED-ID (LOCF (SECOND TEM)) MINI-FILE-ID PACKAGE)))
 
-;;; Filename-parsing utilities which need to be in the cold load.
+(ADD-INITIALIZATION "MINI" '(SETQ MINI-OPEN-P NIL) '(WARM FIRST))
 
-;; Given a file name, return two symbols, first for the specific file
-;; and second for the group of files with that FN1, (FN2 will be ">")
-;; Must work both before and after packages exist.
-;; Must work if STRING or flavors not loaded, we use some kludges.
-(DEFUN GET-FILE-SYMBOLS (FILE-NAME)
-  (AND (STRINGP FILE-NAME)
-       (SETQ FILE-NAME (FILE-PARSE-NAME FILE-NAME)))
-  (FUNCALL FILE-NAME ':FILE-SYMBOLS))
-
-;Convert a pathname string into a path list: (dev dir fn1 fn2).
-;The elements of a path list are strings, or NIL for an
-;unspecified position.
-;Slash and control-Q () are quoting characters.  Colon, semicolon, space
-;and tab separate filename components.
-(DEFUN FILE-SPREAD-ITS-PATHNAME (PATHNAME &AUX DEV DEV-A DIR FN1 FN2)
-  (COND ((SYMBOLP PATHNAME)
-	 (SETQ PATHNAME (GET-PNAME PATHNAME))))
-  (PROG ()
-    (COND ((STRINGP PATHNAME)
-	   (DO ((I 0) (CH) (TEM) (NEXT) (LEN (STRING-LENGTH PATHNAME)) (J 0 (1+ J)))
-	       ((> J LEN))
-	     (SETQ CH (COND ((= J LEN) #\SP)
-			    (T (AR-1 PATHNAME J))))
-	     (COND ((STRING-SEARCH-CHAR CH "//")
-		    (SETQ J (1+ J)))
-		   ;; Last two characters of the string are space and tab.
-		   ((SETQ TEM (STRING-SEARCH-CHAR CH ":; 	"))
-		    (SETQ NEXT (STRING-UPCASE (SUBSTRING PATHNAME I J)))
-		    (COND ((NOT (ZEROP (STRING-LENGTH NEXT)))
-			   (SELECTQ TEM
-			     (0 (AND DEV (SETQ DEV-A DEV))
-				(SETQ DEV NEXT))
-			     (1 (SETQ DIR NEXT))
-			     ((2 3) (COND (FN2)
-					  (FN1 (SETQ FN2 NEXT))
-					  (T (SETQ FN1 NEXT)))))))
-		    (SETQ I (1+ J)))))
-	   (RETURN (LIST DEV DIR FN1 FN2) (OR DEV-A DEV)))
-	  ((LISTP PATHNAME)			;MACLISP FILE-LISTS
-	   (RETURN
-	     (MAPCAR #'(LAMBDA (X) (AND X (STRING X))) ;LEAVE NILS FOR UNSPECIFIED COMPONENTS
-		     (COND ((LISTP (CAR PATHNAME))
-			    (COND ((CDAR PATHNAME)
-				   (LIST (CAAR PATHNAME) (CADAR PATHNAME)  ;BOTH DEV AND DIR
-					 (CADR PATHNAME) (CADDR PATHNAME)))
-				  (T (LIST NIL (CAAR PATHNAME)	;JUST DIR
-					   (CADR PATHNAME) (CADDR PATHNAME)))))
-			   (T (LIST (CADDR PATHNAME) (CADDDR PATHNAME)     ;N1 N2 DEV DIR
-				    (CAR PATHNAME) (CADR PATHNAME)))))
-	     NIL))
-	  (T (FERROR NIL "~S is not an acceptable pathname" PATHNAME)))))
-
-;;; Temporary definition, only work for ITS, no defaulting, etc.
-(LOCAL-DECLARE ((SPECIAL THE-FILE-NAME))
-(DEFUN FILE-PARSE-NAME (THE-FILE-NAME &REST IGNORE)
-  (IF (NOT (STRINGP THE-FILE-NAME)) THE-FILE-NAME
-      (CLOSURE '(THE-FILE-NAME) 'COLD-PARSE-FILE-NAME-INTERNAL)))
-
-(DEFUN COLD-PARSE-FILE-NAME-INTERNAL (OP &REST REST)
-  (SELECTQ OP
-    (:TYPE (FOURTH (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME)))
-    ((:STRING-FOR-PRINTING :STRING-FOR-HOST :STRING-FOR-WHOLINE) THE-FILE-NAME)
-    (:OPEN 
-     (LEXPR-FUNCALL #'FS:OPEN-CHAOS (FIRST (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME))
-		    'COLD-PARSE-FILE-NAME-INTERNAL REST))
-    (:FILE-SYMBOLS
-     (PROG (FILE-SYMBOL FILE-GROUP-SYMBOL)
-       (SETQ FILE-GROUP-SYMBOL (COND ((FBOUNDP 'NSUBSTRING)
-				      (LET ((PATH (FILE-SPREAD-ITS-PATHNAME THE-FILE-NAME)))
-					(STRING-APPEND (FIRST PATH) ": "
-						       (SECOND PATH) "; "
-						       (THIRD PATH) " >")))
-				     ((STRING-EQUAL THE-FILE-NAME "AI: LISPM; QFCTNS QFASL")
-				      "AI: LISPM; QFCTNS >")
-				     ((STRING-EQUAL THE-FILE-NAME "AI: LISPM2; STRING QFASL")
-				      "AI: LISPM2; STRING >")
-				     (T (FERROR NIL "File not known" THE-FILE-NAME))))
-       (COND ((FBOUNDP 'INTERN-LOCAL)
-	      (SETQ FILE-SYMBOL (INTERN-LOCAL THE-FILE-NAME PKG-FILE-PACKAGE))
-	      (SETQ FILE-GROUP-SYMBOL (INTERN-LOCAL FILE-GROUP-SYMBOL PKG-FILE-PACKAGE)))
-	     (T
-	      (SETQ FILE-SYMBOL (INTERN THE-FILE-NAME))
-	      (SETQ FILE-GROUP-SYMBOL (INTERN FILE-GROUP-SYMBOL))
-	      (RPLACA (PACKAGE-CELL-LOCATION FILE-SYMBOL) 'FILES)
-	      (RPLACA (PACKAGE-CELL-LOCATION FILE-GROUP-SYMBOL) 'FILES)))
-       (RETURN FILE-SYMBOL FILE-GROUP-SYMBOL)))))
-);LOCAL-DECLARE
-
- ;Note that SETQ may not be used in the below
-(ADD-INITIALIZATION "MINI" '(SET' MINI-OPEN-P NIL) '(WARM FIRST))

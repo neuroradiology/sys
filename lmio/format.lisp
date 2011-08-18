@@ -1,5 +1,10 @@
-;; Function for printing or creating nicely formatted strings.   -*-LISP-*-
+;; -*- Mode:Lisp; Package:FORMAT; Base:8 -*-
+;; Function for printing or creating nicely formatted strings.
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
+;*** When there is a garbage collector that works well, all the crappy manual
+;*** storage allocation in this program should be removed.  It will probably
+;*** get a lot faster.
 
 ; FORMAT prints several arguments according to a control argument.
 ; The control argument is either a string or a list of strings and lists.
@@ -47,11 +52,11 @@
 ;; CHARS is the list of symbols to put in the table.
 ;; All single-character FORMAT operations must be included.
 (DEFUN FORMAT-INIT-CHAR-TABLE (CHARS)
-    (SETQ FORMAT-CHAR-TABLE (MAKE-ARRAY NIL 'ART-Q '(200)))
+    (SETQ FORMAT-CHAR-TABLE (MAKE-ARRAY 200))
     (DO ((CHARS CHARS (CDR CHARS))) ((NULL CHARS))
        (ASET (CAR CHARS) FORMAT-CHAR-TABLE (AREF (GET-PNAME (CAR CHARS)) 0))))
 
-(LET ((CHARS '(A B C D E F G O P R Q S T V X [ ] /; % /| < > * & ^ { } ~)))
+(LET ((CHARS '(A B C D E F G O P R Q S T V X [ ] /; % /| < > * & ^ { } ~ $)))
      (FORMAT-INIT-CHAR-TABLE CHARS)
 ;Following is more of a hindrance than a help
 ;     (DOLIST (C CHARS)
@@ -61,36 +66,73 @@
 ;	     (REMPROP C 'FORMAT-CTL-REPEAT-CHAR))
      )
 
+
+;Little arrays in which to cons up lists of parameters
+(DEFRESOURCE FORMAT-PARAMS ()
+  :CONSTRUCTOR (MAKE-ARRAY 10. ':TYPE 'ART-Q-LIST
+			       ':LEADER-LIST '(0))
+  :INITIAL-COPIES 4)
+
+
 (DEFPROP FORMAT-STRING-STREAM T SI:IO-STREAM-P)
 
 ;; (FORMAT NIL ...) outputs to this stream, which just puts the characters
 ;; into the string FORMAT-STRING.
-(DEFUN FORMAT-STRING-STREAM (OP &OPTIONAL ARG1 &REST REST)
-  (COND ((EQ OP ':TYO)
-	 (ARRAY-PUSH-EXTEND FORMAT-STRING ARG1))
-	((EQ OP ':STRING-OUT)
-	 (LET ((FIRST (OR (CAR REST) 0))
-	       (LAST (OR (CADR REST) (ARRAY-ACTIVE-LENGTH ARG1)))
-	       (NEW-LENGTH))
-	   (SETQ NEW-LENGTH (+ (ARRAY-LEADER FORMAT-STRING 0) (- LAST FIRST)))
-	   (AND (< (ARRAY-LENGTH FORMAT-STRING) NEW-LENGTH)
-		(ADJUST-ARRAY-SIZE FORMAT-STRING NEW-LENGTH))
-	   (COPY-ARRAY-PORTION ARG1 FIRST LAST
-			       FORMAT-STRING (ARRAY-LEADER FORMAT-STRING 0) NEW-LENGTH)
-	   (STORE-ARRAY-LEADER NEW-LENGTH FORMAT-STRING 0)))
-	((EQ OP ':READ-CURSORPOS)
-	 (MULTIPLE-VALUE-CALL
-	     ((LAMBDA ()
-		(PROG ()
-		      (RETURN (LET ((POS (STRING-REVERSE-SEARCH-SET
-					     '(#\RETURN #\LINE #\FORM)
-					     FORMAT-STRING)))
-				(- (STRING-LENGTH FORMAT-STRING)
-				   (IF POS (+ POS 1) 0)))
-			      0))))))
-	((EQ OP ':WHICH-OPERATIONS) '(:TYO :STRING-OUT :READ-CURSORPOS))
-	(T (MULTIPLE-VALUE-CALL
-	       (STREAM-DEFAULT-HANDLER 'FORMAT-STRING-STREAM OP ARG1 REST)))))
+(DEFSELECT (FORMAT-STRING-STREAM FORMAT-STRING-STREAM-DEFAULT-HANDLER)
+  (:TYO (CH)
+   (ARRAY-PUSH-EXTEND FORMAT-STRING CH))
+
+  (:STRING-OUT (STRING &OPTIONAL (FIRST 0) LAST &AUX NEW-LENGTH)
+   (SETQ LAST (OR LAST (ARRAY-ACTIVE-LENGTH STRING)))
+   (SETQ NEW-LENGTH (+ (ARRAY-LEADER FORMAT-STRING 0) (- LAST FIRST)))
+   (AND (< (ARRAY-LENGTH FORMAT-STRING) NEW-LENGTH)
+	(ADJUST-ARRAY-SIZE FORMAT-STRING NEW-LENGTH))
+   (COPY-ARRAY-PORTION STRING FIRST LAST
+		       FORMAT-STRING (ARRAY-LEADER FORMAT-STRING 0) NEW-LENGTH)
+   (STORE-ARRAY-LEADER NEW-LENGTH FORMAT-STRING 0))
+
+  (:READ-CURSORPOS (&OPTIONAL (MODE ':CHARACTER) &AUX POS)
+   (OR (EQ MODE ':CHARACTER)
+       (FERROR NIL "String cannot have :PIXEL"))
+   (SETQ POS (STRING-REVERSE-SEARCH-CHAR #\CR FORMAT-STRING))
+   (VALUES (- (STRING-LENGTH FORMAT-STRING) (IF POS (+ POS 1) 0))
+	   0))
+
+  (:INCREMENT-CURSORPOS (DX DY &OPTIONAL (MODE ':CHARACTER) &AUX NEWLEN)
+   (OR (EQ MODE ':CHARACTER)
+       (FERROR NIL "String cannot have :PIXEL"))
+   (OR (AND (ZEROP DY) (NOT (MINUSP DX)))
+       (FERROR NIL "Cannot do this :INCREMENT-CURSORPOS"))
+   (SETQ NEWLEN (+ (STRING-LENGTH FORMAT-STRING) DX))
+   (AND (< (ARRAY-LENGTH FORMAT-STRING) NEWLEN)
+	(ADJUST-ARRAY-SIZE FORMAT-STRING NEWLEN))
+   (DO ((I (STRING-LENGTH FORMAT-STRING) (1+ I)))
+       (( I NEWLEN))
+     (ASET #\SP FORMAT-STRING I))
+   (STORE-ARRAY-LEADER NEWLEN FORMAT-STRING 0))
+
+  (:SET-CURSORPOS (X Y &OPTIONAL (MODE ':CHARACTER) &AUX POS DELTA NEWLEN)
+   (OR (EQ MODE ':CHARACTER)
+       (FERROR NIL "String cannot have :PIXEL"))
+   (SETQ POS (STRING-REVERSE-SEARCH-SET '(#\RETURN #\LINE #\FORM) FORMAT-STRING)
+	 DELTA (- X (- (STRING-LENGTH FORMAT-STRING) (IF POS (+ POS 1) 0))))
+   (OR (AND (ZEROP Y) (PLUSP DELTA))
+       (FERROR NIL "Cannot do this :SET-CURSORPOS"))
+   (SETQ NEWLEN (+ (STRING-LENGTH FORMAT-STRING) DELTA))
+   (AND (< (ARRAY-LENGTH FORMAT-STRING) NEWLEN)
+	(ADJUST-ARRAY-SIZE FORMAT-STRING NEWLEN))
+   (DO ((I (STRING-LENGTH FORMAT-STRING) (1+ I)))
+       (( I NEWLEN))
+     (ASET #\SP FORMAT-STRING I))
+   (STORE-ARRAY-LEADER NEWLEN FORMAT-STRING 0))
+
+  (:FRESH-LINE ()
+   (AND (NOT (OR (ZEROP (STRING-LENGTH FORMAT-STRING))
+		 (= (AREF FORMAT-STRING (1- (STRING-LENGTH FORMAT-STRING))) #\CR)))
+	(ARRAY-PUSH-EXTEND FORMAT-STRING #\CR))))
+
+(DEFUN FORMAT-STRING-STREAM-DEFAULT-HANDLER (OP &OPTIONAL ARG1 &REST REST)
+  (STREAM-DEFAULT-HANDLER 'FORMAT-STRING-STREAM OP ARG1 REST))
 
 (DEFUN FORMAT (STREAM CTL-STRING &REST ARGS)
     "Format arguments according to a control string and print to a stream.  (If the stream
@@ -102,6 +144,9 @@ The control string is copied to the stream, but ~ indicates special formatting c
 ~O  Analogous to ~D, but prints in octal.
 ~F  ~F  Print a floating point number.   ~nF  Round it to n digits.
 ~E  ~E  Print a floating-point number in exponential notation.   ~nE  Round to n digits.
+~$  ~w,x,y,z$ prints a floating-point number with exactly w (default 2) digits to right of
+     decimal, at least x (default 1) to left of decimal, right-justified in field y wide
+     padded with z.  @ print + sign.  : sign to left of padding.
 ~R  ~R  Print number as an English cardinal number.
     ~:R  English ordinal number.   ~@R  Roman numeral.   ~:@R  Old Roman numeral.
     ~nR  Print number in radix n.  Thus ~8R = ~O, and ~10R = ~D.
@@ -110,7 +155,7 @@ The control string is copied to the stream, but ~ indicates special formatting c
     ~@A  Right-justify the string.   ~:A  Make NIL print as ().  ~:@A  Both.
 ~S  Analogous to ~A, but uses PRIN1, not PRINC.
 ~C  Print a character.  Mouse characters print in standard format.
-    ~C  Code, preceded by: control , meta , control-meta , hyper ˆ, super .   quotes.
+    ~C  Code, preceded by: control , meta , control-meta , hyper , super .   quotes.
     ~:C  Format effectors print as names.  Names of control bits (/"Control-/") precede.
     ~@C  Prints the character in READ format, using #// or #\.
     ~:@C  Like ~:C, but top/front/greek characters are followed by remark, e.g. /" (Top-S)/".
@@ -177,14 +222,18 @@ The control string is copied to the stream, but ~ indicates special formatting c
 In place of a numeric parameter, one may use V, which uses an argument to supply the number;
 or one may use #, which represents the number of arguments remaining to be processed;
 or one may use 'x, which uses the ascii value of x (good for pad characters).
-The control string may actually be a list of intermixed strings and sublists.  The first
-atom in a sublist should be the name of a command, and remaining elements are parameters."
+The control string may actually be a list of intermixed strings and sublists.
+In that case, the strings are printed literally.  The first atom in a sublist should be
+the name of a command, and remaining elements are parameters."
     (COND ((NULL STREAM)
 	   ;;; Only bind FORMAT-STRING if STREAM is NIL.  This avoids lossage if
-	   ;;; FORMAT with a first arg of NIL is called recursively (e.g. if
+	   ;;; FORMAT with a first arg of NIL calls FORMAT recursively (e.g. if
 	   ;;; printing a named structure).
 	   (BIND (VALUE-CELL-LOCATION 'FORMAT-STRING)
-		 (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-STRING '(200) NIL '(0))))
+		 (MAKE-ARRAY 200
+			     ':AREA FORMAT-TEMPORARY-AREA
+			     ':TYPE 'ART-STRING
+			     ':LEADER-LIST '(0))))
 	  ((STRINGP STREAM)
 	   (BIND (VALUE-CELL-LOCATION 'FORMAT-STRING) STREAM)))
     (LET ((STANDARD-OUTPUT (COND ((OR (NULL STREAM) (STRINGP STREAM)) 'FORMAT-STRING-STREAM)
@@ -199,9 +248,9 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 		  ((SYMBOLP CTL-STRING)
 		   (FORMAT-CTL-STRING ARGS (GET-PNAME CTL-STRING)))
 		  (T (DO ((CTL-STRING CTL-STRING (CDR CTL-STRING))) ((NULL CTL-STRING))
-			 (SETQ ARGS (COND ((STRINGP (CAR CTL-STRING))
-					   (FORMAT-CTL-STRING ARGS (CAR CTL-STRING)))
-					  (T (FORMAT-CTL-LIST ARGS (CAR CTL-STRING)))))))))))
+		       (IF (STRINGP (CAR CTL-STRING))
+			   (FUNCALL STANDARD-OUTPUT ':STRING-OUT (CAR CTL-STRING))
+			   (SETQ ARGS (FORMAT-CTL-LIST ARGS (CAR CTL-STRING))))))))))
     ;; Copy returned string out of temporary area and reclaim
     (COND ((NULL STREAM)
 	   (PROG1 (SUBSTRING FORMAT-STRING 0)
@@ -212,9 +261,9 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 ;;; CTL-INDEX should point one beyond the place to be indicated in the error message.
 
 (DEFUN FORMAT-ERROR (STRING &REST ARGS)
-       (COND ((STRINGP CTL-STRING)
-	      (FERROR NIL "~1{~:}~%~VT~%~3X/"~A/"~%" STRING ARGS (+ CTL-INDEX 3) CTL-STRING))
-	     (T (FERROR NIL "~1{~:}" STRING ARGS))))
+  (IF (STRINGP CTL-STRING)
+      (FERROR NIL "~1{~:}~%~VT~%~3X/"~A/"~%" STRING ARGS (+ CTL-INDEX 3) CTL-STRING)
+      (FERROR NIL "~1{~:}" STRING ARGS)))
 
 (DEFUN FORMAT-CTL-LIST (ARGS CTL-LIST &AUX (ATSIGN-FLAG NIL) (COLON-FLAG NIL))
     (FORMAT-CTL-OP (COND ((GETL (CAR CTL-LIST)
@@ -224,26 +273,27 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 			 (T (INTERN-LOCAL-SOFT (CAR CTL-LIST) FORMAT-PACKAGE)))
 		   ARGS (CDR CTL-LIST)))
 
-(DEFUN FORMAT-CTL-STRING (ARGS CTL-STRING)
-    (DO ((CTL-INDEX 0)
-	 (TEM)
-	 (STR)
-	 (CTL-LENGTH (STRING-LENGTH CTL-STRING)))
-	((>= CTL-INDEX CTL-LENGTH) ARGS)
-	(SETQ TEM (OR (STRING-SEARCH-CHAR #/~ CTL-STRING CTL-INDEX) CTL-LENGTH))
-	(COND ((NEQ TEM CTL-INDEX)		;Put out some literal string
-	       (SETQ STR (NSUBSTRING CTL-STRING CTL-INDEX TEM FORMAT-TEMPORARY-AREA))
-	       (FUNCALL STANDARD-OUTPUT ':STRING-OUT STR)
-	       (RETURN-ARRAY STR)
-	       (AND (>= (SETQ CTL-INDEX TEM) CTL-LENGTH)
-		    (RETURN ARGS))))
+(DEFUN FORMAT-CTL-STRING (ARGS CTL-STRING &AUX (FORMAT-PARAMS NIL))
+  (UNWIND-PROTECT
+      (DO ((CTL-INDEX 0)
+	   (CTL-LENGTH (ARRAY-ACTIVE-LENGTH CTL-STRING))
+	   (TEM))
+	  ((>= CTL-INDEX CTL-LENGTH))
+	(SETQ TEM (%STRING-SEARCH-CHAR #/~ CTL-STRING CTL-INDEX CTL-LENGTH))
+	(COND ((NEQ TEM CTL-INDEX)			;Put out some literal string
+	       (FUNCALL STANDARD-OUTPUT ':STRING-OUT CTL-STRING CTL-INDEX TEM)
+	       (IF (NULL TEM) (RETURN))
+	       (SETQ CTL-INDEX TEM)))
 	;; (AREF CTL-STRING CTL-INDEX) is a tilde.
 	(LET ((ATSIGN-FLAG NIL)
-	      (COLON-FLAG NIL)
-	      (FORMAT-PARAMS (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-Q-LIST 10. NIL '(0))))
-	     (MULTIPLE-VALUE (TEM ARGS) (FORMAT-PARSE-COMMAND ARGS T))
-	     (SETQ ARGS (FORMAT-CTL-OP TEM ARGS (G-L-P FORMAT-PARAMS)))
-	     (RETURN-ARRAY FORMAT-PARAMS))))
+	      (COLON-FLAG NIL))
+	  (IF (NULL FORMAT-PARAMS) 
+	      (SETQ FORMAT-PARAMS (ALLOCATE-RESOURCE 'FORMAT-PARAMS)))
+	  (STORE-ARRAY-LEADER 0 FORMAT-PARAMS 0)
+	  (MULTIPLE-VALUE (TEM ARGS) (FORMAT-PARSE-COMMAND ARGS T))
+	  (SETQ ARGS (FORMAT-CTL-OP TEM ARGS (G-L-P FORMAT-PARAMS)))))
+    (AND FORMAT-PARAMS (DEALLOCATE-RESOURCE 'FORMAT-PARAMS FORMAT-PARAMS)))
+  ARGS)
 
 ;;; Expects ATSIGN-FLAG, COLON-FLAG, and FORMAT-PARAMS to be bound.
 ;;; CTL-INDEX points to a tilde.  Returns command name and new ARGS,
@@ -350,17 +400,21 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 			((NUMBERP COMMACHAR) COMMACHAR)
 			(T (AREF (STRING COMMACHAR) 0))))
   (AND WIDTH (FORMAT-CTL-JUSTIFY WIDTH
-				 (+ (FLATC ARG)
+				 (+ (IF (TYPEP ARG ':FIXNUM)
+					(+ (LOOP FOR X = (ABS ARG) THEN (// X BASE)
+						 COUNT T
+						 UNTIL (< X BASE))
+					   (IF (MINUSP ARG) 1 0))
+					(FLATC ARG))
 				    (IF PLUS-P 1 0)
-				    (IF (AND COLON-FLAG (NUMBERP ARG))
+				    (IF (AND COLON-FLAG (FIXP ARG))
 					(// (1- (FLATC (ABS ARG))) 3)	;Number of commas
 					0))
 				 PADCHAR))
   (AND PLUS-P (FUNCALL STANDARD-OUTPUT ':TYO #/+))
-  ;; This is PRINC rather than PRIN1 so you can have a string instead of a number
-  (COND ((NOT (AND COLON-FLAG (NUMBERP ARG))) (PRINC ARG))
+  (COND ((AND COLON-FLAG (FIXP ARG))
 	;; Random hair with commas.  I'm not going to bother not consing.
-	(T (COND ((MINUSP ARG) (FUNCALL STANDARD-OUTPUT ':TYO #/-) (SETQ ARG (- ARG))))
+	 (COND ((MINUSP ARG) (FUNCALL STANDARD-OUTPUT ':TYO #/-) (SETQ ARG (- ARG))))
 	   (SETQ ARG (NREVERSE (INHIBIT-STYLE-WARNINGS ;Give up!
 				 (EXPLODEN ARG))))
 	   (DO ((L ARG (CDR L))
@@ -370,7 +424,10 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 		    (RPLACD L (CONS COMMACHAR (CDR L)))
 		    (SETQ I 3 L (CDR L)))))
 	   (DOLIST (CH (NREVERSE ARG))
-	     (FUNCALL STANDARD-OUTPUT ':TYO CH)))))
+	     (FUNCALL STANDARD-OUTPUT ':TYO CH)))
+	((TYPEP ARG ':FIXNUM) (SI:PRINT-FIXNUM ARG STANDARD-OUTPUT))
+	;; This is PRINC rather than PRIN1 so you can have a string instead of a number
+	(T (PRINC ARG))))
 
 (DEFPROP O FORMAT-CTL-OCTAL FORMAT-CTL-ONE-ARG)
 (DEFUN FORMAT-CTL-OCTAL (ARG PARAMS)
@@ -392,15 +449,42 @@ atom in a sublist should be the name of a command, and remaining elements are pa
       (SI:PRINT-FLONUM ARG STANDARD-OUTPUT NIL (SMALL-FLOATP ARG)
 		       (CAR PARAMS) T)))
 
+;This doesn't support RDIG being 0.  That would be nice, but is complicated.
+(DEFPROP $ FORMAT-CTL-MONEY FORMAT-CTL-ONE-ARG)
+(DEFUN FORMAT-CTL-MONEY (ARG PARAMS)
+  (LET ((RDIG (OR (FIRST PARAMS) 2))		;This many digits after decimal point
+	(LDIG (OR (SECOND PARAMS) 1))		;At least this many to left of decimal
+	(FIELD (THIRD PARAMS))			;Right-justify in field this wide
+	(PADCHAR (OR (FOURTH PARAMS) #\SP)))	;Padding with this
+    (COND ((OR (NOT (NUMBERP ARG)) (> (ABS ARG) 1E50))
+	   (FORMAT-CTL-JUSTIFY FIELD (FLATC ARG) PADCHAR)
+	   (PRINC ARG))
+	  (T (OR (FLOATP ARG) (SETQ ARG (FLOAT ARG)))
+	     (MULTIPLE-VALUE-BIND (STR IDIG)
+		 (SI:FLONUM-TO-STRING (ABS ARG) (SMALL-FLOATP ARG) NIL RDIG)
+	       (LET ((WIDTH (+ (IF (OR ATSIGN-FLAG (MINUSP ARG)) 1 0)
+			       (MAX (- LDIG IDIG) 0)
+			       (ARRAY-ACTIVE-LENGTH STR))))
+		 (IF (NOT COLON-FLAG) (FORMAT-CTL-JUSTIFY FIELD WIDTH PADCHAR))
+		 (COND ((MINUSP ARG)
+			(FUNCALL STANDARD-OUTPUT ':TYO (SI:PTTBL-MINUS-SIGN READTABLE)))
+		       (ATSIGN-FLAG (FUNCALL STANDARD-OUTPUT ':TYO #/+)))
+		 (IF COLON-FLAG (FORMAT-CTL-JUSTIFY FIELD WIDTH PADCHAR))
+		 (LOOP REPEAT (- LDIG IDIG) DO (FUNCALL STANDARD-OUTPUT ':TYO #/0))
+		 (FUNCALL STANDARD-OUTPUT ':STRING-OUT STR)
+		 (RETURN-ARRAY (PROG1 STR (SETQ STR NIL)))))))))
+
 (DEFPROP R FORMAT-CTL-ROMAN FORMAT-CTL-ONE-ARG)
 (DEFUN FORMAT-CTL-ROMAN (ARG PARAMS)
   (COND ((CAR PARAMS) (FORMAT-CTL-DECIMAL ARG (CDR PARAMS) (CAR PARAMS)))
 	((AND ATSIGN-FLAG
+	      (FIXP ARG)
 	      (< ARG 4000.)
 	      (> ARG 0))
 	 (LET ((ROMAN-OLD COLON-FLAG))
 	   (ROMAN-STEP ARG 0)))
-	(ATSIGN-FLAG
+	((OR ATSIGN-FLAG
+	     (NOT (FIXP ARG)))
 	 (LET ((BASE 10.) (*NOPOINT T))
 	   (PRIN1 ARG)))
 	((NOT COLON-FLAG)
@@ -418,26 +502,31 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 	       ((NOT (NUMBERP PADCHAR))
 		(SETQ PADCHAR (CHARACTER PADCHAR))))
          (COND (ATSIGN-FLAG)			;~@5nA right justifies
-	       ((AND COLON-FLAG (NULL ARG)) (PRINC "()"))
+	       ((AND COLON-FLAG (NULL ARG)) (FUNCALL STANDARD-OUTPUT ':STRING-OUT "()"))
 	       (PRIN1P (PRIN1 ARG))
-               (T (PRINC ARG)))
+               ((STRINGP ARG) (FUNCALL STANDARD-OUTPUT ':STRING-OUT ARG))
+	       (T (PRINC ARG)))
 	 (COND ((NOT (NULL EDGE))
-		(LET ((WIDTH (FUNCALL (COND (PRIN1P 'FLATSIZE) (T 'FLATC)) ARG)))
+		(LET ((WIDTH (FUNCALL (COND (PRIN1P #'FLATSIZE)
+					    ((STRINGP ARG) #'ARRAY-ACTIVE-LENGTH)
+					    (T #'FLATC))
+				      ARG)))
 		  (COND ((NOT (NULL MIN))
 			 (FORMAT-CTL-REPEAT-CHAR MIN PADCHAR)
 			 (SETQ WIDTH (+ WIDTH MIN))))
 		  (COND (PERIOD
 			 (FORMAT-CTL-REPEAT-CHAR
-			  (- (+ EDGE (* (// (+ (- (MAX EDGE WIDTH) EDGE 1)
-					       PERIOD)
-					    PERIOD)
-					PERIOD))
-			     WIDTH)
-			  PADCHAR))
+			   (- (+ EDGE (* (// (+ (- (MAX EDGE WIDTH) EDGE 1)
+						PERIOD)
+					     PERIOD)
+					 PERIOD))
+			      WIDTH)
+			   PADCHAR))
 			(T (FORMAT-CTL-JUSTIFY EDGE WIDTH PADCHAR))))))
          (COND ((NOT ATSIGN-FLAG))
-	       ((AND COLON-FLAG (NULL ARG)) (PRINC "()"))
+	       ((AND COLON-FLAG (NULL ARG)) (FUNCALL STANDARD-OUTPUT ':STRING-OUT "()"))
 	       (PRIN1P (PRIN1 ARG))
+               ((STRINGP ARG) (FUNCALL STANDARD-OUTPUT ':STRING-OUT ARG))
                (T (PRINC ARG)))))
 
 (DEFPROP S FORMAT-CTL-SEXP FORMAT-CTL-ONE-ARG)
@@ -446,18 +535,23 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 
 (DEFPROP T FORMAT-CTL-TAB FORMAT-CTL-NO-ARG)
 (DEFUN FORMAT-CTL-TAB (PARAMS &AUX (DEST (OR (FIRST PARAMS) 1))
-			           (EXTRA (OR (SECOND PARAMS) 1)))
-    (COND ((MEMQ ':SET-CURSORPOS (FUNCALL STANDARD-OUTPUT ':WHICH-OPERATIONS))
+			           (EXTRA (OR (SECOND PARAMS) 1))
+				   (OPS (FUNCALL STANDARD-OUTPUT ':WHICH-OPERATIONS))
+				   INCR-OK)
+    (COND ((OR (SETQ INCR-OK (MEMQ ':INCREMENT-CURSORPOS OPS))
+	       (MEMQ ':SET-CURSORPOS OPS))
 	   (LET ((FLAVOR (IF COLON-FLAG ':PIXEL ':CHARACTER)))
-;	     (FUNCALL STANDARD-OUTPUT ':HANDLE-EXCEPTIONS)
-	     (LET (X Y)
-	       (MULTIPLE-VALUE (X Y) (FUNCALL STANDARD-OUTPUT ':READ-CURSORPOS FLAVOR))
-	       (FUNCALL STANDARD-OUTPUT ':SET-CURSORPOS
-                        ;(+ DEST (* (// (+ (- (MAX DEST X) DEST) (1- EXTRA)) EXTRA) EXTRA))
-			(IF (< X DEST) DEST
-			    (* (1+ (// X EXTRA)) EXTRA))  ;next multiple of EXTRA after X
-			Y
-			FLAVOR))))
+	     (MULTIPLE-VALUE-BIND (X Y) (FUNCALL STANDARD-OUTPUT ':READ-CURSORPOS FLAVOR)
+	       (LET ((NEW-X (IF (< X DEST) DEST
+				(* (1+ (// X EXTRA)) EXTRA))))  ;next multiple of EXTRA after X
+		 (COND (INCR-OK
+			;; Use :INCREMENT-CURSORPOS preferentially
+			;; because it will do a **MORE** if we need one.
+			(FUNCALL STANDARD-OUTPUT ':INCREMENT-CURSORPOS
+				 (- NEW-X X) 0 FLAVOR))
+		       (T
+			(FUNCALL STANDARD-OUTPUT ':SET-CURSORPOS
+				 NEW-X Y FLAVOR)))))))
 	  (T (FUNCALL STANDARD-OUTPUT ':STRING-OUT "   "))))
 
 (DEFPROP C FORMAT-CTL-CHARACTER FORMAT-CTL-ONE-ARG)
@@ -472,21 +566,28 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 		 (T (FUNCALL STANDARD-OUTPUT ':STRING-OUT "Mouse-")
 		    (FUNCALL STANDARD-OUTPUT ':STRING-OUT (NTH (LDB 0003 ARG)
 							       '("Left" "Middle" "Right")))
-		    (FUNCALL STANDARD-OUTPUT ':STRING-OUT (NTH (LDB 0303 ARG)
-							       '("" "-Twice" "-Thrice"))))))
+		    (IF (SETQ CHNAME (NTH (SETQ BITS (LDB 0303 ARG))
+					  '("" "-Twice" "-Thrice")))
+			(FUNCALL STANDARD-OUTPUT ':STRING-OUT CHNAME)
+			(FUNCALL STANDARD-OUTPUT ':TYO #/-)
+			(ENGLISH-PRINT (1+ BITS))
+			(FUNCALL STANDARD-OUTPUT ':STRING-OUT "-times")))))
           ((NOT COLON-FLAG)
 	   (AND ATSIGN-FLAG (FUNCALL STANDARD-OUTPUT ':TYO #/#))
-	   (FUNCALL STANDARD-OUTPUT ':STRING-OUT (NTH (LDB %%KBD-CONTROL-META ARG)
-						      '("" "" "" ""
-							"" "" "" ""
-							"ˆ" "ˆ" "ˆ" "ˆ"
-							"ˆ" "ˆ" "ˆ" "ˆ")))
+	   (SETQ BITS (LDB %%KBD-CONTROL-META ARG))
+	   (IF (NOT (ZEROP BITS))
+	       ;; For efficiency, don't send :string-out message just for null string.
+	       (FUNCALL STANDARD-OUTPUT ':STRING-OUT (NTH BITS
+							  '("" "" "" ""
+							    "" "" "" ""
+							    "" "" "" ""
+							    "" "" "" ""))))
 	   (COND ((AND ATSIGN-FLAG
 		       (SETQ CHNAME (FORMAT-GET-CHARACTER-NAME (LDB %%KBD-CHAR ARG))))
 		  (FUNCALL STANDARD-OUTPUT ':TYO #/\)
 		  (PRIN1 CHNAME))
 		 (T (COND (ATSIGN-FLAG (FUNCALL STANDARD-OUTPUT ':TYO #//))
-			  ((MEMQ ARG '(#/ #/ #/ #/ #/ˆ #/))
+			  ((MEMQ ARG '(#/ #/ #/ #/ #/ #/))
 			   (FUNCALL STANDARD-OUTPUT ':TYO #/)))
 		    (FUNCALL STANDARD-OUTPUT ':TYO (LDB %%KBD-CHAR ARG)))))
 	  (T
@@ -501,8 +602,10 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 		    (LET ((STR (STRING-DOWNCASE CHNAME)))
 		      (ASET (CHAR-UPCASE (AREF STR 0)) STR 0)
 		      (FUNCALL STANDARD-OUTPUT ':STRING-OUT STR)
-		      (RETURN-ARRAY STR))))
+		      (RETURN-ARRAY STR)))
+		  (AND ATSIGN-FLAG (FORMAT-PRINT-TOP-CHARACTER ARG)))
                  ((AND ATSIGN-FLAG (< ARG 40) ( ARG #/))
+		  (FUNCALL STANDARD-OUTPUT ':TYO ARG)
 		  (FORMAT-PRINT-TOP-CHARACTER ARG))
                  (T (FUNCALL STANDARD-OUTPUT ':TYO ARG))))))
 
@@ -512,7 +615,6 @@ atom in a sublist should be the name of a command, and remaining elements are pa
     (AND (= (CDAR L) CHAR) (RETURN (CAAR L)))))
 
 (DEFUN FORMAT-PRINT-TOP-CHARACTER (CHAR &AUX NAME CHNAME)
-  (FUNCALL STANDARD-OUTPUT ':TYO CHAR)
   (COND (( (LDB 0003 (%UNIBUS-READ 764102)) 1)	;Last character new keyboard?
 	 (SETQ NAME " (Top-"			;No
 	       CHNAME (DOTIMES (I 100)
@@ -530,7 +632,7 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 	 (SETQ NAME (IF (OR (AND ( CHNAME #/A) ( CHNAME #/Z))
 			    (AND ( CHNAME #/a) ( CHNAME #/z)))
 			" (Greek-" " (Front-"))))
-  (COND (CHNAME	 
+  (COND ((AND CHNAME ( CHNAME CHAR))
 	 (FUNCALL STANDARD-OUTPUT ':STRING-OUT NAME)
 	 ;; I'm not sure what to pass for the second arg, since it is not used.
 	 ;; It currently doesn't matter.
@@ -541,9 +643,9 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 (DEFPROP P FORMAT-CTL-PLURAL FORMAT-CTL-MULTI-ARG)
 (DEFUN FORMAT-CTL-PLURAL (ARGS IGNORE)
     (AND COLON-FLAG (SETQ ARGS (FORMAT-CTL-IGNORE ARGS NIL)))	;crock: COLON-FLAG is set
-    (COND (ATSIGN-FLAG (COND ((EQUAL (CAR ARGS) 1) (TYO #/y))
-			     (T (FUNCALL STANDARD-OUTPUT ':STRING-OUT "ies"))))
-	  (T (OR (EQUAL (CAR ARGS) 1) (TYO #/s))))
+    (IF ATSIGN-FLAG (IF (EQUAL (CAR ARGS) 1) (FUNCALL STANDARD-OUTPUT ':TYO #/y)
+			(FUNCALL STANDARD-OUTPUT ':STRING-OUT "ies"))
+	(OR (EQUAL (CAR ARGS) 1) (FUNCALL STANDARD-OUTPUT ':TYO #/s)))
     (CDR ARGS))
 
 (DEFPROP * FORMAT-CTL-IGNORE FORMAT-CTL-MULTI-ARG)
@@ -561,14 +663,13 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 
 (DEFPROP % FORMAT-CTL-NEWLINES FORMAT-CTL-NO-ARG)
 (DEFUN FORMAT-CTL-NEWLINES (PARAMS &AUX (COUNT (OR (CAR PARAMS) 1)))
-    (DO I 0 (1+ I) (= I COUNT)
-	(TERPRI)))
+  (DOTIMES (I COUNT) (FUNCALL STANDARD-OUTPUT ':TYO #\CR)))
 
 (DEFPROP & FORMAT-CTL-FRESH-LINE FORMAT-CTL-NO-ARG)
 (DEFUN FORMAT-CTL-FRESH-LINE (PARAMS &AUX (COUNT (OR (CAR PARAMS) 1)))
     (FUNCALL STANDARD-OUTPUT ':FRESH-LINE)
     (DO I (1- COUNT) (1- I) (= I 0)
-	(TERPRI)))
+      (FUNCALL STANDARD-OUTPUT ':TYO #\CR)))
 
 (DEFPROP ^ FORMAT-CTL-TERMINATE FORMAT-CTL-MULTI-ARG)
 (DEFUN FORMAT-CTL-TERMINATE (ARGS PARAMS)
@@ -587,8 +688,8 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 (DEFPROP ~   #/~    FORMAT-CTL-REPEAT-CHAR)
 
 (DEFUN FORMAT-CTL-REPEAT-CHAR (COUNT CHAR)
-    (DO I 0 (1+ I) (= I COUNT)
-	(TYO CHAR)))
+    (DOTIMES (I COUNT)
+      (FUNCALL STANDARD-OUTPUT ':TYO CHAR)))
 
 (DEFPROP /| FORMAT-CTL-FORMS FORMAT-CTL-NO-ARG)
 (DEFUN FORMAT-CTL-FORMS (PARAMS)
@@ -608,86 +709,100 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 (DEFUN FORMAT-CTL-APPLY (ARG PARAMS)
     (APPLY ARG PARAMS))
 
-(DECLARE (SPECIAL ENGLISH-SMALL ENGLISH-MEDIUM ENGLISH-LARGE ENGLISH-100
-		  ENGLISH-ORDINAL-SMALL ENGLISH-ORDINAL-MEDIUM ENGLISH-ORDINAL-LARGE
-		  ENGLISH-ORDINAL-100))
-
 (DEFUN MAKE-LIST-ARRAY (LIST)
-       (LET ((A (MAKE-ARRAY NIL 'ART-Q (LENGTH LIST))))
-	    (FILLARRAY A LIST)
-	    A))
+  (FILLARRAY (MAKE-ARRAY (LENGTH LIST)) LIST))
 
-(SETQ ENGLISH-SMALL (MAKE-LIST-ARRAY '("one" "two" "three" "four" "five" "six"
-				       "seven" "eight" "nine" "ten" "eleven" "twelve"
-				       "thirteen" "fourteen" "fifteen" "sixteen"
-				       "seventeen" "eighteen" "nineteen")))
+(DEFCONST ENGLISH-SMALL
+	  (MAKE-LIST-ARRAY '("one" "two" "three" "four" "five" "six"
+			     "seven" "eight" "nine" "ten" "eleven" "twelve"
+			     "thirteen" "fourteen" "fifteen" "sixteen"
+			     "seventeen" "eighteen" "nineteen")))
 
-(SETQ ENGLISH-ORDINAL-SMALL (MAKE-LIST-ARRAY '("first" "second" "third" "fourth" "fifth"
-					       "sixth" "seventh" "eighth" "ninth"
-					       "tenth" "eleventh" "twelfth" "thirteenth"
-					       "fourteenth" "fifteenth" "sixteenth"
-					       "seventeenth" "eighteenth" "nineteenth")))
+(DEFCONST ENGLISH-ORDINAL-SMALL
+	  (MAKE-LIST-ARRAY '("first" "second" "third" "fourth" "fifth"
+			     "sixth" "seventh" "eighth" "ninth"
+			     "tenth" "eleventh" "twelfth" "thirteenth"
+			     "fourteenth" "fifteenth" "sixteenth"
+			     "seventeenth" "eighteenth" "nineteenth")))
 
-(SETQ ENGLISH-MEDIUM (MAKE-LIST-ARRAY '("twenty" "thirty" "forty" "fifty" "sixty" "seventy"
-				        "eighty" "ninety")))
+(DEFCONST ENGLISH-MEDIUM
+	  (MAKE-LIST-ARRAY '("twenty" "thirty" "forty" "fifty" "sixty" "seventy"
+			     "eighty" "ninety")))
 
-(SETQ ENGLISH-ORDINAL-MEDIUM (MAKE-LIST-ARRAY '("twentieth" "thirtieth" "fortieth"
-						"fiftieth" "sixtieth" "seventieth"
-						"eightieth" "ninetieth")))
+(DEFCONST ENGLISH-ORDINAL-MEDIUM
+	  (MAKE-LIST-ARRAY '("twentieth" "thirtieth" "fortieth"
+			     "fiftieth" "sixtieth" "seventieth"
+			     "eightieth" "ninetieth")))
 
-(SETQ ENGLISH-LARGE (MAKE-LIST-ARRAY '("thousand" "million" "billion" "trillion" "quadrillion"
-				       "quintillion")))
+(DEFCONST ENGLISH-LARGE
+	  (MAKE-LIST-ARRAY '("" "thousand" "million" "billion" "trillion"
+			     "quadrillion" "quintillion" "sextillion"
+			     "septillion" "octillion" "nonillion" "decillion"
+			     "undecillion" "duodecillion")))
 
-(SETQ ENGLISH-ORDINAL-LARGE (MAKE-LIST-ARRAY '("thousandth" "millionth" "billionth"
-					       "trillionth" "quadrillionth" "quintillionth")))
+(DEFCONST ENGLISH-ORDINAL-LARGE
+	  (MAKE-LIST-ARRAY '("thousandth" "millionth" "billionth"
+			     "trillionth" "quadrillionth" "quintillionth"
+			     "sextillionth" "septillionth" "octillionth" "nonillionth"
+			     "decillionth" "undecillionth" "duodecillionth")))
 
-(SETQ ENGLISH-100 "hundred"
-      ENGLISH-ORDINAL-100 "hundredth")
+(DEFCONST ENGLISH-100 "hundred")
 
+(DEFCONST ENGLISH-ORDINAL-100 "hundredth")
+
+;;; Returns T if it printed anything, else NIL.
 (DEFUN ENGLISH-PRINT-THOUSAND (N STREAM)
-       (LET ((N (\ N 100.))
-	     (H (// N 100.)))
-	    (COND ((> H 0)
-		   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- H)))
-		   (FUNCALL STREAM ':TYO #\SP)
-		   (FUNCALL STREAM ':STRING-OUT ENGLISH-100)
-		   (AND (> N 0) (FUNCALL STREAM ':TYO #\SP))))
-	    (COND ((= N 0))
-		  ((< N 20.)
-		   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- N))))
-		  (T
-		   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-MEDIUM (- (// N 10.) 2)))
-		   (COND ((ZEROP (SETQ H (\ N 10.))))
-			 (T
-			  (FUNCALL STREAM ':TYO #/-)
-			  (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- H)))))))))
+  (LET ((FLAG NIL)
+	(N (\ N 100.))
+	(H (// N 100.)))
+    (COND ((> H 0)
+	   (SETQ FLAG T)
+	   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- H)))
+	   (FUNCALL STREAM ':TYO #\SP)
+	   (FUNCALL STREAM ':STRING-OUT ENGLISH-100)
+	   (AND (> N 0) (FUNCALL STREAM ':TYO #\SP))))
+    (COND ((= N 0))
+	  ((< N 20.)
+	   (SETQ FLAG T)
+	   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- N))))
+	  (T
+	   (SETQ FLAG T)
+	   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-MEDIUM (- (// N 10.) 2)))
+	   (COND ((ZEROP (SETQ H (\ N 10.))))
+		 (T
+		  (FUNCALL STREAM ':TYO #/-)
+		  (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-SMALL (1- H)))))))
+    FLAG))
 
-(DEFUN ENGLISH-PRINT (N &OPTIONAL (STREAM STANDARD-OUTPUT))
-       (COND ((ZEROP N)
-	      (FUNCALL STREAM ':STRING-OUT "zero"))
-	     ((< N 0)
-	      (FUNCALL STREAM ':STRING-OUT "minus")
-	      (FUNCALL STREAM ':TYO #\SP)
-	      (ENGLISH-PRINT (MINUS N) STREAM))
-	     (T
-	      (DO ((N N)
-                   (P)
-		   (FLAG)
-		   (LIMIT 1000000.	  ;There is some cleverness here for bignums
-			  (// LIMIT 1000.))
-		   (I 1 (1- I)))
-		  ((< I 0)
-		   (COND ((> N 0)
-			  (AND FLAG (FUNCALL STREAM ':TYO #\SP))
-			  (ENGLISH-PRINT-THOUSAND N STREAM))))
-		  (COND ((NOT (< N LIMIT))
-			 (SETQ P (// N LIMIT)
-			       N (\ N LIMIT))
-			 (COND (FLAG (FUNCALL STREAM ':TYO #\SP))
-			       (T (SETQ FLAG T)))
-			 (ENGLISH-PRINT-THOUSAND P STREAM)
-			 (FUNCALL STREAM ':TYO #\SP)
-			 (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-LARGE I))))))))
+;;; Returns T if it printed anything, else NIL.
+(DEFUN ENGLISH-PRINT (N &OPTIONAL (STREAM STANDARD-OUTPUT) (TRIAD 0))
+  (COND ((ZEROP N)
+	 (COND ((ZEROP TRIAD)
+		(FUNCALL STREAM ':STRING-OUT "zero")
+		T)
+	       (T NIL)))
+	((< N 0)
+	 (FUNCALL STREAM ':STRING-OUT "minus")
+	 (FUNCALL STREAM ':TYO #\SP)
+	 (ENGLISH-PRINT (MINUS N) STREAM)
+	 T)
+	(T
+	 (LET ((FLAG (ENGLISH-PRINT (// N 1000.) STREAM (1+ TRIAD))))
+	   (LET ((THIS-TRIPLET (\ N 1000.)))
+	     (COND ((NOT (ZEROP THIS-TRIPLET))
+		    (IF FLAG (FUNCALL STREAM ':TYO #\SP))
+		    (IF (EQ FLAG 'EXPT) (FUNCALL STREAM ':STRING-OUT "plus "))
+		    (ENGLISH-PRINT-THOUSAND THIS-TRIPLET STREAM)
+		    (COND ((ZEROP TRIAD) T)
+			  ((> TRIAD 13.)
+			   (FUNCALL STREAM ':STRING-OUT " times ten to the ")
+			   (ENGLISH-ORDINAL-PRINT (* 3 TRIAD))
+			   (FUNCALL STREAM ':STRING-OUT " power")
+			   'EXPT)
+			  (T
+			   (FUNCALL STREAM ':TYO #\SP)
+			   (FUNCALL STREAM ':STRING-OUT (AREF ENGLISH-LARGE TRIAD))
+			   T)))))))))
 
 (DEFUN ENGLISH-ORDINAL-PRINT (N &OPTIONAL (STREAM STANDARD-OUTPUT))
        (COND ((ZEROP N)
@@ -751,38 +866,41 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 
 (DEFUN FORMAT-PARSE-CLAUSES (CLOSECHAR SEMIP)
   (DO ((I CTL-INDEX) (J) (TEM) (START (+ 4 (1- CTL-INDEX)))
-       (CLAUSES (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-Q-LIST 30. NIL '(NIL 0)))
-       (STACK (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-Q-LIST 10. NIL '(0))))
+       (CLAUSES (MAKE-ARRAY 30. ':AREA FORMAT-TEMPORARY-AREA ':TYPE 'ART-Q-LIST
+				':LEADER-LIST '(0 NIL)))
+       (STACK (MAKE-ARRAY 10. ':AREA FORMAT-TEMPORARY-AREA ':TYPE 'ART-Q-LIST
+			      ':LEADER-LIST '(0))))
       (())					;do forever (until explicit return)
-    (OR (SETQ J (SETQ CTL-INDEX (STRING-SEARCH-CHAR #/~ CTL-STRING CTL-INDEX)))
+    (OR (SETQ J (SETQ CTL-INDEX (%STRING-SEARCH-CHAR #/~ CTL-STRING CTL-INDEX CTL-LENGTH)))
 	(FERROR NIL
 		"Missing ~{~*~~~A and ~}~~~A in format string:~%~VT~{~*~VT~}~%~3X/"~A/"~%"
 		(G-L-P STACK) CLOSECHAR START (REVERSE (G-L-P STACK)) CTL-STRING))
     (LET ((ATSIGN-FLAG NIL)
 	  (COLON-FLAG NIL)
-	  (FORMAT-PARAMS (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-Q-LIST 10. NIL '(0))))
+	  (FORMAT-PARAMS (ALLOCATE-RESOURCE 'FORMAT-PARAMS)))
+      (STORE-ARRAY-LEADER 0 FORMAT-PARAMS 0)
       (MULTIPLE-VALUE-BIND (COMMAND IGNORE) (FORMAT-PARSE-COMMAND NIL NIL)
 	;; Now I points to beginning of clause, J to ~, and CTL-INDEX after command.
 	(COND ((SETQ TEM (ASSQ COMMAND '(([ . ]) ({ . }) (< . >))))
-	       (ARRAY-PUSH STACK (+ 4 (1- CTL-INDEX)))	;for error message only
-	       (ARRAY-PUSH STACK (CDR TEM)))
+	       (ARRAY-PUSH-EXTEND STACK (+ 4 (1- CTL-INDEX)))	;for error message only
+	       (ARRAY-PUSH-EXTEND STACK (CDR TEM)))
 	      ((NOT (NULL (G-L-P STACK)))
 	       (COND ((EQ COMMAND (AREF STACK (1- (ARRAY-LEADER STACK 0))))
 		      (ARRAY-POP STACK)		;pop twice
 		      (ARRAY-POP STACK))))
 	      ((OR (EQ COMMAND CLOSECHAR) (AND SEMIP (EQ COMMAND '/;)))
-	       (COND ((NULL (G-L-P FORMAT-PARAMS))
-		      (RETURN-ARRAY FORMAT-PARAMS)
-		      (SETQ FORMAT-PARAMS NIL)))
-	       (ARRAY-PUSH CLAUSES
+	       (ARRAY-PUSH-EXTEND CLAUSES
 			   (NSUBSTRING CTL-STRING I J FORMAT-TEMPORARY-AREA))
-	       (ARRAY-PUSH CLAUSES (+ (IF COLON-FLAG 1 0) (IF ATSIGN-FLAG 2 0)))
-	       (ARRAY-PUSH CLAUSES FORMAT-PARAMS)
+	       (ARRAY-PUSH-EXTEND CLAUSES (+ (IF COLON-FLAG 1 0) (IF ATSIGN-FLAG 2 0)))
+	       (ARRAY-PUSH-EXTEND CLAUSES (IF (G-L-P FORMAT-PARAMS)
+					      (PROG1 FORMAT-PARAMS (SETQ FORMAT-PARAMS NIL))))
 	       (SETQ I CTL-INDEX)
 	       (COND ((EQ COMMAND CLOSECHAR)
 		      (STORE-ARRAY-LEADER STACK CLAUSES 1)
-		      (RETURN CLAUSES))))
-	      (T (RETURN-ARRAY FORMAT-PARAMS)))))))
+		      (IF FORMAT-PARAMS (DEALLOCATE-RESOURCE 'FORMAT-PARAMS FORMAT-PARAMS))
+		      (RETURN CLAUSES)))))
+	;; Unless the parameters were saved away in the clauses table, free them
+	(IF FORMAT-PARAMS (DEALLOCATE-RESOURCE 'FORMAT-PARAMS FORMAT-PARAMS))))))
 
 (DEFUN FORMAT-RECLAIM-CLAUSES (CLAUSES)
        (DO ((I (ARRAY-LEADER CLAUSES 0) (- I 3)))
@@ -791,7 +909,7 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 	    (RETURN-ARRAY CLAUSES))
 	 (RETURN-ARRAY (AREF CLAUSES (- I 3)))
 	 (AND (AREF CLAUSES (- I 1))
-	      (RETURN-ARRAY (AREF CLAUSES (- I 1))))))
+	      (DEALLOCATE-RESOURCE 'FORMAT-PARAMS (AREF CLAUSES (- I 1))))))
 
 (DEFPROP /; FORMAT-CTL-DELIMIT-CASE FORMAT-CTL-NO-ARG)
 (DEFUN FORMAT-CTL-DELIMIT-CASE (IGNORE)
@@ -885,7 +1003,8 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 ;;; STANDARD-OUTPUT it sends to a string and returns that as its second value.
 ;;; The returned string is in the temporary area.
 (DEFUN FORMAT-CTL-STRING-TO-STRING (ARGS STR)
-  (LET ((FORMAT-STRING (MAKE-ARRAY FORMAT-TEMPORARY-AREA 'ART-STRING '(200) NIL '(0)))
+  (LET ((FORMAT-STRING (MAKE-ARRAY 200 ':AREA FORMAT-TEMPORARY-AREA ':TYPE 'ART-STRING
+				       ':LEADER-LIST '(0)))
 	(STANDARD-OUTPUT 'FORMAT-STRING-STREAM))
     (PROG () (RETURN (FORMAT-CTL-STRING ARGS STR)
 		     (ADJUST-ARRAY-SIZE FORMAT-STRING (ARRAY-ACTIVE-LENGTH FORMAT-STRING))))))
@@ -900,6 +1019,7 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 	(COLINC (OR (SECOND PARAMS) 1))
 	(MINPAD (OR (THIRD PARAMS) 0))
 	(PADCHAR (OR (FOURTH PARAMS) #\SP))
+	(W-O (FUNCALL STANDARD-OUTPUT ':WHICH-OPERATIONS))
 	(NEWLINE NIL)
 	(EXTRA 0)
 	(LINEWIDTH NIL)
@@ -913,21 +1033,21 @@ atom in a sublist should be the name of a command, and remaining elements are pa
     (AND COLON-FLAG (SETQ N-PADDING-POINTS (1+ N-PADDING-POINTS)))
     (AND ATSIGN-FLAG (SETQ N-PADDING-POINTS (1+ N-PADDING-POINTS)))
     (*CATCH 'FORMAT-^-POINT
-	    (PROGN (SETQ CLAUSES (FORMAT-PARSE-CLAUSES '> T))
-		   (DO ((SPECS (G-L-P CLAUSES) (CDDDR SPECS)) (STR))
-		       ((NULL SPECS)
-			(SETQ STRINGS (NREVERSE STRINGS))
-			(COND ((AND (G-L-P CLAUSES) (ODDP (CADR (G-L-P CLAUSES))))
-			       (SETQ NEWLINE (POP STRINGS))
-			       (AND (CADDR (G-L-P CLAUSES))
-				    (SETQ EXTRA (OR (CAR (G-L-P (CADDR (G-L-P CLAUSES)))) 0)
-					  LINEWIDTH (CADR (G-L-P (CADDR (G-L-P CLAUSES))))))
-			       (SETQ STRING-NCOL (- STRING-NCOL (STRING-LENGTH NEWLINE)))
-			       (SETQ N-PADDING-POINTS (1- N-PADDING-POINTS)))))
-		     (MULTIPLE-VALUE (ARGS STR) (FORMAT-CTL-STRING-TO-STRING ARGS (CAR SPECS)))
-		     (SETQ STRING-NCOL (+ (STRING-LENGTH STR) STRING-NCOL))
-		     (SETQ N-PADDING-POINTS (1+ N-PADDING-POINTS))
-		     (SETQ STRINGS (CONS-IN-AREA STR STRINGS FORMAT-TEMPORARY-AREA)))))
+	(PROGN (SETQ CLAUSES (FORMAT-PARSE-CLAUSES '> T))
+	       (DO ((SPECS (G-L-P CLAUSES) (CDDDR SPECS)) (STR))
+		   ((NULL SPECS))
+		 (MULTIPLE-VALUE (ARGS STR) (FORMAT-CTL-STRING-TO-STRING ARGS (CAR SPECS)))
+		 (SETQ STRING-NCOL (+ (STRING-LENGTH STR) STRING-NCOL))
+		 (SETQ N-PADDING-POINTS (1+ N-PADDING-POINTS))
+		 (SETQ STRINGS (CONS-IN-AREA STR STRINGS FORMAT-TEMPORARY-AREA)))))
+    (SETQ STRINGS (NREVERSE STRINGS))
+    (COND ((AND (G-L-P CLAUSES) (ODDP (CADR (G-L-P CLAUSES))))
+	   (SETQ NEWLINE (POP STRINGS))
+	   (AND (CADDR (G-L-P CLAUSES))
+		(SETQ EXTRA (OR (CAR (G-L-P (CADDR (G-L-P CLAUSES)))) 0)
+		      LINEWIDTH (CADR (G-L-P (CADDR (G-L-P CLAUSES))))))
+	   (SETQ STRING-NCOL (- STRING-NCOL (STRING-LENGTH NEWLINE)))
+	   (SETQ N-PADDING-POINTS (1- N-PADDING-POINTS))))
     (AND (ZEROP N-PADDING-POINTS)	;With no options and no ~; right-justify
 	 (SETQ COLON-FLAG T N-PADDING-POINTS 1))
     ;; Get the amount of space needed to print the strings and MINPAD padding
@@ -941,10 +1061,13 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 			   STRING-NCOL))
     ;; Figure out whether a newline is called for or not.
     (COND ((AND NEWLINE
-		(MEMQ ':READ-CURSORPOS (FUNCALL STANDARD-OUTPUT ':WHICH-OPERATIONS))
-		(MULTIPLE-VALUE-BIND (X IGNORE)
-		    (FUNCALL STANDARD-OUTPUT ':READ-CURSORPOS ':CHARACTER)
-		  (> (+ X STRING-NCOL TOTAL-PADDING EXTRA) (OR LINEWIDTH 95.))))  ;linel (should be computed)
+		(MEMQ ':READ-CURSORPOS W-O)
+		(> (+ (FUNCALL STANDARD-OUTPUT ':READ-CURSORPOS ':CHARACTER)
+		      STRING-NCOL TOTAL-PADDING EXTRA)
+		   (OR LINEWIDTH
+		       (AND (MEMQ ':SIZE-IN-CHARACTERS W-O)
+			    (FUNCALL STANDARD-OUTPUT ':SIZE-IN-CHARACTERS))
+		       95.)))
 	   (FUNCALL STANDARD-OUTPUT ':STRING-OUT NEWLINE)))
     ;; Decide how many pads at each padding point + how many of the leftmost
     ;; padding points need one extra pad.

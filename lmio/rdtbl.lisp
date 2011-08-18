@@ -5,9 +5,14 @@
 (DECLARE (ERROR '|If you are compiling this, and not using RTC, you are losing|))
 
 (MAC  NUMBER '(// #/0 #/1 #/2 #/3 #/4 #/5 #/6 #/7 #/8 #/9)
+      EXTENDED-NUMBER (CONS '// (DO ((I #/A (1+ I))	;For IBASE > 10.
+				     (J #/a (1+ J))
+				     (L (CDR NUMBER) (LIST* I J L)))
+				    ((> I #/Z) L)))
       PLUS-MINUS '(// #/+ #/-)
       PLUS #/+
       POINT #/.
+      BACKSLASH #/\
       EE '(// #/E #/e)
       SS '(// #/S #/s)
       LSH-SCALE '(// #/_ #/^)
@@ -20,17 +25,17 @@
       COLON #/:
       CRLF #\CR
       NULL '(//)
-      ALPHA-BETA-EPSILON '(// #/ #/ #/ #/ #/ˆ)
+      ALPHA-BETA-EPSILON '(// #/ #/ #/ #/ #/)
       SLASHIFIED-CHAR -1				;SLASHIFIED CHARS TO BE MAPED TO -1.
       EOF-CHAR -2					;EOF IS MAPPED TO -2.
-      WHITE-SPACE-CHAR '(// #\SP 211 212 213 214 215 -5)	;-5 IS WHITESPACE SYNTAX
+      WHITE-SPACE-CHAR '(// #\SP #\TAB #\LINE #\PAGE #\CR -5)	;-5 IS WHITESPACE SYNTAX
       BREAK (NCONC '(// #/( #/) #/' #/` #/, #/" #/| #/; -2 -3 -4 -6)	;-3 IS BREAK SYNTAX
 		   (CDR WHITE-SPACE-CHAR))
       MACRO-CHARACTER '(// #/' #/, #/; #/` -6)		;-6 IS MACRO SYNTAX
       STANDALONE-CHAR '(// -4)				;-4 IS SINGLE SYNTAX
       ANY (CONS '// (DO ((I -7 (1+ I))			;-7 IS ALPHABETIC SYNTAX
 			 (X NIL (CONS I X)))
-			((> I 215) X)))
+			((= I RDTBL-ARRAY-SIZE) X)))
       ANY-BUT-EOF (DELETE -2 ANY))
 
 ;;; A readtable definition looks like (DEF name regular-expression type).
@@ -87,6 +92,26 @@
 	      (+ NUMBER)))
 	SS
 	(U NULL PLUS-MINUS)
+	(+ NUMBER)
+	BREAK)
+     UNTYI-FUNCTION)
+
+(DEF EXTENDED-FIXNUM
+     (! PLUS-MINUS
+	(+ EXTENDED-NUMBER)
+	(U NULL POINT)
+	(U NULL
+	   (! LSH-SCALE
+	      (U NULL PLUS)
+	      (+ EXTENDED-NUMBER)
+	      (U NULL POINT)))
+	BREAK)
+     UNTYI-FUNCTION)
+
+(DEF RATIONAL
+     (! (U NULL PLUS-MINUS)
+	(+ NUMBER)
+	BACKSLASH
 	(+ NUMBER)
 	BREAK)
      UNTYI-FUNCTION)
@@ -148,7 +173,8 @@
 		      (#/- . XR-/#/--MACRO)
 		      (#/O . XR-/#/O-MACRO)
 		      (#/R . XR-/#/R-MACRO)
-		      (#/X . XR-/#/X-MACRO)))
+		      (#/X . XR-/#/X-MACRO)
+		      (#/| . XR-/#/|-MACRO)))
 (OPT READ-FUNCTION-PROPERTY 'STANDARD-READ-FUNCTION)
 (OPT SLASH #//)
 (OPT CIRCLECROSS 26)
@@ -157,7 +183,7 @@
 (OPT A-BREAK-CHAR -3)					;For the reader to use.
 (OPT MAKE-SYMBOL '(SC-SYMBOL))				;Who makes symbols
 (OPT MAKE-SYMBOL-BUT-LAST '(SYMBOL			;and how.
-			    SLASHED-SYMBOL))
+			    EXTENDED-FIXNUM))
 (OPT BITS '((#/" 10)					;Bits to be ored into readtable.
 	    (#/| 20)))
 (OPT SAVE-SYNTAX '(SINGLE -4				;Placed in plist of readtable

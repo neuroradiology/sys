@@ -18,21 +18,31 @@
 
 (DEFVAR GRIND-NOTIFY-FUN)	;Function to tell about interesting characters
 
+(DEFVAR GRIND-RENAMING-ALIST NIL);Alist of renamings that were performed
+				;on the function being ground.
+				;We should undo the renamings when we grind
+				;so that the code comes out as originally written.
+				;Each element of this alist is (original-name new-name).
+
 (DEFPROP QUOTE GRIND-QUOTE GRIND-MACRO)
 (DEFPROP DEFUN GRIND-DEFUN GRIND-MACRO)
 (DEFPROP MACRO GRIND-DEFUN GRIND-MACRO)
 (DEFPROP DEFMACRO GRIND-DEFUN GRIND-MACRO)
 (DEFPROP DEFMETHOD GRIND-DEFUN GRIND-MACRO)
 (DEFPROP LAMBDA GRIND-LAMBDA GRIND-MACRO)
+(DEFPROP NAMED-LAMBDA GRIND-NAMED-LAMBDA GRIND-MACRO)
 (DEFPROP PROG GRIND-PROG GRIND-MACRO)
+(DEFPROP PROG* GRIND-PROG GRIND-MACRO)
 (DEFPROP DO GRIND-DO GRIND-MACRO)
 (DEFPROP DO-NAMED GRIND-DO-NAMED GRIND-MACRO)
 (DEFPROP COND GRIND-COND GRIND-MACRO)
 (DEFPROP SETQ GRIND-SETQ GRIND-MACRO)
+(DEFPROP PSETQ GRIND-SETQ GRIND-MACRO)
 (DEFPROP AND GRIND-AND GRIND-MACRO)
 (DEFPROP OR GRIND-AND GRIND-MACRO)
 (DEFPROP LAMBDA GRIND-LAMBDA-COMPOSITION GRIND-L-MACRO)
 (DEFPROP LET GRIND-LET GRIND-MACRO)
+(DEFPROP LET* GRIND-LET GRIND-MACRO)
 (DEFPROP TRACE GRIND-TRACE GRIND-MACRO)
 
 ;;; Macro to typeout a constant character
@@ -73,19 +83,27 @@
 	
 ;;; I/O stream which counts VPOS and HPOS, and THROWs to GRIND-DOESNT-FIT-CATCH
 ;;; if the width overflows.
-;;; For now at least, doesn't hack tabs and backspaces and font changes and cetera. 
+;;; For now at least, doesn't hack tabs and backspaces and font changes and cetera.
+
+;; Bind this to non-NIL tells streams it is OK to throw to GRIND-DOESNT-FIT-CATCH
+;; Doing it this way avoids the incredible slowness of CATCH-ERROR and THROW's interaction.
+(DEFVAR GRIND-DOESNT-FIT-CATCH NIL)
+
+(DEFMACRO CATCH-IF-DOESNT-FIT (&BODY BODY)
+  `(LET ((GRIND-DOESNT-FIT-CATCH T))
+     (*CATCH 'GRIND-DOESNT-FIT-CATCH . ,BODY)))
 
 (DEFPROP GRIND-COUNT-IO T IO-STREAM-P)
 
 (DEFUN GRIND-COUNT-IO (OPERATION &OPTIONAL ARG1 &REST REST)
   (COND ((EQ OPERATION ':WHICH-OPERATIONS) '(:TYO))
 	((NEQ OPERATION ':TYO)
-	 (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER #'GRIND-COUNT-IO OPERATION ARG1 REST)))
+	 (STREAM-DEFAULT-HANDLER #'GRIND-COUNT-IO OPERATION ARG1 REST))
 	((= ARG1 #\CR)
 	 (SETQ GRIND-VPOS (1+ GRIND-VPOS) GRIND-HPOS 0))
-	((>= GRIND-HPOS GRIND-WIDTH)			;Line overflow
-	 (ERRSET (*THROW 'GRIND-DOESNT-FIT-CATCH NIL) NIL)
-	 (SETQ GRIND-HPOS (1+ GRIND-HPOS)))
+	((AND GRIND-DOESNT-FIT-CATCH
+	      (>= GRIND-HPOS GRIND-WIDTH))			;Line overflow
+	 (*THROW 'GRIND-DOESNT-FIT-CATCH NIL))
 	(T (SETQ GRIND-HPOS (1+ GRIND-HPOS)))))
 
 ;;; I/O stream which counts VPOS and HPOS and prints (to GRIND-REAL-IO).
@@ -96,20 +114,24 @@
 (DEFUN GRIND-PRINT-IO (OPERATION &OPTIONAL &REST REST)
   (COND ((EQ OPERATION ':WHICH-OPERATIONS) '(:TYO))
 	((NEQ OPERATION ':TYO)
-	 (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER #'GRIND-PRINT-IO OPERATION
-						      (CAR REST) (CDR REST))))
-	((= (CAR REST) #\CR)
-	 (SETQ GRIND-VPOS (1+ GRIND-VPOS) GRIND-HPOS 0))
-	((>= GRIND-HPOS GRIND-WIDTH)			;Line overflow
-	 (ERRSET (*THROW 'GRIND-DOESNT-FIT-CATCH NIL) NIL)
-	 (SETQ GRIND-HPOS (1+ GRIND-HPOS)))
-	(T (SETQ GRIND-HPOS (1+ GRIND-HPOS))))
-  (LEXPR-FUNCALL GRIND-REAL-IO OPERATION REST))
+	 (STREAM-DEFAULT-HANDLER #'GRIND-PRINT-IO OPERATION
+				 (CAR REST) (CDR REST)))
+	(T (COND ((= (CAR REST) #\CR)
+		  (SETQ GRIND-VPOS (1+ GRIND-VPOS) GRIND-HPOS 0))
+		 ((AND GRIND-DOESNT-FIT-CATCH
+		       (>= GRIND-HPOS GRIND-WIDTH))	;Line overflow
+		  (*THROW 'GRIND-DOESNT-FIT-CATCH NIL))
+		 (T (SETQ GRIND-HPOS (1+ GRIND-HPOS))))
+	   (LEXPR-FUNCALL GRIND-REAL-IO OPERATION REST))))
 
 (DEFUN GRIND-THROW-ERROR (&REST IGNORE)
   (*THROW 'THROW-ERROR-CATCH NIL))
 
-(DEFUN GRIND-PRIN1 (ATOM STREAM LOC)
+(DEFUN GRIND-ATOM (ATOM STREAM LOC)
+  (AND GRIND-RENAMING-ALIST
+       (DOLIST (ELT GRIND-RENAMING-ALIST)
+	 (AND (EQ (CADR ELT) ATOM)
+	      (RETURN (SETQ ATOM (CAR ELT))))))
   (AND GRIND-NOTIFY-FUN
        (NEQ STREAM #'GRIND-COUNT-IO)
        (FUNCALL GRIND-NOTIFY-FUN ATOM LOC T))
@@ -127,9 +149,9 @@
 ;;; so that it is possible to replace the thing being printed under
 ;;; program control.  This is currently used by the Inspector in the
 ;;; New Window System.
-(DEFUN GRIND-LINEAR-FORM (EXP LOC &AUX TEM)
+(DEFUN GRIND-LINEAR-FORM (EXP LOC &OPTIONAL (CHECK-FOR-MACROS T) &AUX TEM)
   (COND ((NLISTP EXP)					;Atoms print very simply
-	 (GRIND-PRIN1 EXP GRIND-IO LOC))
+	 (GRIND-ATOM EXP GRIND-IO LOC))
 	((MEMQ (CAR EXP) '(GRIND-COMMA GRIND-COMMA-ATSIGN GRIND-COMMA-DOT GRIND-DOT-COMMA))
 	 (SELECTQ (CAR EXP)
 	   (GRIND-COMMA (GTYO #/,))
@@ -137,12 +159,13 @@
 	   (GRIND-COMMA-DOT (GTYO #/,) (GTYO #/.))
 	   (GRIND-DOT-COMMA (GTYO #/.) (GTYO #\SP) (GTYO #/,)))
 	 (GRIND-LINEAR-FORM (CADR EXP) (LOCF (CADR EXP))))
-	((OR (AND (SYMBOLP (CAR EXP))			;Check for GRIND-MACRO
-		  (NOT (EQ (CAR EXP) 'QUOTE))		;(KLUDGE)
-		  (SETQ TEM (GET (CAR EXP) 'GRIND-MACRO)))
-	     (AND (LISTP (CAR EXP))			;Check for LAMBDA
-		  (SYMBOLP (CAAR EXP))
-		  (SETQ TEM (GET (CAAR EXP) 'GRIND-L-MACRO))))
+	((AND CHECK-FOR-MACROS
+	      (OR (AND (SYMBOLP (CAR EXP))			;Check for GRIND-MACRO
+		       (NOT (EQ (CAR EXP) 'QUOTE))		;(KLUDGE)
+		       (SETQ TEM (GET (CAR EXP) 'GRIND-MACRO)))
+		  (AND (LISTP (CAR EXP))			;Check for LAMBDA
+		       (SYMBOLP (CAAR EXP))
+		       (SETQ TEM (GET (CAAR EXP) 'GRIND-L-MACRO)))))
 	 (*THROW 'GRIND-DOESNT-FIT-CATCH NIL))		;Macro, don't use linear form
 	((EQ (CAR EXP) 'QUOTE)				;(KLUDGE)
 	 (GRIND-QUOTE EXP LOC))
@@ -169,7 +192,7 @@
 ;except if the first item won't fit one line, stack the rest below it.
 ;Items are processed through the full hair of GRIND-FORM
 (DEFUN GRIND-STANDARD-FORM (EXP LOC)
- (COND ((NLISTP EXP) (GRIND-PRIN1 EXP GRIND-IO LOC))
+ (COND ((NLISTP EXP) (GRIND-ATOM EXP GRIND-IO LOC))
        ((EQ (CAR EXP) GRIND-DISPLACED)
 	(GRIND-STANDARD-FORM (CADR EXP) (LOCF (CADR EXP))))
        (T 
@@ -198,18 +221,18 @@
 
 ;;; {Recursive} top level for miser mode from the outside in.
 (DEFUN GRIND-OPTI-MISER (EXP LOC)
-  (COND ((NLISTP EXP)					;ATOMS NO OPTIMIZATION ANYWAY
-	 (GRIND-PRIN1 EXP GRIND-IO LOC))
-	((EQ (CAR EXP) GRIND-DISPLACED)			;UNDISPLACE DISPLACED FORMS.
+  (COND ((NLISTP EXP)					;Atoms -- no optimization anyway
+	 (GRIND-ATOM EXP GRIND-IO LOC))
+	((EQ (CAR EXP) GRIND-DISPLACED)			;Undisplace displaced forms.
 	 (GRIND-OPTI-MISER (CADR EXP) (LOCF (CADR EXP))))
-	((GRIND-TRY (FUNCTION GRIND-FORM) EXP LOC))	;USE NORMAL MODE IF IT WINS
-	(T (GRIND-MISER-FORM EXP LOC))))		;LOSES, USE MISER FORM
+	((GRIND-TRY #'GRIND-FORM EXP LOC))		;Use normal mode if it wins
+	(T (GRIND-MISER-FORM EXP LOC))))		;Loses, use miser form
 
 ;Vertical form looks the same as miser form, but if
 ;it doesn't fit anyway we throw out and miser at a higher level rather
 ;than misering the forms inside of this form.
 (DEFUN GRIND-VERTICAL-FORM (EXP LOC &OPTIONAL (FN (FUNCTION GRIND-FORM)))
-  (COND ((ATOM EXP) (GRIND-PRIN1 EXP GRIND-IO LOC))
+  (COND ((ATOM EXP) (GRIND-ATOM EXP GRIND-IO LOC))
 	(T (GTYO #/( LOC)
 	   (GRIND-REST-OF-LIST EXP LOC FN))))
 
@@ -233,13 +256,13 @@
 				       (GTYO #\SP)
 				       (GTYO #/.)
 				       (GTYO #\SP)
-				       (GRIND-PRIN1 X GRIND-IO LOC)))
+				       (GRIND-ATOM X GRIND-IO LOC)))
 			  X LOC))
 	      (T (GRIND-TERPRI)
 		 (GTYO #\SP)
 		 (GTYO #/.)
 		 (GTYO #\SP)
-		 (GRIND-PRIN1 X GRIND-IO LOC)))))
+		 (GRIND-ATOM X GRIND-IO LOC)))))
  (GTYO #/) T)
  T) ;Must return T for the sake of COND in GRIND-REST-OF-LIST
 
@@ -331,24 +354,24 @@
 ;;; from the outside in, while linear mode gets applied from the
 ;;; inside out.
 
-(DEFUN GRIND-FORM (EXP LOC &AUX TEM)
+(DEFUN GRIND-FORM (EXP LOC &AUX TEM GMF)
   (COND ((ATOM EXP)					;Atoms print very simply
-	 (GRIND-PRIN1 EXP GRIND-IO LOC))
+	 (GRIND-ATOM EXP GRIND-IO LOC))
 	((EQ (CAR EXP) GRIND-DISPLACED)
 	 (GRIND-FORM (CADR EXP) (LOCF (CADR EXP))))
 	((AND (SYMBOLP (CAR EXP))			;Check for GRIND-MACRO
 	      (OR (NULL (CDR EXP)) (NOT (ATOM (CDR EXP)))) ; but try not to get faked out
-	      (SETQ TEM (GET (CAR EXP) 'GRIND-MACRO)))
-	 (AND (*CATCH 'GRIND-MACRO-FAILED
-		      (PROGN (FUNCALL TEM EXP LOC) NIL))
-	      (GRIND-STANDARD-FORM EXP LOC)))
+	      (SETQ TEM (GET (CAR EXP) 'GRIND-MACRO))
+	      (NOT (SETQ GMF (*CATCH 'GRIND-MACRO-FAILED
+			       (PROGN (FUNCALL TEM EXP LOC) NIL))))))
 	((AND (LISTP (CAR EXP))				;Check for LAMBDA
 	      (SYMBOLP (CAAR EXP))
-	      (SETQ TEM (GET (CAAR EXP) 'GRIND-L-MACRO)))
-	 (AND (*CATCH 'GRIND-MACRO-FAILED
-		      (PROGN (FUNCALL TEM EXP LOC) NIL))
-	      (GRIND-STANDARD-FORM EXP LOC)))
-	((GRIND-TRY #'GRIND-LINEAR-FORM EXP LOC))	;If linear form works, use it
+	      (SETQ TEM (GET (CAAR EXP) 'GRIND-L-MACRO))
+	      (NOT (SETQ GMF (*CATCH 'GRIND-MACRO-FAILED
+			       (PROGN (FUNCALL TEM EXP LOC) NIL))))))
+	((AND (MEMQ GMF '(NIL NOT-A-FORM))
+	      ;; If linear form works, use it
+	      (GRIND-TRY #'GRIND-LINEAR-FORM EXP LOC (NULL GMF))))
 	(T (GRIND-STANDARD-FORM EXP LOC))))		;Loses, go for standard form
 
 ;;; GRIND-FORM and return T if it takes more than one line.
@@ -359,14 +382,14 @@
 
 ;;; Grind with a certain form if it wins and return T,
 ;;; or generate no output and return NIL if that form won't fit.
-(DEFUN GRIND-TRY (FORM EXP LOC &AUX MARK VP HP)
+(DEFUN GRIND-TRY (FORM EXP LOC &REST ARGS &AUX MARK VP HP)
   (COND (GRIND-UNTYO-P					;UNTYO able, so
 	 (SETQ VP GRIND-VPOS				; save current place
 	       HP GRIND-HPOS
 	       MARK (FUNCALL GRIND-REAL-IO ':UNTYO-MARK))
-	 (OR (*CATCH 'GRIND-DOESNT-FIT-CATCH		;Then try doing it
-		     (PROGN (FUNCALL FORM EXP LOC)
-			    T))
+	 (OR (CATCH-IF-DOESNT-FIT			;Then try doing it
+	       (LEXPR-FUNCALL FORM EXP LOC ARGS)
+	       T)
 	     (PROGN					;Lost, back up to saved place
 	       (SETQ GRIND-VPOS VP
 		     GRIND-HPOS HP)
@@ -376,32 +399,37 @@
 	((EQ GRIND-IO (FUNCTION GRIND-COUNT-IO))	;Only counting, so
 	 (SETQ VP GRIND-VPOS				; save current place
 	       HP GRIND-HPOS)
-	 (OR (*CATCH 'GRIND-DOESNT-FIT-CATCH		;Then try doing it
-		     (PROGN (FUNCALL FORM EXP LOC)
-			    T))
+	 (OR (CATCH-IF-DOESNT-FIT
+	       (LEXPR-FUNCALL FORM EXP LOC ARGS)
+	       T)					;Then try doing it
 	     (PROGN					;Lost, back up to saved place
 	       (SETQ GRIND-VPOS VP
 		     GRIND-HPOS HP)
 	       NIL)))					;Return NIL to indicate lossage
 
-	((*CATCH 'GRIND-DOESNT-FIT-CATCH		;Have to use do-it-twice mode
+	((CATCH-IF-DOESNT-FIT				;Have to use do-it-twice mode
 	     (LET ((GRIND-IO (FUNCTION GRIND-COUNT-IO))
 		   (GRIND-VPOS GRIND-VPOS)
 		   (GRIND-HPOS GRIND-HPOS))
-	       (FUNCALL FORM EXP LOC)			;So first try it tentatively
+	       (LEXPR-FUNCALL FORM EXP LOC ARGS)	;So first try it tentatively
 	       T))
-	 (FUNCALL FORM EXP LOC)				;Won, do it for real
+	 (LEXPR-FUNCALL FORM EXP LOC ARGS)		;Won, do it for real
 	 T)))						;Lost, return NIL
 
 ;;; Grind Top Level
 
-(DEFUN GRIND-TOP-LEVEL (EXP &OPTIONAL (GRIND-WIDTH 95.)
+;;; Top level grinding function.
+;;; GRIND-WIDTH used to default to 95.  Now, it defaults to NIL, meaning
+;;; try to figure it out and use 95. if you can't.
+(DEFUN GRIND-TOP-LEVEL (EXP &OPTIONAL (GRIND-WIDTH NIL)
 			    	      (GRIND-REAL-IO STANDARD-OUTPUT)
 				      (GRIND-UNTYO-P NIL)
 				      (GRIND-DISPLACED 'DISPLACED)
 				      (TERPRI-P T)
 				      (GRIND-NOTIFY-FUN NIL)
 				      (LOC (NCONS EXP)))
+  (IF (NULL GRIND-WIDTH)
+      (SETQ GRIND-WIDTH (GRIND-WIDTH-OF-STREAM GRIND-REAL-IO)))
   (AND TERPRI-P (FUNCALL GRIND-REAL-IO ':FRESH-LINE))
   (LET ((GRIND-IO (FUNCTION GRIND-PRINT-IO))
 	(GRIND-INDENT 0)
@@ -409,7 +437,19 @@
 	(GRIND-VPOS 0))
      (COND ((LISTP EXP)
 	    (GRIND-OPTI-MISER EXP LOC))
-	   (T (GRIND-PRIN1 EXP GRIND-IO LOC)))))
+	   (T (GRIND-ATOM EXP GRIND-IO LOC)))))
+
+;;; Given a stream, try to figure out a good grind-width for it.
+(DEFUN GRIND-WIDTH-OF-STREAM (STREAM)
+    (COND ((MEMQ ':SIZE-IN-CHARACTERS (FUNCALL STREAM ':WHICH-OPERATIONS))
+	   ;; Aha, this stream handles enough messages that we can figure
+	   ;; out a good size.  I suppose there ought to be a new message
+	   ;; just for this purpose, but...  And yes, I know it only works
+	   ;; with fixed-width fonts, but that is inherent in GRIND-WIDTH.
+	   (FUNCALL STREAM ':SIZE-IN-CHARACTERS))
+	  (T
+	   ;; No idea, do the old default thing.  Better than nothing.
+	   95.)))
 
 ;;; Grind Definitions
 
@@ -422,53 +462,74 @@
   (MAPC #'GRIND-1 GRINDEF)			;Grind each function
   '*)						;Return silly result
 
-;Grind the definition of a function
-(DEFUN GRIND-1 (FCN &OPTIONAL (WIDTH 95.)	;Number of characters (should be computed!)
+;;; Grind the definition of a function.
+;;; (See comments at GRIND-TOP-LEVEL re the WIDTH argument.)
+(DEFUN GRIND-1 (FCN &OPTIONAL (WIDTH NIL)
 			      (REAL-IO STANDARD-OUTPUT)
 			      (UNTYO-P NIL)
-	        &AUX EXP TEM)
-  (COND ((AND (SYMBOLP FCN) (BOUNDP FCN))
-	 (GRIND-TOP-LEVEL `(SETQ ,FCN ',(SYMEVAL FCN)) WIDTH REAL-IO UNTYO-P)
-	 (TERPRI REAL-IO)))
-  (COND ((FDEFINEDP FCN)
-	 (SETQ EXP (FDEFINITION FCN))
-         (AND (OR (TYPEP EXP ':COMPILED-FUNCTION)
-		  (AND (LISTP EXP)
-		       (EQ (CAR EXP) 'MACRO)
-		       (TYPEP (CDR EXP) ':COMPILED-FUNCTION)))
-	      (SETQ TEM (AND (SYMBOLP FCN) (GET FCN ':PREVIOUS-EXPR-DEFINITION)))
-	      (PROGN (SETQ EXP TEM)
-		     (PRINC ";Compiled" REAL-IO)  ;COMMENT
-		     (TERPRI REAL-IO)))
-	 (AND (LISTP EXP)
-              (EQ (CAR EXP) 'NAMED-LAMBDA)
-	      (NOT (ATOM (CADR EXP)))
-              (SETQ TEM (ASSQ 'TRACE (CDADR EXP)))
-              (PROGN
-                (SETQ EXP (FDEFINITION (CADR TEM)))
-                (FORMAT REAL-IO ";Traced~%")))
-	 (GRIND-TOP-LEVEL (COND ((NLISTP EXP)
-				 `(FDEFINE ',FCN ',EXP))
-				((EQ (CAR EXP) 'MACRO)
-				 `(MACRO ,FCN . ,(GRIND-FLUSH-LAMBDA-HEAD (CDR EXP))))
-				((EQ (CAR EXP) 'SUBST)
-				 `(DEFSUBST ,FCN . ,(CDR EXP)))
-                                ((NOT (MEMQ (CAR EXP) '(LAMBDA NAMED-LAMBDA)))
-				 `(FDEFINE ',FCN ',EXP))
-				((AND (LISTP FCN) (EQ (CAR FCN) ':METHOD))
-                                 (SETQ TEM (GRIND-FLUSH-LAMBDA-HEAD EXP))
-                                 (SETQ TEM (CONS (CDAR TEM) (CDR TEM))) ;Remove OPERATION arg
-                                 `(DEFMETHOD ,(CDR FCN) . ,TEM))
-                                (T
-				 `(DEFUN ,FCN . ,(GRIND-FLUSH-LAMBDA-HEAD EXP))))
-			  WIDTH
-			  REAL-IO
-			  UNTYO-P)
-	 (TERPRI REAL-IO))))
+	        &AUX EXP EXP1 TEM GRIND-RENAMING-ALIST)
+  (IF (NULL WIDTH)
+      (SETQ WIDTH (GRIND-WIDTH-OF-STREAM REAL-IO)))
+  (PROG GRIND-1 ()
+	(COND ((AND (SYMBOLP FCN) (BOUNDP FCN))
+	       (GRIND-TOP-LEVEL `(SETQ ,FCN ',(SYMEVAL FCN)) WIDTH REAL-IO UNTYO-P)
+	       (TERPRI REAL-IO)))
+	(OR (FDEFINEDP FCN) (RETURN NIL))
+	(SETQ EXP (FDEFINITION FCN))
+	(DO () (())
+	  (SETQ EXP1 EXP)
+	  (AND (LISTP EXP) (EQ (CAR EXP) 'MACRO)
+	       (SETQ EXP1 (CDR EXP)))
+	  (OR (AND (NOT (SYMBOLP EXP1))
+		   (SETQ TEM (ASSQ 'SI:ENCAPSULATED-DEFINITION
+				   (FUNCTION-DEBUGGING-INFO EXP1))))
+	      (RETURN NIL))
+	  (FUNCALL (GET (CADDR TEM) 'ENCAPSULATION-GRIND-FUNCTION)
+		   FCN EXP1 WIDTH REAL-IO UNTYO-P)
+	  (AND (EQ (CADDR TEM) 'RENAME-WITHIN)
+	       (SETQ GRIND-RENAMING-ALIST
+		     (CADR (ASSQ 'RENAMINGS (FUNCTION-DEBUGGING-INFO EXP1)))))
+	  (OR (FDEFINEDP (CADR TEM)) (RETURN-FROM GRIND-1 NIL))
+	  (SETQ EXP (FDEFINITION (CADR TEM))))
+	(AND (OR (TYPEP EXP ':COMPILED-FUNCTION)
+		 (AND (LISTP EXP)
+		      (EQ (CAR EXP) 'MACRO)
+		      (TYPEP (CDR EXP) ':COMPILED-FUNCTION)))
+	     (SETQ TEM (AND (SYMBOLP FCN) (GET FCN ':PREVIOUS-EXPR-DEFINITION)))
+	     (PROGN (SETQ EXP TEM)
+		    (PRINC ";Compiled" REAL-IO)	;COMMENT
+		    (TERPRI REAL-IO)))
+        (AND (LISTP FCN) (EQ (CAR FCN) ':WITHIN)
+	     (EQ EXP (CADDR FCN))
+	     (RETURN NIL))
+	(GRIND-TOP-LEVEL (COND ((NLISTP EXP)
+				`(DEFF ,FCN ',EXP))
+			       ((EQ (CAR EXP) 'MACRO)
+				(COND ((TYPEP (CDR EXP) ':COMPILED-FUNCTION)
+				       `(DEFF ,FCN ',EXP))
+				      (T `(MACRO ,FCN
+						 . ,(GRIND-FLUSH-LAMBDA-HEAD (CDR EXP))))))
+			       ((OR (EQ (CAR EXP) 'SUBST) (EQ (CAR EXP) 'NAMED-SUBST))
+				`(DEFSUBST ,FCN . ,(GRIND-FLUSH-LAMBDA-HEAD EXP)))
+			       ((NOT (MEMQ (CAR EXP) '(LAMBDA NAMED-LAMBDA)))
+				`(FDEFINE ',FCN ',EXP))
+			       ((AND (LISTP FCN) (EQ (CAR FCN) ':METHOD))
+				(SETQ TEM (GRIND-FLUSH-LAMBDA-HEAD EXP))
+				(SETQ TEM (CONS (CDAR TEM) (CDR TEM)))	;Remove OPERATION arg
+				`(DEFMETHOD ,(CDR FCN) . ,TEM))
+			       (T
+				`(DEFUN ,FCN . ,(GRIND-FLUSH-LAMBDA-HEAD EXP))))
+			 WIDTH
+			 REAL-IO
+			 UNTYO-P)
+	 (TERPRI REAL-IO)
+	 ))
 
 (DEFUN GRIND-FLUSH-LAMBDA-HEAD (LAMBDA-EXP)
     (COND ((ATOM LAMBDA-EXP) LAMBDA-EXP)
-	  ((EQ (CAR LAMBDA-EXP) 'NAMED-LAMBDA) (CDDR LAMBDA-EXP))
+	  ((OR (EQ (CAR LAMBDA-EXP) 'NAMED-LAMBDA)
+	       (EQ (CAR LAMBDA-EXP) 'NAMED-SUBST))
+	   (CDDR LAMBDA-EXP))
 	  (T (CDR LAMBDA-EXP))))
 
 ;;; Grind Macros
@@ -488,21 +549,37 @@
 (DEFUN GRIND-LAMBDA (EXP LOC)
   (GRIND-DEF-FORM EXP LOC 2))
 
+(DEFUN GRIND-NAMED-LAMBDA (EXP LOC)
+  (GRIND-DEF-FORM EXP LOC 3))
+
 ;DEFUN either craps out and uses miser form, or puts fcn and lambda list
 ;on the first line and the rest aligned under the U
 ;Second arg to GRIND-DEF-FORM is number of items on the first line.
 ;The last one is ground as a block.
 (DEFUN GRIND-DEF-FORM (EXP LOC N &OPTIONAL (FORM (FUNCTION GRIND-FORM)))
+  ;; Make a prepass over the list and make sure it looks like a form (i.e. not dotted,
+  ;; and long enough)
+  (LOOP FOR LS = EXP THEN (CDR LS)
+	AND I FROM 0
+	WHEN (AND (ATOM LS) (OR (< I N) LS))
+	DO (*THROW 'GRIND-MACRO-FAILED 'NOT-A-FORM)
+	WHEN (NULL LS)
+	DO (RETURN))
   (GTYO #/( LOC)
-  (DO I N (1- I) (= I 1)
+  (DOTIMES (I (1- N))
     (GRIND-QUOTED (GRIND-LINEAR-FORM (CAR EXP) (LOCF (CAR EXP))))
     (GTYO #\SP)
     (SETQ LOC (LOCF (CDR EXP)))
     (SETQ EXP (CDR EXP)))
-  (GRIND-QUOTED (GRIND-AS-BLOCK (CAR EXP) (LOCF (CAR EXP))))
-  (GRIND-TERPRI)
-  (DOTIMES (I 4) (GTYO #\SP))
-  (GIND (GRIND-REST-OF-LIST (CDR EXP) (LOCF (CDR EXP)) FORM)))
+  (IF (CAR EXP)
+      (GRIND-QUOTED (GRIND-AS-BLOCK (CAR EXP) (LOCF (CAR EXP))))
+      (GTYO #/( (LOCF (CAR EXP)))
+      (GTYO #/) T))
+  (COND ((CDR EXP)
+	 (GRIND-TERPRI)
+	 (DOTIMES (I 4) (GTYO #\SP))
+	 (GIND (GRIND-REST-OF-LIST (CDR EXP) (LOCF (CDR EXP)) FORM)))
+	(T (GTYO #/) T))))
 
 ;;; BLOCK FORM: As many frobs per line as will fit;
 ;;;  and don't undisplace DISPLACED in them, since they aren't forms, just lists.
@@ -510,7 +587,7 @@
 ;;; because this function is used for printing the body of a backquote.
 (DEFUN GRIND-AS-BLOCK (EXP LOC &AUX (GRIND-DISPLACED GRIND-DUMMY-DISPLACED))
    (COND ((NLISTP EXP)
-	  (GRIND-PRIN1 EXP GRIND-IO LOC))
+	  (GRIND-ATOM EXP GRIND-IO LOC))
 	 (T (GTYO #/( LOC)
 	    (GIND (DO ((X EXP (CDR X))
 		       (LOC LOC (LOCF (CDR X)))
@@ -550,7 +627,7 @@
 ;;; PROG form is similar, but with exdented tags
 (DEFUN GRIND-PROG (EXP LOC)
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GTYO #\SP)
   (GRIND-AS-BLOCK (CADR EXP) (LOCF (CADR EXP)))
   (GRIND-TERPRI)
@@ -563,7 +640,7 @@
 	    ((NLISTP X)
 	     (GRIND-DOTTED-CDR X LOC))
 	  (COND ((ATOM (CAR X))			;Tag
-		 (GRIND-PRIN1 (CAR X) GRIND-IO (LOCF (CAR X)))
+		 (GRIND-ATOM (CAR X) GRIND-IO (LOCF (CAR X)))
 		 (OR (< GRIND-HPOS INDENT)	;Put next thing on same line if it fits
 		     (NLISTP (CDR X))
 		     (GRIND-TERPRI)))
@@ -579,20 +656,20 @@
 (DEFUN GRIND-DO (EXP LOC)
   (GRIND-CHECK-DO EXP)
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GRIND-REST-OF-DO EXP LOC))
 
 (DEFUN GRIND-DO-NAMED (EXP LOC)
   (GRIND-CHECK-DO (CDR EXP))
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GTYO #\SP)
-  (GRIND-PRIN1 (CADR EXP) GRIND-IO LOC)
+  (GRIND-ATOM (CADR EXP) GRIND-IO LOC)
   (GRIND-REST-OF-DO (CDR EXP) (LOCF (CDR EXP))))
 
 (DEFUN GRIND-CHECK-DO (EXP)
   (AND (< (LENGTH EXP) 3)
-       (*THROW 'GRIND-MACRO-FAILED T)))
+       (*THROW 'GRIND-MACRO-FAILED 'NOT-A-FORM)))
 
 (DEFUN GRIND-REST-OF-DO (EXP LOC)
   (GTYO #\SP)
@@ -620,14 +697,14 @@
   (GRIND-REST-OF-PROG EXP LOC (+ GRIND-INDENT 2)))
 
 (DEFUN GRIND-DO-VAR (EXP LOC)
-    (COND ((ATOM EXP) (GRIND-PRIN1 EXP GRIND-IO LOC))
+    (COND ((ATOM EXP) (GRIND-ATOM EXP GRIND-IO LOC))
 	  ((GRIND-TRY (FUNCTION GRIND-LINEAR-TAIL) EXP LOC))	;If linear form works, use it
           (T (GTYO #/( LOC)
 	     (GRIND-STANDARD-FORM-1 EXP LOC))))
 
 (DEFUN GRIND-LET (EXP LOC)
   (GIND (GTYO #/( LOC)
-	(GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+	(GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
 	(GTYO #\SP)
 	(GIND (GRIND-VERTICAL-FORM (CADR EXP) (LOCF (CADR EXP)) (FUNCTION GRIND-DO-VAR)))
 	(GRIND-TERPRI)
@@ -643,13 +720,13 @@
 
 (DEFUN GRIND-COND (EXP LOC)
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GTYO #\SP)
   (GRIND-REST-OF-LIST (CDR EXP) (LOCF (CDR EXP)) (FUNCTION GRIND-COND-CLAUSE)))
 
 (DEFUN GRIND-COND-CLAUSE (EXP LOC)
   (COND ((NLISTP EXP)
-	 (GRIND-PRIN1 EXP GRIND-IO LOC))
+	 (GRIND-ATOM EXP GRIND-IO LOC))
 	((AND (LISTP (CDR EXP))
 	      (NULL (CDDR EXP))
 	      (OR (EQ (CAR EXP) 'T)
@@ -662,7 +739,7 @@
 ;;; is analagous to the rule for COND clauses.
 (DEFUN GRIND-AND (EXP LOC)
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GTYO #\SP)
   (GIND (COND ((AND (CDR EXP)
 		    (CDDR EXP)
@@ -683,7 +760,7 @@
 (DEFUN GRIND-TRACE (EXP LOC)
   (COND ((GRIND-TRY (FUNCTION GRIND-LINEAR-FORM) EXP LOC))	;Fits on one line, OK
 	(T (GTYO #/( LOC)					;Doesn't fit
-	   (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+	   (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
 	   (GTYO #\SP)
 	   (GIND (DO ((L (CDR EXP) (CDR L))
 		      (CLAUSE)
@@ -692,7 +769,7 @@
 		      (GTYO #/) T))
 		   (SETQ CLAUSE (CAR L)
 			 LOC (LOCF (CAR L)))
-		   (COND ((ATOM CLAUSE) (GRIND-PRIN1 CLAUSE GRIND-IO LOC))
+		   (COND ((ATOM CLAUSE) (GRIND-ATOM CLAUSE GRIND-IO LOC))
 			 ((GRIND-TRY (FUNCTION GRIND-LINEAR-FORM) CLAUSE LOC)) ;Try to use 1 line
 			 (T (GTYO #/( LOC)
 			    (COND ((NEQ (CAR CLAUSE) ':FUNCTION)
@@ -702,7 +779,7 @@
 				   (SETQ CLAUSE (CDR CLAUSE))
 				   (GTYO #\SP)))
 			    (GIND (DO X CLAUSE (CDR X) (NULL X)	;Print each grind option
-				    (GRIND-PRIN1 (CAR X) GRIND-IO LOC)	;First name of option
+				    (GRIND-ATOM (CAR X) GRIND-IO LOC)	;First name of option
 				    (COND ((EQ (CAR X) ':STEP))	;STEP takes no arg
 					  ((MEMQ (CAR X) '(:BOTH :ARG :VALUE NIL))
 					   (GTYO #\SP)
@@ -721,13 +798,14 @@
 ;;; for now just craps out through normal miser mode mechanism.
 (DEFUN GRIND-SETQ (EXP LOC)
   (GTYO #/( LOC)
-  (GRIND-PRIN1 (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
+  (GRIND-ATOM (CAR EXP) GRIND-IO (LOCF (CAR EXP)))
   (GTYO #\SP)
   (GIND (DO X (CDR EXP) (CDDR X) (NULL X)
 	  (COND ((GRIND-FORM-VER (CAR X) (LOCF (CAR X)))
 		 (GRIND-TERPRI))
 		(T (GTYO #\SP)))
-	  (GRIND-FORM (CADR X) (LOCF (CADR X)))
+	  (IF (NOT (NULL (CDR X))) ;don't bust totally on odd-length SETQ bodies.
+	      (GRIND-FORM (CADR X) (LOCF (CADR X))))
 	  (AND (CDDR X) (GRIND-TERPRI))))
   (GTYO #/) T))
 

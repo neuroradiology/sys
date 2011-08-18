@@ -1,4 +1,4 @@
-;;; Definitions for the -*-LISP-*- machine reader
+;;; Definitions for the -*-Package:SYSTEM-INTERNALS; Mode:LISP-*- machine reader
 
 ;;; WARNING! if you change anything in this file be sure and look in
 ;;; LMIO;RTCMAC > as well. Not only might you have to recompile READ and PRINT,
@@ -86,7 +86,8 @@
 		 (:TAB . 211)
 		 (:LINE . 212) (:LF . 212) (:LINEFEED . 212)
 		 (:DELETE . 213) (:VT . 213)
-		 (:CLEAR-SCREEN . 214) (:FORM . 214) (:FF . 214)
+		 ;; The keyboard says "CLEAR SCREEN", but it should type out as "PAGE".
+		 (:PAGE . 214) (:CLEAR-SCREEN . 214) (:FORM . 214) (:FF . 214)
 		 (:RETURN . 215) (:CR . 215) (:NEWLINE . 215)
 		 (:QUOTE . 216)
 		 (:HOLD-OUTPUT . 217)
@@ -95,7 +96,7 @@
 		 (:RESUME . 222)
 		 (:STATUS . 223)
 		 (:END . 224)
-		 (:I . 225) (:II . 226) (:III . 227) (:IV . 230)
+		 (:ROMAN-I . 225) (:ROMAN-II . 226) (:ROMAN-III . 227) (:ROMAN-IV . 230)
 		 (:HAND-UP . 231) (:HAND-DOWN . 232)
 		 (:HAND-LEFT . 233) (:HAND-RIGHT . 234)
 		 (:SYSTEM . 235) (:NETWORK . 236)

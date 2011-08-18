@@ -166,28 +166,48 @@
     (DTP-ENTITY T)
     (DTP-CLOSURE T)
     (DTP-FEF-POINTER T)
+    (DTP-SELECT-METHOD T)
     (DTP-SYMBOL (GET X 'IO-STREAM-P))
     (T NIL)))
 
 ;;; Given the 2 arguments to READ (or TYI or READCH or TYIPEEK or READLINE)
-;;; this returns the input stream and the eof option.  Note that
-;;; the first arg would rather be the stream than the eof option.
+;;; in the form of a REST argument this returns the input stream and the eof option.
+;;; Note that the first arg would rather be the stream than the eof option.
 ;;; This is set up for Maclisp compatibility.
 ;;; HOWEVER, if the second argument is NIL or unsupplied, the first is
-;;; assumed to be a stream, which is not compatible with Maclisp but more winning
-(DEFUN DECODE-READ-ARGS (ARG1 ARG2)
-  (PROG NIL  ;to return multiple values
-    (COND ((OR (EQ ARG1 NIL) (EQ ARG1 T) (IO-STREAM-P ARG1))
-	   (RETURN (COND ((EQ ARG1 NIL) STANDARD-INPUT)
-			 ((EQ ARG1 T) TERMINAL-IO)
-			 (T ARG1))
-		   ARG2))
-	  ((OR (EQ ARG2 T) (IO-STREAM-P ARG2))
-	   (RETURN (COND ((EQ ARG2 NIL) STANDARD-INPUT)
-			 ((EQ ARG2 T) TERMINAL-IO)
-			 (T ARG2))
-		   ARG1))
-	  (T (RETURN ARG1 ARG2))))) ;Neither one seems to be a stream, assume arg1
+;;; assumed to be a stream if that is plausible,
+;;; which is not compatible with Maclisp but more winning.
+;;; If the user didn't supply an eof-option, the second value returned will
+;;; be the symbol NO-EOF-OPTION.
+(DEFUN DECODE-READ-ARGS (ARG-LIST)
+  (SELECTQ (LENGTH ARG-LIST)
+    (0 (VALUES STANDARD-INPUT 'NO-EOF-OPTION))
+    (1 (LET ((ARG1 (FIRST ARG-LIST)))
+	 (IF (OR (EQ ARG1 NIL) (EQ ARG1 T) (IO-STREAM-P ARG1))
+	     ;; The arg is a plausible stream.
+	     (VALUES (COND ((EQ ARG1 NIL) STANDARD-INPUT)
+			   ((EQ ARG1 T) TERMINAL-IO)
+			   (T ARG1))
+		     'NO-EOF-OPTION)
+	     ;; It is not a stream and must be an EOF option.
+	     (VALUES STANDARD-INPUT
+		     ARG1))))
+    (2 (LET ((ARG1 (FIRST ARG-LIST))
+	     (ARG2 (SECOND ARG-LIST)))
+	 (COND ((OR (EQ ARG1 NIL) (EQ ARG1 T) (IO-STREAM-P ARG1))
+		(VALUES (COND ((EQ ARG1 NIL) STANDARD-INPUT)
+			      ((EQ ARG1 T) TERMINAL-IO)
+			      (T ARG1))
+			ARG2))
+	       ((OR (EQ ARG2 NIL) (EQ ARG2 T) (IO-STREAM-P ARG2))
+		(VALUES (COND ((EQ ARG2 NIL) STANDARD-INPUT)
+			      ((EQ ARG2 T) TERMINAL-IO)
+			      (T ARG2))
+			ARG1))
+	       (T (VALUES ARG1 ARG2)))))
+    (OTHERWISE
+     (FERROR NIL "Too many arguments were given to one of the READ-like functions: ~S"
+	     ARG-LIST))))
 
 ;;; Given the second argument to PRINT (and friends), return
 ;;; a stream, processing for Maclisp compatibility
@@ -204,7 +224,7 @@
   ;; This has to work in the cold-load, where there is no FORMAT, STRING-APPEND, 
   ;; or even GENSYM.
   (LET ((NML (ARRAY-ACTIVE-LENGTH (GET-PNAME STREAM-SYMBOL))))
-    (LET ((PNAME (MAKE-ARRAY P-N-STRING 'ART-STRING (+ NML 11.))))
+    (LET ((PNAME (MAKE-ARRAY (+ NML 11.) ':AREA P-N-STRING ':TYPE 'ART-STRING)))
       (COPY-ARRAY-CONTENTS (GET-PNAME STREAM-SYMBOL) PNAME)
       (COPY-ARRAY-PORTION "-SYN-STREAM" 0 11. PNAME NML (+ NML 11.))
       (LET ((PACKAGE (CAR (PACKAGE-CELL-LOCATION STREAM-SYMBOL)))) ;can't give as arg!
@@ -216,52 +236,62 @@
 	  (PUTPROP SYM T 'IO-STREAM-P)
 	  SYM)))))
 
-(LOCAL-DECLARE ((SPECIAL BROADCAST-STREAM-STREAMS))
 ;This only works for output.
 ;If a value is needed it is always the value returned by the last stream.
-;:WHICH-OPERATIONS is probably the only thing with a meaningful value.
-(DEFUN MAKE-BROADCAST-STREAM (&REST BROADCAST-STREAM-STREAMS)
-  (SETQ BROADCAST-STREAM-STREAMS (COPYLIST BROADCAST-STREAM-STREAMS))
-  (CLOSURE '(BROADCAST-STREAM-STREAMS)
-	   (FUNCTION (LAMBDA (&REST ARGS)
-		       (DO ((L BROADCAST-STREAM-STREAMS (CDR L)))
-			   ((NULL (CDR L))	;Last one gets to return multiple values
-			    (APPLY (CAR L) ARGS))
-			 (APPLY (CAR L) ARGS))))))
-)
+(DEFUN MAKE-BROADCAST-STREAM (&REST STREAMS)
+  (LET-CLOSED ((BROADCAST-STREAM-STREAMS (COPYLIST STREAMS))
+	       (WHICH-OPERATIONS (LOOP WITH WO = (FUNCALL (CAR STREAMS) ':WHICH-OPERATIONS)
+				       WITH COPYP = T
+				       FOR STREAM IN (CDR STREAMS)
+				       DO (LOOP WITH WO2 = (FUNCALL STREAM ':WHICH-OPERATIONS)
+						FOR OP IN WO
+						UNLESS (MEMQ OP WO2)
+						  DO (IF COPYP (SETQ WO (COPYLIST WO)))
+						     (SETQ COPYP NIL)
+						     (SETQ WO (DELQ OP WO)))
+				       FINALLY (RETURN WO))))
+    (FUNCTION (LAMBDA (&REST ARGS)
+		(IF (EQ (CAR ARGS) ':WHICH-OPERATIONS) WHICH-OPERATIONS
+		    (DO ((L BROADCAST-STREAM-STREAMS (CDR L)))
+			((NULL (CDR L))		;Last one gets to return multiple values
+			 (APPLY (CAR L) ARGS))
+		      (APPLY (CAR L) ARGS)))))))
+
 
 (DEFUN STREAM-DEFAULT-HANDLER (FCTN OP ARG1 ARGS &AUX TEM)
-  (PROG () ;For multiple-value return
-    (SELECTQ OP
-        (:LISTEN
-	 (RETURN (COND ((SETQ TEM (FUNCALL FCTN ':TYI NIL))
-			(FUNCALL FCTN ':UNTYI TEM)
-			TEM))))
-	((:CLEAR-OUTPUT :CLEAR-INPUT :FORCE-OUTPUT :FINISH :CLOSE)
-	 (RETURN NIL))
-	(:FRESH-LINE
-	 (FUNCALL FCTN ':TYO #\CR))
-	((:STRING-OUT :LINE-OUT)
-	 (SETQ TEM (STRING ARG1))
-	 (DO ((LEN (COND ((SECOND ARGS))
-			 (T (STRING-LENGTH TEM))))
-	      (I (COND ((FIRST ARGS)) (T 0))
-		 (1+ I)))
-	     ((>= I LEN) NIL)
-	   (FUNCALL FCTN ':TYO (AR-1 TEM I)))
-	 (AND (EQ OP ':LINE-OUT)
-	      (FUNCALL FCTN ':TYO #\CR)))
-	(:LINE-IN
-	 (LET ((BUF (MAKE-ARRAY NIL ART-STRING 100 NIL (COND ((NUMBERP ARG1) ARG1)
-							     (T 1)))))
-	    (STORE-ARRAY-LEADER 0 BUF 0) ;Fill pointer
-	    (RETURN BUF
-		    (DO ((TEM (FUNCALL FCTN ':TYI NIL) (FUNCALL FCTN ':TYI NIL)))
-			((OR (NULL TEM) (= TEM #\CR))
-			 (ADJUST-ARRAY-SIZE BUF (ARRAY-ACTIVE-LENGTH BUF))
-			 (NULL TEM))
-		      (ARRAY-PUSH-EXTEND BUF TEM)))))
-;	(:HANDLE-EXCEPTIONS NIL)
-	(OTHERWISE
-	 (RETURN (FERROR NIL "The stream operation ~S is not supported by ~S"
-			 OP FCTN))))))
+  (SELECTQ OP
+    (:LISTEN
+     (COND ((SETQ TEM (FUNCALL FCTN ':TYI NIL))
+	    (FUNCALL FCTN ':UNTYI TEM)
+	    TEM)))
+    ((:CLEAR-OUTPUT :CLEAR-INPUT :FORCE-OUTPUT :FINISH :CLOSE)
+     NIL)
+    (:FRESH-LINE
+     (FUNCALL FCTN ':TYO #\CR))
+    ((:STRING-OUT :LINE-OUT)
+     (SETQ TEM (STRING ARG1))
+     (DO ((LEN (COND ((SECOND ARGS))
+		     (T (STRING-LENGTH TEM))))
+	  (I (COND ((FIRST ARGS)) (T 0))
+	     (1+ I)))
+	 ((>= I LEN) NIL)
+       (FUNCALL FCTN ':TYO (AR-1 TEM I)))
+     (AND (EQ OP ':LINE-OUT)
+	  (FUNCALL FCTN ':TYO #\CR)))
+    (:LINE-IN
+     (LET ((BUF (MAKE-ARRAY 100 ':TYPE ART-STRING
+			    ':LEADER-LENGTH (IF (NUMBERP ARG1) ARG1 1))))
+       (STORE-ARRAY-LEADER 0 BUF 0)		;Fill pointer
+       (VALUES BUF
+	       (DO ((TEM (FUNCALL FCTN ':TYI NIL) (FUNCALL FCTN ':TYI NIL)))
+		   ((OR (NULL TEM) (= TEM #\CR))
+		    (ADJUST-ARRAY-SIZE BUF (ARRAY-ACTIVE-LENGTH BUF))
+		    (NULL TEM))
+		 (ARRAY-PUSH-EXTEND BUF TEM)))))
+    (:OPERATION-HANDLED-P (MEMQ ARG1 (FUNCALL FCTN ':WHICH-OPERATIONS)))
+    (:SEND-IF-HANDLES
+     (IF (MEMQ ARG1 (FUNCALL FCTN ':WHICH-OPERATIONS))
+	 (LEXPR-FUNCALL FCTN ARG1 ARGS)))
+    (OTHERWISE
+     (FERROR NIL "The stream operation ~S is not supported by ~S"
+	     OP FCTN))))

@@ -1,9 +1,8 @@
-;;-*- Mode: LISP; Package: MICRO-ASSEMBLER -*-
+;;-*- Mode: LISP; Package: MICRO-ASSEMBLER; Lowercase:T -*-
 
 (defun read-ucode (&optional (file "LCADR;UCADR >"))
-  (let ((stream (open file '(in block))))
-     (eval (fread stream))
-     (close stream)))
+  (with-open-file (stream file '(in block))
+    (eval (fread stream))))
 
 ;; Fast, simple reader for reading in ucode
 
@@ -50,9 +49,10 @@
        (return (prog1 (ar-1 special-line-in special-line-in-index)
 		      (setq special-line-in-index (1+ special-line-in-index))))))
 
-(defun fread (&optional (stream nil) (eofval -1) &aux special-stream)
+(defun fread (&rest read-args &aux special-stream eofval)
+   (declare (arglist stream eof-option))
    (multiple-value (special-stream eofval)
-                   (si:decode-read-args stream eofval)) 
+                   (si:decode-read-args read-args)) 
    (cond ((not (boundp 'special-char-type-table))
 	  (setq special-char-type-table (make-array nil 'art-q 216))
 	  (do ch 0 (1+ ch) (= ch 216)			       ;initialize to self

@@ -19,7 +19,9 @@
 (local-declare ((special *unrchf* *tv-stream* *file-stream* *rubout-handler-buffer*))
 (defun make-dribble-stream (*tv-stream* *file-stream*)
   (let ((*unrchf* nil)
-	(*rubout-handler-buffer* (make-array nil 'art-string 100. nil '(0))))
+	(*rubout-handler-buffer* (make-array 100.
+					     ':type 'art-string
+					     ':leader-list '(0))))
     (closure '(*unrchf* *tv-stream* *file-stream* *rubout-handler-buffer*)
 	     'dribble-stream-io)))
 
@@ -52,8 +54,14 @@
        (return-list vals)))
     (:dribble-end
      (close *file-stream*)
-     (and (memq ':get (funcall *file-stream* ':which-operations))
-	  (funcall *file-stream* ':get ':unique-id)))
+     (funcall *file-stream* ':send-if-handles ':truename))
+    (:increment-cursorpos
+     (cond ((eq (caddr args) ':character)
+	    (dotimes (y-increment (cadr args))
+	      (funcall *file-stream* ':tyo #\return))
+	    (dotimes (x-increment (car args))
+	      (funcall *file-stream* ':tyo #\sp))))
+     (lexpr-funcall *tv-stream* op args))
     (otherwise
      (lexpr-funcall *tv-stream* op args))))
 );local-declare

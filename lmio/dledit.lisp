@@ -18,13 +18,26 @@
     (SETQ BAND (COND ((NUMBERP BAND) (FORMAT NIL (COND (MICRO-P "MCR~D") (T "LOD~D")) BAND))
 		     ((STRINGP BAND) (STRING-UPCASE BAND))
 		     (T (GET-PNAME BAND))))
-    (OR (FIND-DISK-PARTITION BAND RQB UNIT)	;Does a READ-DISK-LABEL
-        (FERROR NIL "Partition ~A does not exist" BAND))      
+    (FIND-DISK-PARTITION-FOR-READ BAND RQB UNIT)	;Does a READ-DISK-LABEL
     (PUT-DISK-STRING RQB BAND (COND (MICRO-P 6) (T 7)) 4)
     (WRITE-DISK-LABEL RQB UNIT))
    (RETURN-DISK-RQB RQB))
   (DISPOSE-OF-UNIT UNIT)
   NIL)
+
+;;; Copy the label from unit 0 on this machine to unit 0 of the debuggee machine.
+;;; You may want to use this right after formatting the debuggee's disk pack.
+(DEFUN COPY-DISK-LABEL (&OPTIONAL (FROM-UNIT 0) (TO-UNIT "CC"))
+  (AND (FQUERY FORMAT:YES-OR-NO-P-OPTIONS
+	       "May I smash the label on unit ~D with a copy of the label from unit ~D?"
+	       TO-UNIT FROM-UNIT)
+       (LET ((RQB (GET-DISK-RQB)))
+	 (UNWIND-PROTECT
+	   (PROGN (SETQ FROM-UNIT (DECODE-UNIT-ARGUMENT FROM-UNIT "reading label" T NIL)
+			TO-UNIT (DECODE-UNIT-ARGUMENT TO-UNIT "writing label" T T))
+		  (DISK-READ RQB FROM-UNIT 0)
+		  (DISK-WRITE RQB TO-UNIT 0))
+	   (RETURN-DISK-RQB RQB)))))
 
 (DEFUN PRINT-DISK-LABEL (&OPTIONAL (UNIT 0) (STREAM STANDARD-OUTPUT)
                          &AUX RQB)
@@ -72,7 +85,7 @@
   (PRINC " heads, " STREAM)
   (LE-OUT 'N-BLOCKS-PER-TRACK (GET-DISK-FIXNUM RQB 4) STREAM CONS-UP-LE-STRUCTURE-P)
   (PRINC " blocks//track, " STREAM)
-  (FORMAT T "~D" (GET-DISK-FIXNUM RQB 5))
+  (FORMAT STREAM "~D" (GET-DISK-FIXNUM RQB 5))
   (PRINC " blocks//cylinder" STREAM)
   (TERPRI STREAM)
   (PRINC "Current microload = " STREAM)
@@ -149,17 +162,8 @@
 		       (LDB 3404 DA) (LDB 2014 DA) (LDB 1010 DA) (LDB 0010 DA))
 	     (FORMAT T "Memory address: ~O (type bits ~O)~%"
 		       (LDB 0026 MA) (LDB 2602 MA))
-	     (FORMAT T "Status: ~O" STS)
-	     (DO ((PPSS 2701 (- PPSS 100))
-		  (L '("Internal-parity" "Read-compare" "CCW-cycle" "NXM" "Mem-parity"
-		       "Header-Compare" "Header-ECC" "ECC-Hard" "ECC-Soft"
-		       "Overrun" "Transfer-Aborted (or wr. ovr.)" "Start-Block-Error"
-		       "Timeout" "Seek-Error" "Off-Line" "Off-Cylinder"
-		       "Read-Only" "Fault" "No-Select" "Multiple-Select"
-		       "Interrupt" "Sel-Unit-Attention" "Any-Unit-Attention" "Idle")
-		     (CDR L)))
-		 ((MINUSP PPSS) (TERPRI))
-	       (AND (LDB-TEST PPSS STS) (FORMAT T "~<~%~8X~:;  ~A~>" (CAR L)))))))))
+	     (FORMAT T "Status: ~O  ~A~%"
+		       STS (DECODE-DISK-STATUS (LDB 0020 STS) (LDB 2020 STS))))))))
 
 ;;; Label editor
 
@@ -169,7 +173,7 @@
 (DEFUN CHANGE-PARTITION-MAP (RQB NEW-N-WORDS)
   (LET ((OLD-N-WORDS (GET-DISK-FIXNUM RQB 201))
 	(N-PARTITIONS (GET-DISK-FIXNUM RQB 200)))
-    (LET ((SAVE (MAKE-ARRAY NIL 'ART-Q (LIST N-PARTITIONS (MAX OLD-N-WORDS NEW-N-WORDS)))))
+    (LET ((SAVE (MAKE-ARRAY (LIST N-PARTITIONS (MAX OLD-N-WORDS NEW-N-WORDS)))))
       ;; Fill with zeros
       (DOTIMES (I N-PARTITIONS)
 	(DOTIMES (J (MAX OLD-N-WORDS NEW-N-WORDS))
@@ -192,20 +196,25 @@
 ;;;   Number of blocks per track.
 ;;;   Partition list: name, size (- blocks, + cylinders at cyl bndry)
 ;;;   First partition starts at block 17. (first track reserved)
-(DECLARE (SPECIAL PACK-TYPES))
-(SETQ PACK-TYPES
-      '((|Trident T-80| 815. 5. 17.
-		((MCR1 -224) (MCR2 -224) (PAGE 300.) (FILE 61.)
-		 (LOD1 150.) (LOD2 150.) (LOD3 150.)))
-	(|Trident T-300| 815. 19. 17.
-		((MCR1 -224) (MCR2 -224) (PAGE 202.) ;Full address space
-		 (FILE 312.)
-		 (LOD1 75.) (LOD2 75.) (LOD3 75.) (LOD4 75.)))
-	;; Unfortunately there is not quite room enough for 3 partitions
-	;; adequate to hold an initial load.  So we can only have a PAGE
-	;; partition and a single save band.
-	(|Marksman M-20| 210. 4. 21.
-		((MCR1 -224) (MCR2 -224) (LOD1 80.) (PAGE 126.)))))
+(DEFVAR PACK-TYPES
+	'((|Trident T-80| 815. 5. 17.
+			  ((MCR1 -224) (MCR2 -224)
+			   (PAGE 340.)
+			   (LOD1 200.) (LOD2 200.)
+			   (FILE 29.)))
+	  (|Trident T-300| 815. 19. 17.
+			   ((MCR1 -224) (MCR2 -224) (MCR3 -224) (MCR4 -224)
+			    (MCR5 -224) (MCR6 -224) (MCR7 -224) (MCR8 -224)
+			    (PAGE 202.)	;Full address space
+			    (LOD1 75.) (LOD2 75.) (LOD3 75.) (LOD4 75.)
+			    (LOD5 75.) (LOD6 75.) (LOD7 75.) (LOD8 75.)
+			    (FILE 9.)))
+	  ;; Unfortunately there is not quite room enough for 3 partitions
+	  ;; adequate to hold an initial load.  So we can only have a PAGE
+	  ;; partition and a single save band.
+;	  (|Marksman M-20| 210. 4. 21.
+;			   ((MCR1 -224) (MCR2 -224) (LOD1 80.) (PAGE 126.)))
+	  ))
 
 (DEFUN LE-INITIALIZE-LABEL (RQB PACK-TYPE)
   (PUT-DISK-STRING RQB "LABL" 0 4)		;Checkword
@@ -247,6 +256,7 @@
   (PRINT-DISK-LABEL-FROM-RQB STANDARD-OUTPUT RQB T)
   (SETQ LE-STRUCTURE (NREVERSE LE-STRUCTURE))
   (FORMAT T "~%~%~%")
+  (SETQ LE-ITEM-NUMBER (MIN LE-ITEM-NUMBER (1- (LENGTH LE-STRUCTURE))))
   (LE-UNDERSCORE))
 
 ;; Underscore the selected item
@@ -259,7 +269,7 @@
 				  (- (TV:SHEET-LINE-HEIGHT TERMINAL-IO) 2))
 		   TV:ALU-XOR))))
 
-(DEFUN EDIT-DISK-LABEL (LE-UNIT &OPTIONAL (INIT-P NIL) ;If t, dont try to save page 1
+(DEFUN EDIT-DISK-LABEL (&OPTIONAL (LE-UNIT 0) (INIT-P NIL) ;If t, dont try to save page 1
    ; since current label is garbage.  It can bomb setting blocks-per-track to 0, etc.
 				&AUX LE-RQB LE-STRUCTURE (LE-ITEM-NUMBER 0) CH COM)
   (SETQ LE-UNIT (DECODE-UNIT-ARGUMENT LE-UNIT "editing label" INIT-P))
@@ -325,8 +335,11 @@
   (LE-DISPLAY-LABEL LE-RQB LE-UNIT))
 
 (DEFUN LE-COM-CONTROL-W ()	;Write out the label
-  (AND (Y-OR-N-P "Do you want to write out this label?")
-       (WRITE-DISK-LABEL LE-RQB LE-UNIT)))
+  (COND ((Y-OR-N-P "Do you want to write out this label? (Y or N) ")
+	 (WRITE-DISK-LABEL LE-RQB LE-UNIT)
+	 (FORMAT T "~&Written.~%"))
+	(T
+	 (FORMAT T "~&Not written.~%"))))
 
 (DEFUN LE-COM-CONTROL-I ()	;Initialize
   (FORMAT T "Pack types are:~%")
@@ -336,14 +349,12 @@
     (FORMAT T " ~S  ~A~%" N (CAAR L)))
   (FORMAT T "Enter desired number: ")
   (LET ((TEM (NTH (READ) PACK-TYPES)))
-    (TYI)
     (AND TEM (LE-INITIALIZE-LABEL LE-RQB TEM)))
   (LE-DISPLAY-LABEL LE-RQB LE-UNIT))
 
 (DEFUN LE-COM-CONTROL-K ()	;Delete this partition
   (LET ((PLOC (LE-CURRENT-PARTITION)))
-    (FORMAT T "~&Delete the ~S partition? " (GET-DISK-STRING LE-RQB PLOC 4))
-    (COND ((Y-OR-N-P)
+    (COND ((FQUERY NIL "Delete the ~S partition? " (GET-DISK-STRING LE-RQB PLOC 4))
 	   (LET ((NPARTS (GET-DISK-FIXNUM LE-RQB 200))
 		 (NWORDS (GET-DISK-FIXNUM LE-RQB 201))
 		 (BUF (RQB-BUFFER LE-RQB)))
@@ -360,7 +371,7 @@
       (COND ((> (+ (* NPARTS NWORDS) 202) 400)
 	     (FORMAT T "~&Partition table full"))
 	    (T (PUT-DISK-FIXNUM LE-RQB NPARTS 200)
-	       (LET ((FOO (MAKE-ARRAY NIL 'ART-16B 1000)))
+	       (LET ((FOO (MAKE-ARRAY 1000 ':TYPE 'ART-16B)))
 		 (COPY-ARRAY-PORTION BUF (* PLOC 2) (ARRAY-LENGTH BUF) FOO (* NWORDS 2) 1000)
 		 (COPY-ARRAY-PORTION FOO 0 1000 BUF (* PLOC 2) (ARRAY-LENGTH BUF))
 		 (PUT-DISK-STRING LE-RQB "????" PLOC 4)
@@ -434,8 +445,8 @@
 (DEFUN LE-COM-HELP () (LE-COM-?))
 (DEFUN LE-COM-? ()		;Give help
   (PRINC "Commands are:
-B back, F forward, P up, N down
-R read label from disk, W write label to disk, I initialize the label
-E edit selected item
-O add partition, K delete partition, S sort partitions
+C-B back, C-F forward, C-P up, C-N down
+C-R read label from disk, C-W write label to disk, C-I initialize the label
+C-E edit selected item
+C-O add partition, C-K delete partition, C-S sort partitions
 <END> exit"))

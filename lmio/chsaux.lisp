@@ -2,15 +2,8 @@
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;; Very high-level CHAOSnet functions.
-;; The NCP and low level functions in LMIO;CHAOS
+;; The NCP and low level functions in LMIO;CHSNCP
 
-(DECLARE (SPECIAL
-	HOST-ALIST		;ALIST of host names and numbers for symbolic addressing
-	KNOWN-NAME-ALIST        ;ALIST of host numbers and names for sepcially known machines
-        FINGER-ALIST		;ALIST of host numbers and finger strings (for Supdup)
-	CONSOLE-LOCATION-ALIST	;ALIST of host numbers and console location data
-))
-
 ;; This does a full "ICP": it sends an RFC, waits for a reply or timeout,
 ;; and returns a string to get an error, or else the CONN to indicate that
 ;; the foreign host sent an OPN and we are connected.
@@ -40,14 +33,12 @@
 
 ;; Takes anything anyone might use as a ChaosNet address, and tries to return
 ;; the corresponding host number.  If it fails, returns NIL.
-(DEFUN ADDRESS-PARSE (ADDRESS)
-    (COND ((FIXP ADDRESS) ADDRESS)
-	  ((SYMBOLP ADDRESS)
-	   (ADDRESS-PARSE (GET-PNAME ADDRESS)))
-	  ((STRING ADDRESS)
-	   (CDR (ASSOC (STRING-UPCASE (STRING-TRIM '(#\SP #/: #\TAB) ADDRESS))
-		       HOST-ALIST)))
-	  (T NIL)))
+(DEFUN ADDRESS-PARSE (ADDRESS &AUX HOST)
+  (COND ((FIXP ADDRESS) ADDRESS)
+	((AND (SETQ HOST (SI:PARSE-HOST ADDRESS T))
+	      (FUNCALL HOST ':CHAOS-ADDRESS)))
+	((AND (STRINGP ADDRESS)
+	      (PARSE-NUMBER ADDRESS 0 NIL 8)))))
 
 ;; This is used to perform a "simple connection".  An RFC is sent to the
 ;; specified address, expecting an ANS.  Returns a string if there was an
@@ -116,38 +107,63 @@
  
     CONN)
 
-
+;Open up a connection for use with foreign protocols
+(DEFUN OPEN-FOREIGN-CONNECTION (FOREIGN-HOST FOREIGN-INDEX
+				&OPTIONAL (PKT-ALLOCATION 10.) DISTINGUISHED-PORT
+				&AUX CONN)
+    (CHECK-ARG FOREIGN-HOST
+	       (AND (NUMBERP FOREIGN-HOST) (>= FOREIGN-HOST 0) (<= FOREIGN-HOST 177777))
+	       "an address")
+    (SETQ CONN (MAKE-CONNECTION))
+    (SETF (LOCAL-WINDOW-SIZE CONN) (MAX 1 (MIN PKT-ALLOCATION MAXIMUM-WINDOW-SIZE)))
+    (SETF (FOREIGN-ADDRESS CONN) FOREIGN-HOST)
+    (SETF (FOREIGN-INDEX-NUM CONN) FOREIGN-INDEX)
+    (SETF (STATE CONN) 'FOREIGN-STATE)
+    (COND (DISTINGUISHED-PORT
+	   (ASET NIL INDEX-CONN (LDB MAXIMUM-INDEX-LOG-2-MINUS-1 (LOCAL-INDEX-NUM CONN)))
+	   (SETF (LOCAL-INDEX-NUM CONN) DISTINGUISHED-PORT)
+	   (PUSH (CONS DISTINGUISHED-PORT CONN) DISTINGUISHED-PORT-CONN-TABLE)))
+    CONN)
+
 ;;; SERVER FUNCTIONS: Functions used by the server side of a connection only.
 
-(DEFUN LISTEN (CONTACT-NAME &OPTIONAL (WINDOW-SIZE DEFAULT-WINDOW-SIZE)
-		     &AUX CONN PREV RFC LENGTH)
+(DEFUN LISTEN (CONTACT-NAME &OPTIONAL (WINDOW-SIZE DEFAULT-WINDOW-SIZE) (WAIT-FOR-RFC T)
+		     &AUX CONN)
+    "Listen for an incoming RFC to CONTACT-NAME.  If WAIT-FOR-RFC is NIL, doesn't
+     wait for the RFC to arrive, just sets up a queue.  Returns the CONN, ready
+     to have ACCEPT, REJECT, ANSWER, or FORWARD done to it."
     (CHECK-ARG CONTACT-NAME STRINGP "a string")
     (CHECK-ARG WINDOW-SIZE NUMBERP "a number")
     (SETQ CONN (MAKE-CONNECTION))
     (SETF (LOCAL-WINDOW-SIZE CONN) (MAX 1 (MIN WINDOW-SIZE MAXIMUM-WINDOW-SIZE)))
+    (PROG LISTEN ()
+      (WITHOUT-INTERRUPTS			;First try to pick up a pending RFC
+	(DO ((PKT PENDING-RFC-PKTS (PKT-LINK PKT))
+	     (PREV NIL PKT))
+	    ((NULL PKT))
+	  (COND ((STRING-EQUAL (CONTACT-NAME-FROM-RFC PKT) CONTACT-NAME)
+		 (COND ((NULL PREV) (SETQ PENDING-RFC-PKTS (PKT-LINK PKT)))
+		       (T (SETF (PKT-LINK PREV) (PKT-LINK PKT))))
+		 (RFC-MEETS-LSN CONN PKT)
+		 (RETURN-FROM LISTEN CONN))))
+	(SETF (STATE CONN) 'LISTENING-STATE)	;No RFC, let listen pend
+	(PUSH (CONS CONTACT-NAME CONN) PENDING-LISTENS))
+      (COND (WAIT-FOR-RFC
+	     (PROCESS-WAIT "Net Listen"
+			   #'(LAMBDA (CONN) (NEQ (STATE CONN) 'LISTENING-STATE))
+			   CONN)
+	     (OR (EQ (STATE CONN) 'RFC-RECEIVED-STATE)
+		 (FERROR NIL "Listening connection ~S entered bad state ~S"
+			     CONN (STATE CONN)))))
+      (RETURN CONN)))
 
-    (SETQ LENGTH (ARRAY-ACTIVE-LENGTH CONTACT-NAME))
-    (SETQ PREV NIL)
-    (WITHOUT-INTERRUPTS
-      (SETQ RFC (DO PKT PENDING-RFC-PKTS (PKT-LINK PKT) (NULL PKT)
-		    (AND (STRING-EQUAL (CONTACT-NAME-FROM-RFC PKT) CONTACT-NAME 0 0 LENGTH)
-			 (RETURN PKT))
-		    (SETQ PREV PKT)))
-      (COND (RFC				;There is a pending RFC: you win!
-	      (COND ((NULL PREV) (SETQ PENDING-RFC-PKTS (PKT-LINK RFC)))
-		    (T (SETF (PKT-LINK PREV) (PKT-LINK RFC))))
-	      (RFC-MEETS-LSN CONN RFC)
-	      T)
-	    (T				;Nope, let it pend.
-	      (SETF (STATE CONN) 'LISTENING-STATE)
-	      (PUSH (CONS CONTACT-NAME CONN) PENDING-LISTENS)
-	      NIL))
-      CONN))
-
 ;; If you have done a LISTEN and the state has changed to RFC-RECEIVED, you
 ;; call one of the following four functions.
 
 ;; Send an OPN, and leave conn in OPEN-STATE.
+;; Note that when this returns the other end has not yet acknowledged
+;; the OPN, and the window size is still 0.  Transmitting the first packet
+;; will wait.
 (DEFUN ACCEPT (CONN &AUX PKT)
     (OR (EQ (STATE CONN) 'RFC-RECEIVED-STATE)
         (FERROR NIL "Attempt to accept ~S, which was in ~A, not RFC-RECEIVED-STATE"
@@ -155,8 +171,10 @@
     (SETQ PKT (READ-PKTS CONN))
     (COND (PKT					;In case the user has not read the RFC
 	   (SETF (PKT-NUM-RECEIVED CONN) (PKT-NUM PKT))
+	   (SETF (READ-PKTS CONN) (PKT-LINK PKT))
+	   (OR (READ-PKTS CONN)
+	       (SETF (READ-PKTS-LAST CONN) NIL))
 	   (FREE-PKT PKT)))
-    (SETF (READ-PKTS CONN) NIL)
     (SETQ PKT (ALLOCATE-PKT))
     (SETF (PKT-OPCODE PKT) OPN-OP)
     (SETF (PKT-NBYTES PKT) 4)
@@ -296,195 +314,344 @@
 		   START-TIME
 		   TIMEOUT)))
 
-;;;The following functions allow a CONN to be used as a full-duplex stream
-(DECLARE (SPECIAL CONN IN-PKT IN-BYTES IN-I OUT-PKT OUT-I UNRCHF))
+;;; Streams
+;;; This is included in all chaosnet streams, input or output
+(DEFFLAVOR BASIC-STREAM
+	((CONNECTION NIL))
+	()
+  (:INCLUDED-FLAVORS SI:STREAM)
+  (:INITABLE-INSTANCE-VARIABLES CONNECTION))
 
-(BEGF STREAM-HANDLER)
+(DEFMETHOD (BASIC-STREAM :CLOSE) (&OPTIONAL ABORT-P)
+  (COND (CONNECTION				;Allowed to keep doing this
+	 (CLOSE CONNECTION (IF ABORT-P "Aborted" ""))
+	 (REMOVE-CONN (PROG1 CONNECTION (SETQ CONNECTION NIL))))))
 
-(DEFUN STREAM (CONN &AUX IN-PKT (IN-BYTES 0) IN-I OUT-PKT OUT-I UNRCHF) 
-  (CLOSURE '(CONN IN-PKT IN-BYTES IN-I OUT-PKT OUT-I UNRCHF) (FUNCTION STREAM-INTERNAL)))
+;;; This is included in all chaosnet input streams, character and binary
+(DEFFLAVOR INPUT-STREAM-MIXIN
+	(INPUT-PACKET)
+	()
+  (:INCLUDED-FLAVORS SI:BASIC-BUFFERED-INPUT-STREAM))
 
-;NOTE: READ THIS BEFORE MODIFYING FUNCTION BELOW
-; Must setq in-pkt to NIL because it has a pointer into the free list,
-; and since GET-NEXT-PKT goes blocked, it can be quit out of!!  This caused
-; a re-entrant free list bug; do not remove the setq!
-;FURTHER: since SEND-PKT can go blocked the out-pkt must likewise be set to
-; NIL before calling it otherwise another process trying to output to the
-; same stream while the previous is still blocked will try and use the old pkt.
-;Actually, even that isn't enuf now that we have interrupts.  Scheduling must be
-; inhibited while stuff is in OUT-PKT, etc.  It's ok to reschedule while in GET-PKT
-; or SEND-PKT though.
+(DEFMETHOD (INPUT-STREAM-MIXIN :DISCARD-INPUT-BUFFER) (IGNORE)
+  (RETURN-PKT INPUT-PACKET))
 
-(DEFUN STREAM-INTERNAL (OP &OPTIONAL ARG1 &REST REST)
-   (SELECTQ OP
-;      (:LINE-IN
-;       (LET (CR-IDX)
-;	 (IF (AND (PLUSP IN-BYTES)		;Optimize the fast case
-;		  (SETQ CR-IDX (STRING-SEARCH-CHAR #\CR (PKT-STRING IN-PKT) IN-I)))
-;	     (LET ((LEN (- CR-IDX IN-I))
-;		   LINE)
-;	       (SETQ LINE (MAKE-ARRAY NIL ART-STRING LEN NIL (AND (NUMBERP ARG1) ARG1)))
-;	       (COPY-ARRAY-PORTION (PKT-STRING IN-PKT) IN-I CR-IDX LINE 0 LEN)
-;	       (SETQ IN-I (1+ CR-IDX)
-;		     IN-BYTES (- IN-BYTES (1+ LEN)))
-;	       (AND (NUMBERP ARG1) (STORE-ARRAY-LEADER LEN LINE 0))
-;	       LINE)
-;	     (STREAM-DEFAULT-HANDLER 'STREAM-INTERNAL OP ARG1 REST))))
-      ((:TYI :TYI-NO-HANG)
-       (STREAM-INTERNAL ':FORCE-OUTPUT)
-       (COND (UNRCHF (PROG1 UNRCHF (SETQ UNRCHF NIL)))
-             (T (COND ((EQ IN-PKT 'EOF) (CAR REST))	;Hit EOF
-                      (T (DO () ((> IN-BYTES 0)
-                                 (SETQ IN-BYTES (1- IN-BYTES))
-                                 (PROG1 (AR-1 (PKT-STRING IN-PKT) IN-I)
-                                        (SETQ IN-I (1+ IN-I))))
-                             (AND IN-PKT (RETURN-PKT (PROG1 IN-PKT (SETQ IN-PKT NIL))))
-                             (SETQ IN-PKT (GET-NEXT-PKT CONN (EQ OP ':TYI-NO-HANG)))
-                             (COND ((NULL IN-PKT) (RETURN NIL)) ;For the case of no hang
-                                   ((OR (= (PKT-OPCODE IN-PKT) EOF-OP)
-					(= (PKT-OPCODE IN-PKT) CLS-OP))
-                                    (RETURN-PKT IN-PKT)    ;HIT EOF ON STREAM
-                                    (SETQ IN-PKT 'EOF)     ;FLAG IT
-                                    (RETURN (CAR REST)))   ;AND RETURN THE EOF VALUE
-                                   ((>= (PKT-OPCODE IN-PKT) DAT-OP)
-                                    (SETQ IN-BYTES (PKT-NBYTES IN-PKT)
-                                          IN-I 0))
-                                   (T (UNWIND-PROTECT
-				        (FERROR NIL
-                                    "~S is illegal packet opcode, received for connection ~S"
-                                              (PKT-OPCODE IN-PKT) CONN)
-				        (RETURN-PKT (PROG1 IN-PKT (SETQ IN-PKT NIL))))))))))))
-      (:TYO (WITHOUT-INTERRUPTS
-	      (COND ((NULL OUT-PKT)
-		     (SETQ OUT-PKT (GET-PKT))
-		     (SETF (PKT-OPCODE OUT-PKT) DAT-OP)
-		     (SETQ OUT-I 0)))
-	      (AS-1 ARG1 (PKT-STRING OUT-PKT) OUT-I)
-	      (SETQ OUT-I (1+ OUT-I))
-	      (COND ((>= OUT-I MAX-DATA-BYTES-PER-PKT)
-		     (SETF (PKT-NBYTES OUT-PKT) OUT-I)
-		     (SEND-PKT CONN (PROG1 OUT-PKT (SETQ OUT-PKT NIL)))))))
-      (:STRING-OUT
-	(WITHOUT-INTERRUPTS ;apparently a feeble attempt to make this stream work
-			    ;for multiple processes sending output at the same time?
-	  (DO ((START (OR (CAR REST) 0))
-	       (END (OR (CADR REST) (ARRAY-ACTIVE-LENGTH ARG1)))
-	       (AMT))
-	      (( START END))
-	    (COND ((NULL OUT-PKT)
-		   (SETQ OUT-PKT (GET-PKT))
-		   (SETF (PKT-OPCODE OUT-PKT) DAT-OP)
-		   (SETQ OUT-I 0)))
-	    (SETQ AMT (MIN (- END START) (- MAX-DATA-BYTES-PER-PKT OUT-I)))
-	    (COPY-ARRAY-PORTION ARG1 START (SETQ START (+ START AMT))
-				(PKT-STRING OUT-PKT) OUT-I (SETQ OUT-I (+ OUT-I AMT)))
-	    (COND ((>= OUT-I MAX-DATA-BYTES-PER-PKT)
-		   (SETF (PKT-NBYTES OUT-PKT) OUT-I)
-		   (SEND-PKT CONN (PROG1 OUT-PKT (SETQ OUT-PKT NIL))))))))
-      (:FORCE-OUTPUT
-	(WITHOUT-INTERRUPTS
-	  (COND (OUT-PKT
-		  (SETF (PKT-NBYTES OUT-PKT) OUT-I)
-		  (SEND-PKT CONN (PROG1 OUT-PKT (SETQ OUT-PKT NIL)))))))
-      (:UNTYI (SETQ UNRCHF ARG1))
-      (:EOF (STREAM-INTERNAL ':FORCE-OUTPUT)
-            (SEND-PKT CONN (GET-PKT) EOF-OP)
-            (FINISH CONN))
-      (:FINISH (FINISH CONN))
-      (:CLOSE (CLOSE CONN))
-      (:CLEAR-EOF (AND (EQ IN-PKT 'EOF) (SETQ IN-PKT NIL)))
-      (:WHICH-OPERATIONS
-       '(:TYI :TYI-NO-HANG :UNTYI :TYO :STRING-OUT
-	 :FORCE-OUTPUT :EOF :CLEAR-EOF :CLOSE :FINISH))
-      (OTHERWISE
-       (MULTIPLE-VALUE-CALL (STREAM-DEFAULT-HANDLER 'STREAM-INTERNAL OP ARG1 REST))))
-   )
+;;; This is included in all chaosnet output streams, character and binary
+(DEFFLAVOR OUTPUT-STREAM-MIXIN
+	(OUTPUT-PACKET)
+	()
+  (:INCLUDED-FLAVORS SI:BASIC-BUFFERED-OUTPUT-STREAM))
 
-(DECLARE (UNSPECIAL CONN IN-PKT IN-BYTES IN-I OUT-PKT OUT-I))
+(DEFMETHOD (OUTPUT-STREAM-MIXIN :DISCARD-OUTPUT-BUFFER) (IGNORE)
+  (RETURN-PKT OUTPUT-PACKET))
 
-(ENDF STREAM-HANDLER)
+;;; This is included in simple chaosnet input streams, but not file streams, where certain
+;;; opcodes have special meaning.
+(DEFFLAVOR BASIC-INPUT-STREAM
+	((INPUT-PACKET NIL))
+	(INPUT-STREAM-MIXIN BASIC-STREAM))
+
+(DEFMETHOD (BASIC-INPUT-STREAM :GET-NEXT-INPUT-PKT) (NO-HANG-P &AUX OP)
+  (COND ((AND INPUT-PACKET
+	      (OR (= (SETQ OP (PKT-OPCODE INPUT-PACKET)) EOF-OP)
+		  (= OP CLS-OP)))
+	 NIL)
+	((NULL (SETQ INPUT-PACKET (GET-NEXT-PKT CONNECTION NO-HANG-P))) NIL)
+	((OR (= (SETQ OP (PKT-OPCODE INPUT-PACKET)) EOF-OP)
+	     (= OP CLS-OP))
+	 NIL)
+	(( OP DAT-OP)
+	 T)
+	(T
+	 (FERROR NIL "Unknown opcode ~O in packet ~S received from connection ~S"
+		 OP INPUT-PACKET CONNECTION))))
+
+(DEFMETHOD (BASIC-INPUT-STREAM :CLEAR-EOF) ()
+  (COND ((AND INPUT-PACKET (= (PKT-OPCODE INPUT-PACKET) EOF-OP))
+	 (RETURN-PKT INPUT-PACKET)
+	 (SETQ INPUT-PACKET NIL))))
+
+;;; This is included in simple chaosnet output streams, but not file streams, where a
+;;; connection is maintained for longer.
+(DEFFLAVOR BASIC-OUTPUT-STREAM
+	()
+	(OUTPUT-STREAM-MIXIN BASIC-STREAM)
+  (:INCLUDED-FLAVORS SI:BASIC-BUFFERED-OUTPUT-STREAM))
+
+(DEFMETHOD (BASIC-OUTPUT-STREAM :EOF) ()
+  (FUNCALL-SELF ':FORCE-OUTPUT)
+  (SEND-PKT CONNECTION (GET-PKT) EOF-OP)
+  (FINISH CONNECTION))
+
+(DEFMETHOD (BASIC-OUTPUT-STREAM :FINISH) ()
+  (FINISH CONNECTION))
+
+(DEFMETHOD (BASIC-OUTPUT-STREAM :BEFORE :CLOSE) (&OPTIONAL ABORT-P)
+  (AND CONNECTION (NOT ABORT-P)
+       (EQ (STATE CONNECTION) 'OPEN-STATE)
+       (FUNCALL-SELF ':EOF)))
+
+(DEFFLAVOR CHARACTER-INPUT-STREAM-MIXIN
+	(INPUT-PACKET)
+	(INPUT-STREAM-MIXIN)
+  (:INCLUDED-FLAVORS BASIC-STREAM SI:BASIC-BUFFERED-INPUT-STREAM)
+  ;;:GET-NEXT-INPUT-PKT returns T if INPUT-PACKET is a valid packet
+  (:REQUIRED-METHODS :GET-NEXT-INPUT-PKT))
+
+(DEFMETHOD (CHARACTER-INPUT-STREAM-MIXIN :NEXT-INPUT-BUFFER) (&OPTIONAL NO-HANG-P)
+  (AND (FUNCALL-SELF ':GET-NEXT-INPUT-PKT NO-HANG-P)
+       (VALUES (PKT-STRING INPUT-PACKET)
+	       0
+	       (PKT-NBYTES INPUT-PACKET))))
+
+(DEFFLAVOR BINARY-INPUT-STREAM-MIXIN
+	(INPUT-PACKET)
+	(INPUT-STREAM-MIXIN)
+  (:INCLUDED-FLAVORS BASIC-STREAM SI:BASIC-BUFFERED-INPUT-STREAM)
+  (:REQUIRED-METHODS :GET-NEXT-INPUT-PKT))
+
+(DEFMETHOD (BINARY-INPUT-STREAM-MIXIN :NEXT-INPUT-BUFFER) (&OPTIONAL NO-HANG-P)
+  (AND (FUNCALL-SELF ':GET-NEXT-INPUT-PKT NO-HANG-P)
+       (VALUES INPUT-PACKET
+	       FIRST-DATA-WORD-IN-PKT
+	       (+ FIRST-DATA-WORD-IN-PKT (// (PKT-NBYTES INPUT-PACKET) 2)))))
+
+(DEFFLAVOR CHARACTER-OUTPUT-STREAM-MIXIN
+	(OUTPUT-PACKET)
+	(OUTPUT-STREAM-MIXIN)
+  (:INCLUDED-FLAVORS BASIC-STREAM SI:BASIC-BUFFERED-OUTPUT-STREAM))
+
+(DEFMETHOD (CHARACTER-OUTPUT-STREAM-MIXIN :NEW-OUTPUT-BUFFER) ()
+  (SETQ OUTPUT-PACKET (GET-PKT))
+  (VALUES (PKT-STRING OUTPUT-PACKET) 0 MAX-DATA-BYTES-PER-PKT))
+
+(DEFMETHOD (CHARACTER-OUTPUT-STREAM-MIXIN :SEND-OUTPUT-BUFFER) SEND-CHARACTER-PKT)
+
+(DECLARE-FLAVOR-INSTANCE-VARIABLES (CHARACTER-OUTPUT-STREAM-MIXIN)
+(DEFUN SEND-CHARACTER-PKT (IGNORE IGNORE LENGTH)
+  (SETF (PKT-NBYTES OUTPUT-PACKET) LENGTH)
+  (SEND-PKT CONNECTION OUTPUT-PACKET)
+  (SETQ OUTPUT-PACKET NIL)))
+
+(DEFFLAVOR BINARY-OUTPUT-STREAM-MIXIN
+	(OUTPUT-PACKET)
+	(OUTPUT-STREAM-MIXIN)
+  (:INCLUDED-FLAVORS BASIC-STREAM SI:BASIC-BUFFERED-OUTPUT-STREAM))
+
+(DEFMETHOD (BINARY-OUTPUT-STREAM-MIXIN :NEW-OUTPUT-BUFFER) ()
+  (SETQ OUTPUT-PACKET (GET-PKT))
+  (VALUES OUTPUT-PACKET
+	  FIRST-DATA-WORD-IN-PKT
+	  (+ FIRST-DATA-WORD-IN-PKT (// MAX-DATA-BYTES-PER-PKT 2))))
+
+(DEFMETHOD (BINARY-OUTPUT-STREAM-MIXIN :SEND-OUTPUT-BUFFER) SEND-BINARY-PKT)
+
+(DECLARE-FLAVOR-INSTANCE-VARIABLES (BINARY-OUTPUT-STREAM-MIXIN)
+(DEFUN SEND-BINARY-PKT (IGNORE IGNORE LENGTH)
+  (SETF (PKT-NBYTES OUTPUT-PACKET) (* (- LENGTH FIRST-DATA-WORD-IN-PKT) 2))
+  (SEND-PKT CONNECTION OUTPUT-PACKET 300)
+  (SETQ OUTPUT-PACKET NIL)))
+
+;;; Now the instantiatable flavors
+(DEFFLAVOR INPUT-CHARACTER-STREAM
+	()
+	(CHARACTER-INPUT-STREAM-MIXIN BASIC-INPUT-STREAM SI:BUFFERED-INPUT-CHARACTER-STREAM))
+
+(DEFFLAVOR OUTPUT-CHARACTER-STREAM
+	()
+	(CHARACTER-OUTPUT-STREAM-MIXIN BASIC-OUTPUT-STREAM
+	 SI:BUFFERED-OUTPUT-CHARACTER-STREAM))
+
+(DEFFLAVOR CHARACTER-STREAM
+	()
+	(CHARACTER-INPUT-STREAM-MIXIN CHARACTER-OUTPUT-STREAM-MIXIN
+	 BASIC-INPUT-STREAM BASIC-OUTPUT-STREAM SI:BUFFERED-CHARACTER-STREAM))
+
+;;; This is to make the EVAL server work
+(DEFMETHOD (CHARACTER-STREAM :BEEP) (&OPTIONAL IGNORE)
+  )
+
+(COMPILE-FLAVOR-METHODS INPUT-CHARACTER-STREAM OUTPUT-CHARACTER-STREAM CHARACTER-STREAM )
+
+(DEFFLAVOR INPUT-BINARY-STREAM
+	()
+	(BINARY-INPUT-STREAM-MIXIN BASIC-INPUT-STREAM
+	 SI:BUFFERED-INPUT-STREAM))
+
+(DEFFLAVOR OUTPUT-BINARY-STREAM
+	()
+	(BINARY-OUTPUT-STREAM-MIXIN BASIC-OUTPUT-STREAM
+	 SI:BUFFERED-OUTPUT-STREAM))
+
+(DEFFLAVOR BINARY-STREAM
+	()
+	(BINARY-INPUT-STREAM-MIXIN BINARY-OUTPUT-STREAM-MIXIN
+	 BASIC-INPUT-STREAM BASIC-OUTPUT-STREAM SI:BUFFERED-STREAM))
+
+(COMPILE-FLAVOR-METHODS INPUT-BINARY-STREAM OUTPUT-BINARY-STREAM BINARY-STREAM)
+
+(DEFFLAVOR ASCII-TRANSLATING-INPUT-CHARACTER-STREAM
+	()
+	(SI:ASCII-TRANSLATING-INPUT-STREAM-MIXIN
+	 CHARACTER-INPUT-STREAM-MIXIN BASIC-INPUT-STREAM
+	 SI:BUFFERED-TYI-INPUT-STREAM))
+
+(DEFFLAVOR ASCII-TRANSLATING-OUTPUT-CHARACTER-STREAM
+	()
+	(SI:ASCII-TRANSLATING-OUTPUT-STREAM-MIXIN
+	 CHARACTER-OUTPUT-STREAM-MIXIN BASIC-OUTPUT-STREAM
+	 SI:BUFFERED-TYO-OUTPUT-STREAM))
+
+(DEFFLAVOR ASCII-TRANSLATING-CHARACTER-STREAM
+	()
+	(SI:ASCII-TRANSLATING-INPUT-STREAM-MIXIN SI:ASCII-TRANSLATING-OUTPUT-STREAM-MIXIN
+	 CHARACTER-INPUT-STREAM-MIXIN CHARACTER-OUTPUT-STREAM-MIXIN
+	 BASIC-INPUT-STREAM BASIC-OUTPUT-STREAM SI:BUFFERED-TYI-TYO-STREAM))
+
+(COMPILE-FLAVOR-METHODS ASCII-TRANSLATING-INPUT-CHARACTER-STREAM
+			ASCII-TRANSLATING-OUTPUT-CHARACTER-STREAM
+			ASCII-TRANSLATING-CHARACTER-STREAM)
+
+(DEFUN OPEN-STREAM (HOST CONTACT-NAME &KEY &OPTIONAL (WINDOW-SIZE DEFAULT-WINDOW-SIZE)
+						     (TIMEOUT (* 10. 60.))
+						     (DIRECTION ':BIDIRECTIONAL)
+						     (ERROR T)
+						     (CHARACTERS T)
+						     (ASCII-TRANSLATION NIL)
+				      &AUX CONN)
+  (SETQ CONN (CONNECT HOST CONTACT-NAME WINDOW-SIZE TIMEOUT))
+  (IF (STRINGP CONN)
+      (IF (NOT ERROR) CONN
+	  (FERROR NIL "Cannot connect to ~A: ~A" HOST CONN))
+      (MAKE-STREAM CONN ':DIRECTION DIRECTION ':CHARACTERS CHARACTERS
+			':ASCII-TRANSLATION ASCII-TRANSLATION)))
+
+(DEFUN MAKE-STREAM (CONNECTION &KEY &OPTIONAL (DIRECTION ':BIDIRECTIONAL)
+					      (CHARACTERS T)
+					      (ASCII-TRANSLATION NIL))
+  (MAKE-INSTANCE (SELECTQ DIRECTION
+		   (:INPUT
+		    (COND (ASCII-TRANSLATION 'ASCII-TRANSLATING-INPUT-CHARACTER-STREAM)
+			  (CHARACTERS 'INPUT-CHARACTER-STREAM)
+			  (T 'INPUT-BINARY-STREAM)))
+		   (:OUTPUT
+		    (COND (ASCII-TRANSLATION 'ASCII-TRANSLATING-OUTPUT-CHARACTER-STREAM)
+			  (CHARACTERS 'OUTPUT-CHARACTER-STREAM)
+			  (T 'OUTPUT-BINARY-STREAM)))
+		   (:BIDIRECTIONAL
+		    (COND (ASCII-TRANSLATION 'ASCII-TRANSLATING-CHARACTER-STREAM)
+			  (CHARACTERS 'CHARACTER-STREAM)
+			  (T 'BINARY-STREAM))))
+		 ':CONNECTION CONNECTION))
+
+(DEFF STREAM 'MAKE-STREAM)
 
 ;; The HOSTAT function
 
 ;; Print the status of all the hosts and gateways, or specified ones
-(DEFUN HOSTAT (&REST HOSTS &AUX CONNECTIONS PKT ADR)
+(DEFUN HOSTAT (&REST HOSTS &AUX CONNECTIONS PKT)
   (UNWIND-PROTECT (PROGN
      (ASSURE-ENABLED)
-     (DO L (OR HOSTS HOST-ALIST) (CDR L) (NULL L)	;Do all hosts, or specified hosts
-       (SETQ ADR (COND ((NULL HOSTS) (CDAR L))	;Numeric address of this host
-		       (T (OR (ADDRESS-PARSE (CAR L))
-			      (FERROR NIL "Not a known Chaos address: ~S" (CAR L))))))
-       (OR (ASSQ ADR CONNECTIONS)
-	   (PUSH (CONS ADR (OPEN-CONNECTION ADR "STATUS" 1))
-		 CONNECTIONS)))        		;Set up all connections in parallel
+     ;; Get all hosts to do.  If HOSTS specified use them, else all chaos hosts,
+     ;; including more that one address for the same host.
+     (SETQ CONNECTIONS (IF HOSTS
+			   (LOOP FOR HOST IN HOSTS
+				 COLLECT (IF (NUMBERP HOST) (LIST NIL HOST NIL)
+					     (SETQ HOST (SI:PARSE-HOST HOST))
+					     (LIST HOST (FUNCALL HOST ':CHAOS-ADDRESS) NIL)))
+			   (LOOP FOR ELEM IN SI:HOST-ALIST
+				 AS ADDRESSES = (GET (LOCF (SI:HOST-ADDRESSES ELEM)) ':CHAOS)
+				 WHEN ADDRESSES
+				 NCONC (LOOP WITH HOST =
+					     (OR (SI:HOST-INSTANCE ELEM)
+						 (SI:PARSE-HOST (SI:HOST-NAME ELEM)))
+					     FOR ADDRESS IN ADDRESSES
+					     COLLECT (LIST HOST ADDRESS NIL)))))
+     (LOOP FOR ELEM IN CONNECTIONS
+	   DO (SETF (THIRD ELEM) (OPEN-CONNECTION (SECOND ELEM) "STATUS" 1)))
      ;; Now print heading
-     (FORMAT T "~%~7A~25A" "Site" "Name//Status")
-     (DO ((HEADS '("Subnet" "#-in" "#-out" "abort" "lost" "crc" "ram" "bitc" "other")
-		 (CDR HEADS))
-	  (WIDTHS '(6 9 9 8 8 8 4 5 6) (CDR WIDTHS)))
-	 ((NULL HEADS) (TERPRI))
-       (FORMAT T "~V@A" (CAR WIDTHS) (CAR HEADS)))
+     (HOSTAT-HEADING)
      ;; Now wait until connections come up with an answer, when they do print it out
+     ;Note host-name truncated to 27. characters to make more room for statistics
      (DO () ((NULL CONNECTIONS))
        (COND ((FUNCALL TERMINAL-IO ':TYI-NO-HANG)
 	      (RETURN "QUIT")))
        (PROCESS-ALLOW-SCHEDULE)				;Take a few chaos net interrupts
-       (DO ((LIST CONNECTIONS (CDR LIST)))		;Check on each connection
-	   ((NULL LIST))
-	 (SELECTQ (STATE (CDAR LIST))
-	   (RFC-SENT-STATE
-	     (COND (( (TIME-DIFFERENCE (TIME) (TIME-LAST-RECEIVED (CDAR LIST)))
-		     300.)		;5-second timeout
-		    (FORMAT T "~O~7T~:[~;~1G~A   ~]host not responding~%"
-			      (CAAR LIST) (CAR (RASSOC (CAAR LIST) HOST-ALIST)))
-		    (REMOVE-CONN (CDAR LIST))
-		    (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))))
-	   (ANSWERED-STATE				;This is what we want
-	     (SETQ PKT (GET-NEXT-PKT (CDAR LIST)))
-	     (HOSTAT-FORMAT-ANS (CAR LIST) PKT)
-	     (RETURN-PKT PKT)
-	     (CLOSE (CDAR LIST))
-	     (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))
-	   (CLS-RECEIVED-STATE
-	     (SETQ PKT (GET-NEXT-PKT (CDAR LIST)))
-	     (FORMAT T "~O~7T~:[~;~1G~A   ~]returned a CLS:~A~%"
-		       (CAAR LIST) (CAR (RASSOC (CAAR LIST) HOST-ALIST)) (PKT-STRING PKT))
-	     (RETURN-PKT PKT)
-	     (CLOSE (CDAR LIST))
-	     (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))
-	   (OPEN-STATE
-	     (FORMAT T "~O~7T~:[~;~1G~A   ~]returned an OPN~%"
-		       (CAAR LIST) (CAR (RASSOC (CAAR LIST) HOST-ALIST)))
-	     (CLOSE (CDAR LIST) "I expected an ANS, not an OPN.")
-	     (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))
-	   (LOS-RECEIVED-STATE
-	     (SETQ PKT (READ-PKTS-LAST (CDAR LIST)))
-	     (FORMAT T "~O~7T~:[~;~1G~A   ~]returned a LOS:~A~%"
-		       (CAAR LIST) (CAR (RASSOC (CAAR LIST) HOST-ALIST)) (PKT-STRING PKT))
-	     (CLOSE (CDAR LIST))
-	     (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))
-	   (OTHERWISE
-	     (FORMAT T "~O~7T~:[~;~1G~A   ~]connection entered bad state:~A~%"
-		       (CAAR LIST) (CAR (RASSOC (CAAR LIST) HOST-ALIST)) (STATE (CDAR LIST)))
-	     (CLOSE (CDAR LIST))
-	     (SETQ CONNECTIONS (DELQ (CAR LIST) CONNECTIONS)))))))
+       (DO LIST CONNECTIONS (CDR LIST) (NULL LIST)
+	 (LET* ((ELEM (CAR LIST))
+		(CONNECTION (THIRD ELEM)))
+	   (SELECTQ (STATE CONNECTION)
+	     (RFC-SENT-STATE
+	      (COND (( (TIME-DIFFERENCE (TIME) (TIME-LAST-RECEIVED CONNECTION))
+			600.)			;10-second timeout
+		     (FORMAT T "~O~7T~@[~A   ~]host not responding~%"
+			     (SECOND ELEM) (FIRST ELEM))
+		     (REMOVE-CONN CONNECTION)
+		     (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))))
+	     (ANSWERED-STATE			;This is what we want
+	      (SETQ PKT (GET-NEXT-PKT CONNECTION))
+	      (HOSTAT-FORMAT-ANS (SECOND ELEM) PKT)
+	      (RETURN-PKT PKT)
+	      ;; Delete not only this connection, but every one to this same
+	      ;; host, in case it has multiple addresses.  One copy of the
+	      ;; answer is enough, but if it fails we would like to see all paths.
+	      (COND (HOSTS
+		     (REMOVE-CONN CONNECTION)
+		     (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))
+		    (T (LOOP WITH HOST = (FIRST ELEM)
+			     FOR X IN CONNECTIONS
+			     WHEN (EQ (CAR X) HOST)
+			     DO (REMOVE-CONN (THIRD X))
+			     (SETQ CONNECTIONS (DELQ X CONNECTIONS)))))
+	      (SETQ LIST NIL))
+	     (CLS-RECEIVED-STATE
+	      (SETQ PKT (GET-NEXT-PKT CONNECTION))
+	      (FORMAT T "~O~7T~@[~A   ~]returned a CLS:~A~%"
+		      (SECOND ELEM) (FIRST ELEM) (PKT-STRING PKT))
+	      (RETURN-PKT PKT)
+	      (CLOSE CONNECTION)
+	      (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))
+	     (OPEN-STATE
+	      (FORMAT T "~O~7T~@[~A   ~]returned an OPN~%"
+		      (SECOND ELEM) (FIRST ELEM) )
+	      (CLOSE CONNECTION "I expected an ANS, not an OPN.")
+	      (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))
+	     (LOS-RECEIVED-STATE
+	      (SETQ PKT (READ-PKTS-LAST CONNECTION))
+	      (FORMAT T "~O~7T~@[~A   ~]returned a LOS:~A~%"
+		      (SECOND ELEM) (FIRST ELEM) (PKT-STRING PKT))
+	      (CLOSE CONNECTION)
+	      (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))
+	     (OTHERWISE
+	      (FORMAT T "~O~7T~@[~A   ~]connection entered bad state:~A~%"
+		      (SECOND ELEM) (FIRST ELEM) (STATE CONNECTION))
+	      (CLOSE CONNECTION)
+	      (SETQ CONNECTIONS (DELQ ELEM CONNECTIONS)))))))
    ;; Unwind-protect cleanup
    (DO L CONNECTIONS (CDR L) (NULL L)	;Flush any connections that remain
-       (REMOVE-CONN (CDAR L)))))
+       (REMOVE-CONN (THIRD (CAR L)))))))
 
-;Note host-name truncated to 27. characters to make more room for statistics
-(DEFUN HOSTAT-FORMAT-ANS (HOST-CONN PKT
+(DEFUN HOSTAT-HEADING (&OPTIONAL (STREAM T))
+  (FORMAT STREAM "~%~7A~25A" "Site" "Name//Status")
+  (DO ((HEADS '("Subnet" "#-in" "#-out" "abort" "lost" "crc" "ram" "bitc" "other")
+	      (CDR HEADS))
+       (WIDTHS '(6 9 9 8 8 8 4 5 6) (CDR WIDTHS)))
+      ((NULL HEADS) (TERPRI STREAM))
+    (FORMAT STREAM "~V@A" (CAR WIDTHS) (CAR HEADS))))
+
+(DEFUN HOSTAT-FORMAT-ANS (HOST PKT &OPTIONAL (STREAM T)
 			  &AUX (NBYTES (PKT-NBYTES PKT)))
-  (FORMAT T "~7@<~O ~>~27A"		;Print host number and name as returned
-	    (CAR HOST-CONN)
-	    (NSUBSTRING (PKT-STRING PKT) 0
-			(MIN NBYTES 27. (OR (STRING-SEARCH-CHAR 0 (PKT-STRING PKT) 0 32.)
-					    ;; This line is temporary! *******
-					    (STRING-SEARCH-CHAR 200 (PKT-STRING PKT) 0 32.)
-					    32.))))
-  (HOSTAT-FORMAT-ANS-1 PKT 34. '(4 9 9 8 8 8 4 5 6)))
+  (FORMAT STREAM "~7@<~O ~>~27A"		;Print host number and name as returned
+	  HOST
+	  (NSUBSTRING (PKT-STRING PKT) 0
+		      (MIN NBYTES 27. (OR (STRING-SEARCH-CHAR 0 (PKT-STRING PKT) 0 32.)
+					  ;; This line is temporary! *******
+					  (STRING-SEARCH-CHAR 200 (PKT-STRING PKT) 0 32.)
+					  32.))))
+  (HOSTAT-FORMAT-ANS-1 PKT 34. '(4 9 9 8 8 8 4 5 6) STREAM))
 
-(DEFUN HOSTAT-FORMAT-ANS-1 (PKT START-COLUMN COLUMN-WIDTHS &AUX (NBYTES (PKT-NBYTES PKT)))
+(DEFUN HOSTAT-FORMAT-ANS-1 (PKT START-COLUMN COLUMN-WIDTHS STREAM
+			    &AUX (NBYTES (PKT-NBYTES PKT)))
   (DO ((I 24. (+ I 2 CT))		;Now display subnet meters
        (FIRST-LINE T NIL)
        (ID) (CT)
@@ -493,51 +660,81 @@
     (SETQ ID (AREF PKT I) CT (AREF PKT (1+ I)))	;Block header
     (OR FIRST-LINE (FORMAT T "~VA" START-COLUMN ""))
     (COND ((< ID 400)				;Subnet info (old 16-bit format)
-	   (FORMAT T "~VO" (CAR COLUMN-WIDTHS) ID)
+	   (FORMAT STREAM "~VO" (CAR COLUMN-WIDTHS) ID)
 	   (DO ((J (+ I 2) (1+ J))		;Now print those meters that are present
 		(L (CDR COLUMN-WIDTHS) (CDR L))
 		(N (MIN CT 8) (1- N)))
 	       ((ZEROP N))
-	     (FORMAT T "~VD" (CAR L) (AREF PKT J))))
+	     (FORMAT STREAM "~VD" (CAR L) (AREF PKT J))))
 	  ((< ID 1000)				;Subnet info
-	   (FORMAT T "~VO" (CAR COLUMN-WIDTHS) (- ID 400))
+	   (FORMAT STREAM "~VO" (CAR COLUMN-WIDTHS) (- ID 400))
 	   (DO ((J (+ I 2) (+ J 2))		;Now print those meters that are present
 		(L (CDR COLUMN-WIDTHS) (CDR L))
 		(N (MIN (// CT 2) 8) (1- N)))
 	       ((ZEROP N))
-	     (FORMAT T "~VD" (CAR L) (DPB (AREF PKT (1+ J)) 2020 (AREF PKT J)))))
+	     (FORMAT STREAM "~VD" (CAR L) (DPB (AREF PKT (1+ J)) 2020 (AREF PKT J)))))
 	  (T					;I don't know about this
-	   (FORMAT T "~O unknown info block ID" ID)))
-    (TERPRI))) 
+	   (FORMAT STREAM "~O unknown info block ID" ID)))
+    (TERPRI STREAM))) 
 
 ;; Random server and user routines
 
 ;; The infamous LIMERICK getter
-(DEFUN LIMERICK ( &OPTIONAL (ARGS "") &AUX STREAM CONN)
-    (AND (NUMBERP ARGS) (SETQ ARGS (FORMAT NIL "~D" ARGS)))
-    (TERPRI) (TERPRI) 
-    (SETQ CONN (CONNECT "MC" (STRING-APPEND "LIMERICK " ARGS)))
-    (COND ((STRINGP CONN) CONN)
-	  (T (SETQ STREAM (STREAM CONN))
-	     (DO CH (FUNCALL STREAM 'TYI) (FUNCALL STREAM 'TYI) (NULL CH)
-		 (TYO CH))
-             (CLOSE CONN "")
-	     NIL)))
-
+(DEFUN LIMERICK (&OPTIONAL (ARGS ""))
+  (AND (NUMBERP ARGS) (SETQ ARGS (FORMAT NIL "~D" ARGS)))
+  (FORMAT T "~2%")
+  (WITH-OPEN-STREAM (STREAM (OPEN-STREAM "MC" (STRING-APPEND "LIMERICK " ARGS)
+					 ':DIRECTION ':INPUT))
+    (STREAM-COPY-UNTIL-EOF STREAM STANDARD-OUTPUT)))
 
 ;;; This function sets up so that all requests for the service indicated
 ;;; by the contact name given will be forwarded to the indicated host
 (DEFUN FORWARD-ALL (CONTACT-NAME HOST)
     (SETQ HOST (ADDRESS-PARSE HOST))
     (PUSH (CONS CONTACT-NAME
-	    `(PROG (CONN)
-		(SETQ CONN (LISTEN ,CONTACT-NAME))
-		(COND ((EQ (STATE CONN) 'RFC-RECEIVED-STATE)
-		       (FORWARD CONN (GET-NEXT-PKT CONN) ,HOST))
-		      (T ;; Lost in some way
-		         (REMOVE-CONN CONN)))))
+		`(PROG (CONN)
+		   (SETQ CONN (LISTEN ,CONTACT-NAME))
+		   (FORWARD CONN (GET-NEXT-PKT CONN) ,HOST)))
 	  SERVER-ALIST)
     NIL)
+
+;;; This isn't DEFINE-SITE-HOST-LIST because this file is loaded too early, as is the SITE
+;;; file itself.
+(DEFINE-SITE-VARIABLE TIME-SERVER-HOSTS :CHAOS-TIME-SERVER-HOSTS)
+
+(SETQ TIME:*NETWORK-TIME-FUNCTION* 'HOST-TIME)
+
+;; Returns universal time from host over the net, as a 32-bit number
+;; or if it can't get the time, returns a string which is the reason why not.
+(DEFUN HOST-TIME (&OPTIONAL (HOST TIME-SERVER-HOSTS))
+  (COND ((NULL HOST) "No host specified.")
+	((LISTP HOST)
+	 (DO ((HOSTS HOST (CDR HOSTS))
+	      (TIME "No hosts."))
+	     ((NULL HOSTS) TIME)
+	   ;; Don't ask self for time.
+	   (COND ((NEQ (ADDRESS-PARSE (CAR HOSTS)) MY-ADDRESS)
+		  (SETQ TIME (HOST-TIME (CAR HOSTS)))
+		  (AND (NUMBERP TIME) (RETURN TIME))))))
+	(T (LET ((PKT (SIMPLE HOST "TIME" #.(* 10. 60.))))
+			;10 second timeout for our paging and server's response delay
+	     (IF (STRINGP PKT) PKT
+		 (LET ((L16 (AREF PKT 10))
+		       (U16 (AREF PKT 11)))
+		   (RETURN-PKT PKT)
+		   (DPB U16 2020 L16)))))))
+
+(DEFUN PRINT-HOST-TIMES (&OPTIONAL (HOSTS TIME-SERVER-HOSTS) &AUX TIME)
+  (DO ((H HOSTS (CDR H)) (COUNT 0) (SUM 0))
+      ((NULL H)
+       (COND ((NOT (ZEROP COUNT))
+	      (FORMAT T "~% Average: ")
+	      (TIME:PRINT-UNIVERSAL-TIME (// SUM COUNT)))))
+    (FORMAT T "~% ~A:~10T" (CAR H))
+    (IF (STRINGP (SETQ TIME (HOST-TIME (CAR H))))
+	(FUNCALL STANDARD-OUTPUT ':STRING-OUT TIME)
+	(TIME:PRINT-UNIVERSAL-TIME TIME)
+	(SETQ SUM (+ SUM TIME) COUNT (1+ COUNT)))))
 
 ;;; Network message facility
 
@@ -549,95 +746,100 @@
 (DEFMACRO QSEND (DESTINATION &OPTIONAL MESSAGE)
   `(SEND-MSG ',DESTINATION ',MESSAGE))
 
+(DEFUN SHOUT (&AUX MSG-TEXT HOST PERSON)       ;SHOUT to all Lisp Machines.  
+  (FS:FORCE-USER-TO-LOGIN)
+  (FORMAT T "~%Message: (terminate with ~:@C)~%" #\END)
+  (SETQ MSG-TEXT (STRING-APPEND "Everybody: " (CHAOS:SEND-MSG-GET-MESSAGE))
+	PERSON "anyone")
+  (DO ((MACHINE SI:MACHINE-LOCATION-ALIST (CDR MACHINE)))
+      ((NULL MACHINE))
+    (SETQ HOST (CAAR MACHINE))
+    (WITH-OPEN-STREAM (STREAM (CHAOS:OPEN-STREAM HOST (STRING-APPEND "SEND " PERSON)
+						 ':ERROR NIL ':DIRECTION ':OUTPUT))
+		      (COND ((NOT (STRINGP STREAM))
+			     (FORMAT STREAM "~A@~A ~\DATIME\~%" USER-ID SI:LOCAL-HOST)
+			     (FUNCALL STREAM ':STRING-OUT MSG-TEXT)
+			     (FUNCALL STREAM ':CLOSE))))))
+
+
 (DEFUN PRINT-SENDS (&OPTIONAL (STREAM STANDARD-OUTPUT))
   (PRINC SAVED-SENDS STREAM)
   T)
 
 (DEFVAR POP-UP-QSEND-WINDOW)
 (DEFVAR POP-UP-QSEND-LOCK NIL)	;One guy typing at a time
-(DEFUN POP-UP-RECEIVE-SEND-MSG (&AUX CONN STREAM RECIPIENT RFC SENDER VISP TEM
-				     (START (ARRAY-ACTIVE-LENGTH SAVED-SENDS))
-				     (FORMAT:FORMAT-STRING SAVED-SENDS))
+
+(DEFUN POP-UP-RECEIVE-SEND-MSG (&AUX CONN RECIPIENT RFC SENDER VISP TEM
+				     (START (ARRAY-ACTIVE-LENGTH SAVED-SENDS)))
   (UNWIND-PROTECT
     (PROGN
       (SETQ CONN (LISTEN "SEND"))
-      (COND ((EQ (STATE CONN) 'RFC-RECEIVED-STATE)
-	     (SETQ RFC (PKT-STRING (READ-PKTS CONN)))
-	     (SETQ RECIPIENT
-		   (COND ((SETQ TEM (STRING-SEARCH " " RFC))
-			  (NSUBSTRING RFC (1+ TEM)))
-			 (T "anyone")))
-	     (FORMAT 'FORMAT:FORMAT-STRING-STREAM "~%[Message from ~A for ~A]~%"
-		     (HOST-DATA (FOREIGN-ADDRESS CONN))
-		     RECIPIENT)
-	     (ACCEPT CONN)
-	     (SETQ STREAM (STREAM CONN))
-	     (SETQ SENDER (FUNCALL STREAM ':LINE-IN))
-	     (FORMAT:FORMAT-STRING-STREAM ':LINE-OUT SENDER)
-	     (COND ((SETQ TEM (STRING-SEARCH-CHAR #/@ SENDER))
-		    (SETQ SENDER (NSUBSTRING SENDER 0 TEM)))
-		   ((SETQ TEM (STRING-SEARCH "from " SENDER))
-		    (SETQ SENDER (NSUBSTRING SENDER (+ TEM 5)
-				     (STRING-SEARCH-SET '(#/] #\SP) SENDER (+ TEM 5)))))
-		   (T
-		    (SETQ SENDER "")))
-	     (SETQ SENDER (STRING-APPEND SENDER #/@
-					 (CAR (RASSOC (FOREIGN-ADDRESS CONN) HOST-ALIST))))
-	     (STREAM-COPY-UNTIL-EOF STREAM 'FORMAT:FORMAT-STRING-STREAM)
-	     (CLOSE CONN)
-	     (ARRAY-PUSH-EXTEND SAVED-SENDS #\CR)
-	     (ARRAY-PUSH-EXTEND SAVED-SENDS #\CR)
-	     (OR (BOUNDP 'POP-UP-QSEND-WINDOW)
-		 (SETQ POP-UP-QSEND-WINDOW TV:(WINDOW-CREATE 'POP-UP-TEXT-WINDOW
-							     ':NAME "QSend"
-							     ':HEIGHT 400 ;About 17 lines
-							     ':SAVE-BITS T)))
-	     ;; Ring the bell before the real-time delay of popping it up.
-	     ;; Also ring it before locking so he knows another message came in.
-	     (DOTIMES (I SEND-BELLCOUNT) (FUNCALL POP-UP-QSEND-WINDOW ':BEEP))
-	     ;; This waits until any other message is done
-	     ;; then seizes the lock.  The effect is to handle only one message at a time.
-	     (DO ((FIRST-TIME T NIL))
-		 ((%STORE-CONDITIONAL (VALUE-CELL-LOCATION 'POP-UP-QSEND-LOCK)
-					 NIL CURRENT-PROCESS))
-	       ;; If messages coming in with thing hung up, let user know
-	       (AND FIRST-TIME (NEQ (FUNCALL POP-UP-QSEND-WINDOW ':STATUS) ':SELECTED)
-		    (FORMAT (TV:GET-NOTIFICATION-STREAM)
-			    "~&[Message from ~A waiting for QSend window]~%" SENDER))
-	       (PROCESS-WAIT "Lock" #'(LAMBDA (X) (NULL (CDR X)))
-			     (VALUE-CELL-LOCATION 'POP-UP-QSEND-LOCK)))
-	     (SETQ VISP (TV:SHEET-EXPOSED-P POP-UP-QSEND-WINDOW))
-	     (FUNCALL POP-UP-QSEND-WINDOW ':MOUSE-SELECT)
-	     ;; If the window was not already visible, erase it.
-	     (COND ((NOT VISP)
-		    (SETQ START (1+ START))	;Skip the first CR
-		    (FUNCALL POP-UP-QSEND-WINDOW ':CLEAR-SCREEN)))
-	     (FUNCALL POP-UP-QSEND-WINDOW ':STRING-OUT SAVED-SENDS START)))
-      (REMOVE-CONN CONN)
-      (COND (SENDER
-	     (LET ((TERMINAL-IO POP-UP-QSEND-WINDOW) ERR)
-	       (FUNCALL POP-UP-QSEND-WINDOW ':CLEAR-INPUT)
-	       (COND ((Y-OR-N-P "Reply? " POP-UP-QSEND-WINDOW)
-		      (FORMAT POP-UP-QSEND-WINDOW "~&To: ~A" SENDER)
-		      (COND ((SETQ ERR (SEND-MSG SENDER))
-			     (FORMAT POP-UP-QSEND-WINDOW
-				     "~&~A -- type space to continue" ERR)
-			     (FUNCALL POP-UP-QSEND-WINDOW ':CLEAR-INPUT)
-			     (FUNCALL POP-UP-QSEND-WINDOW ':TYI))))))
-	     ;; We are done with the window
-	     (SETQ POP-UP-QSEND-LOCK NIL)
-	     (PROCESS-ALLOW-SCHEDULE)
-	     (COND ((NULL POP-UP-QSEND-LOCK)
-		    (FUNCALL POP-UP-QSEND-WINDOW ':DESELECT T)
-		    (FUNCALL POP-UP-QSEND-WINDOW ':DEACTIVATE))))))
-    (AND (EQ POP-UP-QSEND-LOCK CURRENT-PROCESS) (SETQ POP-UP-QSEND-LOCK NIL))))
+      (SETQ RFC (PKT-STRING (READ-PKTS CONN)))
+      (SETQ RECIPIENT
+	    (COND ((SETQ TEM (STRING-SEARCH " " RFC))
+		   (NSUBSTRING RFC (1+ TEM)))
+		  (T "anyone")))
+      (ACCEPT CONN)
+      (WITH-OUTPUT-TO-STRING (SSTREAM SAVED-SENDS)
+	(FORMAT SSTREAM "~%[Message from ~A for ~A]~%"
+		(HOST-DATA (FOREIGN-ADDRESS CONN)) RECIPIENT)
+	(WITH-OPEN-STREAM (CSTREAM (MAKE-STREAM CONN ':DIRECTION ':INPUT))
+	  (SETQ SENDER (FUNCALL CSTREAM ':LINE-IN))
+	  (FUNCALL SSTREAM ':LINE-OUT SENDER)
+	  (COND ((SETQ TEM (STRING-SEARCH-CHAR #/@ SENDER))
+		 (SETQ SENDER (NSUBSTRING SENDER 0 TEM)))
+		((SETQ TEM (STRING-SEARCH "from " SENDER))
+		 (SETQ SENDER (NSUBSTRING SENDER (+ TEM 5)
+					  (STRING-SEARCH-SET '(#/] #\SP) SENDER (+ TEM 5)))))
+		(T
+		 (SETQ SENDER "")))
+	  (SETQ SENDER (STRING-APPEND SENDER #/@
+				      (HOST-SHORT-NAME (FOREIGN-ADDRESS CONN))))
+	  (STREAM-COPY-UNTIL-EOF CSTREAM SSTREAM))
+	(FORMAT SSTREAM "~2%"))
+      (OR (BOUNDP 'POP-UP-QSEND-WINDOW)
+	  (SETQ POP-UP-QSEND-WINDOW TV:(MAKE-WINDOW 'POP-UP-TEXT-WINDOW
+						    ':NAME "QSend"
+						    ':HEIGHT 400	;About 17 lines
+						    ':SAVE-BITS T)))
+      ;; Ring the bell before the real-time delay of popping it up.
+      ;; Also ring it before locking so he knows another message came in.
+      (DOTIMES (I SEND-BELLCOUNT) (FUNCALL POP-UP-QSEND-WINDOW ':BEEP))
+      ;; This waits until any other message is done
+      ;; then seizes the lock.  The effect is to handle only one message at a time.
+      (DO ((FIRST-TIME T NIL))
+	  ((%STORE-CONDITIONAL (VALUE-CELL-LOCATION 'POP-UP-QSEND-LOCK)
+			       NIL CURRENT-PROCESS))
+	;; If messages coming in with thing hung up, let user know
+	(AND FIRST-TIME (NEQ (FUNCALL POP-UP-QSEND-WINDOW ':STATUS) ':SELECTED)
+	     (TV:NOTIFY NIL "Message from ~A waiting for QSend window" SENDER))
+	(PROCESS-WAIT "Lock" #'(LAMBDA (X) (NULL (CDR X)))
+		      (VALUE-CELL-LOCATION 'POP-UP-QSEND-LOCK)))
+      (SETQ VISP (TV:SHEET-EXPOSED-P POP-UP-QSEND-WINDOW))
+      (FUNCALL POP-UP-QSEND-WINDOW ':MOUSE-SELECT)
+      ;; If the window was not already visible, erase it.
+      (COND ((NOT VISP)
+	     (SETQ START (1+ START))	;Skip the first CR
+	     (FUNCALL POP-UP-QSEND-WINDOW ':CLEAR-SCREEN)))
+      (FUNCALL POP-UP-QSEND-WINDOW ':STRING-OUT SAVED-SENDS START)
+      (LET ((TERMINAL-IO POP-UP-QSEND-WINDOW))
+	(FUNCALL POP-UP-QSEND-WINDOW ':CLEAR-INPUT)
+	(COND ((Y-OR-N-P "Reply? " POP-UP-QSEND-WINDOW)
+	       (FORMAT POP-UP-QSEND-WINDOW "~&To: ~A" SENDER)
+	       (SEND-MSG SENDER)))))
+    (COND ((EQ POP-UP-QSEND-LOCK CURRENT-PROCESS)
+	   (SETQ POP-UP-QSEND-LOCK NIL)
+	   (PROCESS-ALLOW-SCHEDULE)
+	   (COND ((NULL POP-UP-QSEND-LOCK)
+		  (FUNCALL POP-UP-QSEND-WINDOW ':DESELECT T)
+		  (FUNCALL POP-UP-QSEND-WINDOW ':DEACTIVATE)))))))
 
 (ADD-INITIALIZATION "SEND"
-                    '(PROCESS-RUN-FUNCTION "SEND" (FUNCTION POP-UP-RECEIVE-SEND-MSG))
+                    '(PROCESS-RUN-TEMPORARY-FUNCTION "SEND Server" #'POP-UP-RECEIVE-SEND-MSG)
                     NIL
                     'SERVER-ALIST)
 
-(DEFUN SEND-MSG (DESTINATION &OPTIONAL MSG &AUX HOST PERSON CONN STREAM)
+(DEFUN SEND-MSG (DESTINATION &OPTIONAL MSG &AUX HOST PERSON)
   (COND ((AND (NOT (NUMBERP DESTINATION))
 	      (SETQ HOST (DO ((@-POS (STRING-SEARCH "@" DESTINATION)
 				     (STRING-SEARCH "@" DESTINATION (1+ @-POS)))
@@ -648,19 +850,18 @@
         (T (SETQ PERSON "anyone"  HOST DESTINATION)))
   (FS:FORCE-USER-TO-LOGIN)
   (COND ((NULL MSG)
-	 (FORMAT T "~%Message: (terminate with End)~%")
+	 (FORMAT T "~%Message: (terminate with ~:@C)~%" #\END)
 	 (SETQ MSG (SEND-MSG-GET-MESSAGE))))
-  (SETQ CONN (CONNECT HOST (STRING-APPEND "SEND " PERSON)))
-  (COND ((STRINGP CONN) CONN) ;err msg
-	(T (SETQ STREAM (STREAM CONN))
-	   (MULTIPLE-VALUE-BIND (SECONDS MINUTES HOURS)
-	       (TIME:GET-TIME)
-	     (FORMAT STREAM "[Message from ~A~:[~; at ~D:~2,'0D:~2,'0D~]]~%"
-			    USER-ID SECONDS HOURS MINUTES SECONDS))
-           (PRINC MSG STREAM)
-           (FUNCALL STREAM ':EOF)   ;DOES A :FORCE-OUTPUT, SENDS AN EOF-OP
-	   (CLOSE CONN "")
-	   NIL)))
+  (WITH-OPEN-STREAM (STREAM (OPEN-STREAM HOST (STRING-APPEND "SEND " PERSON)
+					 ':ERROR NIL ':DIRECTION ':OUTPUT))
+    (COND ((NOT (STRINGP STREAM))
+	   (FORMAT STREAM "~A@~A ~\DATIME\~%" USER-ID SI:LOCAL-HOST)
+           (FUNCALL STREAM ':STRING-OUT MSG)
+	   (FUNCALL STREAM ':CLOSE))
+	  ((FQUERY FORMAT:YES-OR-NO-QUIETLY-P-OPTIONS "~A  Mail instead? " STREAM)
+	   (ZWEI:SEND-MESSAGE-STRING PERSON (STRING-APPEND "[This was a failing QSEND]
+"
+							   MSG))))))
 
 (DEFUN SEND-MSG-GET-MESSAGE (&OPTIONAL (STREAM STANDARD-INPUT))
   (IF (AND (NOT RUBOUT-HANDLER)
@@ -695,7 +896,7 @@
 	       GIVE-FINGER-SAVED-STRING
 	          (FORMAT NIL "~A~%~A~%~:[~3*~;~:[~D:~2,48D~;~*~D~]~]~%~A~%~C~%"
                           USER-ID
-                          MY-FINGER-LOCATION-STRING
+                          SI:LOCAL-FINGER-LOCATION
                           (NOT (ZEROP IDLE))
                           (ZEROP (// IDLE 60.))
                           (// IDLE 60.)
@@ -706,97 +907,81 @@
 
 ;; This can't run in the background process, since it uses a full byte-stream
 ;; connection, which requires retransmission, which is done by the background process.
-(ADD-INITIALIZATION "NAME" '(PROCESS-RUN-FUNCTION "Name" 'GIVE-NAME) NIL 'SERVER-ALIST)
+(ADD-INITIALIZATION "NAME" '(PROCESS-RUN-TEMPORARY-FUNCTION "NAME Server" 'GIVE-NAME)
+		    NIL 'SERVER-ALIST)
 
 (DEFUN GIVE-NAME (&AUX CONN IDLE)
   (SETQ CONN (LISTEN "NAME"))
-  (COND ((EQ (STATE CONN) 'RFC-RECEIVED-STATE)
-	 (SETQ IDLE (// (TIME-DIFFERENCE (TIME) TV:KBD-LAST-ACTIVITY-TIME) 3600.)) ;Minutes
-	 (FORMAT-AND-EOF
-	   CONN
-	   "~6A ~C ~22A ~6A ~:[    ~3*~;~:[~D:~2,48D~;  ~*~D~]~]     ~A"
-	   USER-ID
-	   FS:USER-GROUP-AFFILIATION
-	   FS:USER-PERSONAL-NAME-FIRST-NAME-FIRST
-	   MY-NAME-STRING
-	   (NOT (ZEROP IDLE))
-	   (ZEROP (// IDLE 60.))
-	   (// IDLE 60.)
-	   (\ IDLE 60.)
-	   MY-FINGER-LOCATION-STRING))
-	(T (REMOVE-CONN CONN))))
+  (SETQ IDLE (// (TIME-DIFFERENCE (TIME) TV:KBD-LAST-ACTIVITY-TIME) 3600.)) ;Minutes
+  (FORMAT-AND-EOF CONN
+		  "~6A ~C ~22A ~6A ~:[    ~3*~;~:[~D:~2,48D~;  ~*~D~]~]     ~A"
+		  USER-ID
+		  FS:USER-GROUP-AFFILIATION
+		  FS:USER-PERSONAL-NAME-FIRST-NAME-FIRST
+		  SI:LOCAL-HOST-NAME
+		  (NOT (ZEROP IDLE))
+		  (ZEROP (// IDLE 60.))
+		  (// IDLE 60.)
+		  (\ IDLE 60.)
+		  SI:LOCAL-FINGER-LOCATION))
 
 ;; Send the specied format string, and eof and close
 (DEFUN FORMAT-AND-EOF (CONN &REST FORMAT-ARGS)
   (ACCEPT CONN)
-  (LET ((STREAM (STREAM CONN)))
-    (LEXPR-FUNCALL #'FORMAT STREAM FORMAT-ARGS)
-    (FUNCALL STREAM ':EOF)
-    (FUNCALL STREAM ':CLOSE))
-  (REMOVE-CONN CONN))
+  (WITH-OPEN-STREAM (STREAM (STREAM CONN))
+    (LEXPR-FUNCALL #'FORMAT STREAM FORMAT-ARGS)))
 
-;;; This is needed so that calls to FINGER can be compiled
-(DEFPROP FINGER
-	 COMPILER:((1 (FEF-ARG-OPT FEF-QT-QT))
-		   (1 (FEF-ARG-OPT FEF-QT-EVAL)))
-	 COMPILER:ARGDESC)
-
-(DEFUN FINGER (&OPTIONAL &QUOTE (SPEC "@AI") &EVAL (STREAM STANDARD-OUTPUT)
-	       &AUX HOST GATEWAY-P)
-  (SETQ SPEC (STRING SPEC))
-  (COND ((SETQ HOST (STRING-SEARCH-CHAR #/@ SPEC))
-	 (SETQ HOST (SUBSTRING SPEC (1+ HOST)))
-	 (OR (ASSOC HOST HOST-ALIST)		;Go directly if host is on ChaosNet
+(DEFUN FINGER (&OPTIONAL SPEC (STREAM STANDARD-OUTPUT) &AUX HOST INDEX GATEWAY-P)
+  (COND ((NULL SPEC)
+	 (SETQ HOST SI:ASSOCIATED-MACHINE))
+	((SETQ INDEX (STRING-SEARCH-CHAR #/@ SPEC))
+	 (SETQ HOST (SUBSTRING SPEC (1+ INDEX)))
+	 (IF (LET ((HOST1 (SI:PARSE-HOST HOST T)))
+	       ;;Go directly if host is on ChaosNet
+	       (AND HOST1 (FUNCALL HOST1 ':NETWORK-TYPEP ':CHAOS)))
+	     (SETQ SPEC (SUBSTRING SPEC 0 INDEX))
 	     (SETQ HOST NIL GATEWAY-P T)))	;Else use default host
-	(T (SETQ HOST "AI")))			;No explicit host, use AI
+	(T (SETQ HOST SI:ASSOCIATED-MACHINE)))	;No explicit host, use default
   (AND HOST (SETQ HOST (ADDRESS-PARSE HOST)))
-  (SETQ SPEC (STRING-APPEND "NAME " SPEC))
-  (DO ((DEFAULTS '("MC" "AI") (CDR DEFAULTS))
-       (CONN))
-      ((NULL DEFAULTS)
+  (SETQ SPEC (IF SPEC (STRING-APPEND "NAME" #\SP SPEC) "NAME"))
+  (DO ((DEFAULTS (SI:GET-SITE-OPTION ':ARPA-GATEWAYS) (CDR DEFAULTS)))
+      ((AND (NULL DEFAULTS) (NULL HOST))
        "No host available")
-    (SETQ CONN (CONNECT (OR HOST (CAR DEFAULTS)) SPEC))
-    (COND ((STRINGP CONN)			;If attempt to connect failed
-	   (AND HOST				;If explicit host, return reason for failure
-		(RETURN CONN)))			; else try next default
-	  (T					;Have connection, just transfer the info
-	    (FORMAT STREAM "~&")
-	    (COND ((NOT GATEWAY-P)
-		   (STREAM-COPY-UNTIL-EOF (STREAM CONN) STREAM))
-		  (T	;If going through a gateway, character set is ascii and has
-		        ;to be translated.
-		    (DO ((ISTREAM (STREAM CONN))
-			 (CH))
-			(NIL)
-		     IGNORE
-		      (SETQ CH (FUNCALL ISTREAM ':TYI))
-		      (OR CH (RETURN NIL))
-		      (SELECTQ CH
-			(11 (SETQ CH #\TAB))
-			(12 (GO IGNORE))
-			(15 (SETQ CH #\CR)))
-		      (FUNCALL STREAM ':TYO CH))))
-	    (CLOSE CONN)
-	    (REMOVE-CONN CONN)
-	    (RETURN NIL)))))
+    (WITH-OPEN-STREAM (CSTREAM (OPEN-STREAM (OR HOST (CAR DEFAULTS)) SPEC
+					   ':DIRECTION ':INPUT ':ERROR NIL
+					   ;;If going through an ITS gateway, character set is
+					   ;;ascii and has to be translated.
+					   ':ASCII-TRANSLATION GATEWAY-P))
+      (IF (STRINGP CSTREAM)			;If attempt to connect failed
+	  (AND HOST				;If explicit host, return reason for failure
+	       (RETURN CSTREAM))		; else try next default
+	  (FORMAT STREAM "~&")
+	  (STREAM-COPY-UNTIL-EOF CSTREAM STREAM)
+	  (RETURN NIL)))))
 
-(DEFUN FINGER-ALL-LMS (STREAM &OPTIONAL PRINT-FREE &AUX CONNS FREE)
-  (DOLIST (HOST HOST-ALIST)
-    (AND (STRING-EQUAL "CADR" (CAR HOST) 0 0 4 4)
-	 (PUSH (OPEN-CONNECTION (CDR HOST) "FINGER") CONNS)))
+(DEFSUBST FCL-CONN1 (ELEM) (CDADR ELEM))	; First CHAOS CONN in an element
+(DEFUN FINGER-ALL-LMS (STREAM &OPTIONAL PRINT-FREE RETURN-FREE &AUX CONNS FREE)
+  (DOLIST (HOST SI:MACHINE-LOCATION-ALIST)
+    (SETQ HOST (SI:PARSE-HOST (CAR HOST)))
+    (PUSH (LIST HOST (OPEN-CONNECTION (FUNCALL HOST ':CHAOS-ADDRESS) "FINGER")) CONNS))
   (DO ((OLD-TIME (TIME)))
       (NIL)
     (DOLIST (CONN CONNS)
-      (LET ((STATE (STATE CONN)))
+      (LET ((STATE (STATE (SECOND CONN))))
 	(COND ((NEQ STATE 'RFC-SENT-STATE)	;Still waiting
 	       (AND (EQ STATE 'ANSWERED-STATE)	;Got something meaningful
-		    (LET ((PKT (GET-NEXT-PKT CONN)))
+		    (LET ((PKT (GET-NEXT-PKT (SECOND CONN))))
 		      (LET ((STR (PKT-STRING PKT))
-			    (HOST-NAME (CAR (RASSOC (FOREIGN-ADDRESS CONN) HOST-ALIST)))
+			    (HOST-NAME (DO ((L (FUNCALL (FIRST CONN) ':HOST-NAMES) (CDR L))
+					    (WINNER NIL))
+					   ((NULL L) WINNER)
+					 (AND (STRING-EQUAL "CADR-" (CAR L) 0 0 5 5)
+					      (RETURN (CAR L)))
+					 (SETQ WINNER (CAR L))))
 			    IDX)
 			(COND (( (AREF STR 0) #\CR)	;Logged in
 			       (FORMAT STREAM
-				 "~&~6A ~4G~C ~3G~22A CADR-~5G~2A ~2G~4@A    ~1G~A~%"
+				 "~&~6A ~4G~C ~3G~22A ~5G~7A ~2G~4@A    ~1G~A~%"
 				 (NSUBSTRING STR 0
 					     (SETQ IDX (STRING-SEARCH-CHAR #\CR STR)))
 				 (NSUBSTRING STR (SETQ IDX (1+ IDX))
@@ -806,14 +991,15 @@
 				 (NSUBSTRING STR (SETQ IDX (1+ IDX))
 					     (SETQ IDX (STRING-SEARCH-CHAR #\CR STR IDX)))
 				 (AREF STR (1+ IDX))
-				 (NSUBSTRING HOST-NAME 4)))
-			      (PRINT-FREE
-			       (PUSH (SUBSTRING STR 1 (STRING-SEARCH-CHAR #\SP STR 1)) FREE)
+				 HOST-NAME))
+			      ((OR PRINT-FREE RETURN-FREE)
+			       (PUSH (SUBSTRING STR 1 (STRING-SEARCH-SET '(#\SP #\CR) STR 1))
+				     FREE)
 			       (PUSH HOST-NAME FREE))))
 		      (RETURN-PKT PKT)))
 	       (SETQ CONNS (DELQ CONN CONNS))
-	       (CLOSE CONN)
-	       (REMOVE-CONN CONN)))))
+	       (CLOSE (SECOND CONN))
+	       (REMOVE-CONN (SECOND CONN))))))
     (OR CONNS (RETURN NIL))			;Done with all of them
     (AND (> (TIME-DIFFERENCE (TIME) OLD-TIME) 240.)	;Allow 5 secs for this all
 	 (RETURN NIL))
@@ -822,49 +1008,48 @@
 		      (OR (> (TIME-DIFFERENCE (TIME) OLD-TIME) 240.)
 			  (DO ((CONNS CONNS (CDR CONNS)))
 			      ((NULL CONNS) NIL)
-			    (OR (EQ (STATE (CAR CONNS)) 'RFC-SENT-STATE)
+			    (OR (EQ (STATE (FCL-CONN1 (CAR CONNS))) 'RFC-SENT-STATE)
 				(RETURN T)))))
 		  OLD-TIME CONNS))
   ;; Flush all outstanding connections
-  (DOLIST (CONN CONNS)
-    (REMOVE-CONN CONN))
-  (AND PRINT-FREE
-       (FORMAT STREAM (IF (NULL FREE) "~&No Free Lisp machines~%"
-			  "~&Free Lisp machines: ~{~<~%~5X~2:;~A ~A~>~^, ~}")
-	       FREE)))
+  (DOLIST (ELEM CONNS)
+    (REMOVE-CONN (FCL-CONN1 ELEM)))
+;;  HOST-LIST
+  )
 
+;; missing from original tape :-(
+;;
 ;;; Dummy mail server, rejects all incoming mail
+;;; It really should be more clever, and notify the user of something...
 (DEFUN DUMMY-MAIL-SERVER (&AUX CONN STREAM RCPT)
   (SETQ CONN (LISTEN "MAIL"))
-  (COND ((EQ (STATE CONN) 'RFC-RECEIVED-STATE)
-	 (ACCEPT CONN)
-	 (SETQ STREAM (STREAM CONN))
-	 (*CATCH 'DONE
-	   (CONDITION-BIND (((READ-ON-CLOSED-CONNECTION LOS-RECEIVED-STATE HOST-DOWN)
-			     #'(LAMBDA (&REST IGNORE) (*THROW 'DONE NIL))))
-	     (DO () (NIL)			;Read the rcpts
-	       (SETQ RCPT (FUNCALL STREAM ':LINE-IN NIL))
-	       (AND (ZEROP (STRING-LENGTH RCPT))	;Blank line = start text
-		    (RETURN))
-	       (FUNCALL STREAM ':LINE-OUT
+  (ACCEPT CONN)
+  (SETQ STREAM (STREAM CONN))
+  (*CATCH 'DONE
+    (CONDITION-BIND (((READ-ON-CLOSED-CONNECTION LOS-RECEIVED-STATE HOST-DOWN)
+		      #'(LAMBDA (&REST IGNORE) (*THROW 'DONE NIL))))
+      (DO () (NIL)				;Read the rcpts
+	(SETQ RCPT (FUNCALL STREAM ':LINE-IN NIL))
+	(AND (ZEROP (STRING-LENGTH RCPT))	;Blank line = start text
+	     (RETURN))
+	(FUNCALL STREAM ':LINE-OUT
 		 "-Lisp Machines do not accept mail, maybe you want the :LMSEND command."))))
-	 (CLOSE CONN "all rcpts read")))
-  (REMOVE-CONN CONN))
+  (CLOSE CONN "all rcpts read"))
 
-(ADD-INITIALIZATION "MAIL" '(PROCESS-RUN-FUNCTION "MAIL-SERVER" 'DUMMY-MAIL-SERVER)
+(ADD-INITIALIZATION "MAIL" '(PROCESS-RUN-TEMPORARY-FUNCTION "MAIL Server" 'DUMMY-MAIL-SERVER)
 		    NIL 'SERVER-ALIST)
 
 ;;; Remote disk facilities.
 
 (ADD-INITIALIZATION "REMOTE-DISK"
-		    '(PROCESS-RUN-FUNCTION "Remote-Disk" #'REMOTE-DISK-SERVER)
+		    '(PROCESS-RUN-TEMPORARY-FUNCTION "REMOTE-DISK Server" 'REMOTE-DISK-SERVER)
 		    NIL 'SERVER-ALIST)
 
 (DEFUN REMOTE-DISK-SERVER (&AUX CONN STREAM LINE CMD CMDX UNIT BLOCK N-BLOCKS RQB
 				BLOCK-PKT-1 BLOCK-PKT-2 BLOCK-PKT-3)
-  (ERRSET (PROGN  ;If an error happens, don't ruin the machine.  (SETQ ERRSET T) to debug
     (SETQ CONN (LISTEN "REMOTE-DISK" 25.))
     (ACCEPT CONN)
+    (FUNCALL TV:WHO-LINE-FILE-STATE-SHEET ':ADD-SERVER CONN "REMOTE-DISK")
     (SETQ STREAM (STREAM CONN))
     (DO () (NIL)
       (PROCESS-WAIT "NETI" #'(LAMBDA (CONN) (OR (READ-PKTS CONN)
@@ -933,31 +1118,39 @@
 	       (AND BLOCK-PKT-1 (RETURN-ARRAY BLOCK-PKT-1))
 	       (RETURN-DISK-RQB RQB)))
 	    ((STRING-EQUAL CMD "SAY")
-	     (FORMAT (TV:GET-NOTIFICATION-STREAM)
-		     "~&[REMOTE-DISK-SERVER:~A]~%" (SUBSTRING LINE CMDX))
-	     (TV:BEEP))))))
+	     (TV:NOTIFY NIL "REMOTE-DISK-SERVER:~A" (SUBSTRING LINE CMDX)))))
   (AND CONN (REMOVE-CONN CONN)))
 
 ;; Useful information gatherers
 
 ;HOST-DATA: returns information about a specified host.  Currently,
 ; returns name of machine as primary value and host number as second value
-(DEFUN HOST-DATA (&OPTIONAL (HOST MY-ADDRESS))
-  (PROG (HOST-ADDRESS HOST-DATA)    ;PROG NEEDED TO DO MULTIPLE VALUE RETURN
-	(OR (SETQ HOST-ADDRESS (ADDRESS-PARSE HOST))
-	    (FERROR NIL "~S is an illegal host specification" HOST))
-	(AND (SETQ HOST-DATA (ASSQ HOST-ADDRESS KNOWN-NAME-ALIST))
-	     (RETURN (CDR HOST-DATA) (CAR HOST-DATA)))
-	(AND (SETQ HOST-DATA (RASSOC HOST-ADDRESS HOST-ALIST))
-	     (RETURN (CAR HOST-DATA) (CDR HOST-DATA)))
-	(OR (SETQ HOST-DATA (GET-HOST-STATUS-PACKET HOST-ADDRESS))
-	    (RETURN "Unknown" HOST-ADDRESS))
-	(RETURN (PROG1 (NSUBSTRING (PKT-STRING HOST-DATA) 0
-			(MIN (PKT-NBYTES HOST-DATA)
-                             32.
-                             (OR (STRING-SEARCH-CHAR 0 (PKT-STRING HOST-DATA)) 32.)))
-		       (RETURN-PKT HOST-DATA))
-		HOST-ADDRESS)))
+(DEFUN HOST-DATA (&OPTIONAL (HOST MY-ADDRESS) &AUX HOST-ADDRESS HOST-NAME TEM)
+  (DECLARE (RETURN-LIST HOST-NAME HOST-ADDRESS))
+  (OR (SETQ HOST-ADDRESS (ADDRESS-PARSE HOST))
+      (FERROR NIL "~S is an illegal host specification" HOST))
+  (IF (AND (SETQ HOST-NAME (SI:GET-HOST-FROM-ADDRESS HOST-ADDRESS ':CHAOS))
+	   (SETQ HOST-NAME (FUNCALL HOST-NAME ':NAME)))
+      (AND (SETQ TEM (ASSOC HOST-NAME SI:MACHINE-LOCATION-ALIST))
+	   (SETQ HOST-NAME (SECOND TEM)))
+      (IF (SETQ TEM (GET-HOST-STATUS-PACKET HOST-ADDRESS))
+	  (LET ((STRING (PKT-STRING TEM)))
+	    (SETQ HOST-NAME (SUBSTRING STRING 0
+				       (MIN (PKT-NBYTES TEM) 32.
+					    (OR (STRING-SEARCH-CHAR 0 STRING) 32.)))))
+	  (SETQ HOST-NAME "Unknown")))
+  (VALUES HOST-NAME HOST-ADDRESS))
+
+;;; If given a number, this always returns something that ADDRESS-PARSE would make into that
+;;; number.
+(DEFUN HOST-SHORT-NAME (HOST &AUX HOST1)
+  (COND ((NOT (NUMBERP HOST))
+	 (SI:HOST-SHORT-NAME HOST))
+	((SETQ HOST1 (SI:GET-HOST-FROM-ADDRESS HOST ':CHAOS))
+	 (SI:HOST-SHORT-NAME HOST1))
+	(T (FORMAT NIL "~O" HOST))))
+
+(FSET 'HOST-SYSTEM-TYPE 'SI:HOST-SYSTEM-TYPE)
 
 ;Returns a STATUS packet from the specified host or NIL if couldn't get the packet
 (DEFUN GET-HOST-STATUS-PACKET (HOST &AUX CONNECTION PKT ADR)
@@ -988,31 +1181,42 @@
 	  (CLOSE CONNECTION)
 	  (RETURN NIL)))))
 
+;; Values can be T, :NOTIFY, or NIL
 (DEFVAR EVAL-SERVER-ON NIL)
+(DEFVAR EVAL-SERVER-CONNECTIONS NIL)
 
 ;Call this if you want to enable the eval server on your machine
-(DEFUN EVAL-SERVER-ON ()
-  (SETQ EVAL-SERVER-ON T))
+(DEFUN EVAL-SERVER-ON (&OPTIONAL (MODE T))
+  (SETQ EVAL-SERVER-ON MODE))
 
-(DEFUN EVAL-SERVER-FUNCTION (&AUX CONN STREAM)
+(DEFUNP EVAL-SERVER-FUNCTION (&AUX CONN)
   (SETQ CONN (LISTEN "EVAL"))
-  (COND ((OR EVAL-SERVER-ON (EQUAL USER-ID "")(NULL USER-ID))
-	 (ACCEPT CONN)
-	 (SETQ STREAM (STREAM CONN))
-	 (ERRSET (DO ((TERMINAL-IO STREAM)	;Don't blow away machine on lossage
-		      (INPUT))
-		     (NIL)
-		   (AND (EQ (SETQ INPUT (READ STREAM 'QUIT)) 'QUIT)
-			(RETURN NIL))
-		   (PRINT (ERRSET (EVAL INPUT) NIL) STREAM)
-		   (TERPRI STREAM)
-		   (FUNCALL STREAM ':FORCE-OUTPUT))
-		 NIL)
-	 (REMOVE-CONN CONN))
-	(T (REJECT CONN (FORMAT NIL "This machine is in use by ~A" USER-ID)))))
+  (COND ((AND (NULL EVAL-SERVER-ON)
+	      (NOT (MEMBER USER-ID '(NIL ""))))
+	 (REJECT CONN (FORMAT NIL "This machine is in use by ~A" USER-ID))
+	 (RETURN NIL))
+	((EQ EVAL-SERVER-ON ':NOTIFY)
+	 (TV:NOTIFY NIL "Use of EVAL server by ~A"
+		    (HOST-SHORT-NAME (FOREIGN-ADDRESS CONN)))
+	 (PROCESS-ALLOW-SCHEDULE)
+	 (ACCEPT CONN))
+	(T (ACCEPT CONN)))
+  (PUSH CONN EVAL-SERVER-CONNECTIONS)
+  (FUNCALL TV:WHO-LINE-FILE-STATE-SHEET ':ADD-SERVER CONN "EVAL")
+  (CATCH-ERROR
+    (WITH-OPEN-STREAM (STREAM (STREAM CONN))
+      (DO ((TERMINAL-IO STREAM)			;Don't blow away machine on lossage
+	   (INPUT))
+	  (NIL)
+	(AND (EQ (SETQ INPUT (READ STREAM 'QUIT)) 'QUIT)
+	     (RETURN NIL))
+	(CATCH-ERROR (PRINT (MULTIPLE-VALUE-LIST (EVAL INPUT))) T)
+	(TERPRI)
+	(FUNCALL STREAM ':FORCE-OUTPUT)))
+    NIL))
 
 (ADD-INITIALIZATION "EVAL"
-                    '(PROCESS-RUN-FUNCTION "EVAL" (FUNCTION EVAL-SERVER-FUNCTION))
+                    '(PROCESS-RUN-TEMPORARY-FUNCTION "EVAL Server" 'EVAL-SERVER-FUNCTION)
                     NIL
                     'SERVER-ALIST)
 
@@ -1046,6 +1250,10 @@
 (DEFUN SPY-START ()
   (LET ((CONN (LISTEN "SPY")))
     (ACCEPT CONN)
+    ;; Wait for other end to acknowledge our OPN
+    (PROCESS-WAIT "Accept" #'(LAMBDA (CONN) (OR (NEQ (STATE CONN) 'OPEN-STATE)
+						(PLUSP (SEND-PKT-ACKED CONN))))
+		  CONN)
     (ASET (LSH UNC-OP 8) PACKET-HEADER-ARRAY 0)
     (ASET MAX-DATA-BYTES-PER-PKT PACKET-HEADER-ARRAY 1)
     (ASET (FOREIGN-ADDRESS CONN) PACKET-HEADER-ARRAY 2)
@@ -1060,7 +1268,7 @@
     (REMOVE-CONN CONN)))
 
 (ADD-INITIALIZATION "SPY"
-                    '(PROCESS-RUN-FUNCTION "PEEK-A-BOO" 'SPY-START)
+                    '(PROCESS-RUN-TEMPORARY-FUNCTION "SPY Server" 'SPY-START)
                     NIL
                     'SERVER-ALIST)
 
@@ -1107,7 +1315,7 @@
 (DEFUN SETUP (&OPTIONAL (CNAME "FOO"))
    (ENABLE)
    (SETQ C (OPEN-CONNECTION MY-ADDRESS CNAME))
-   (SETQ L (LISTEN CNAME))
+   (SETQ L (LISTEN CNAME 5 NIL))
    (WAIT L 'LISTENING-STATE (* 10. 60.))
    (IF (EQ (STATE L) 'LISTENING-STATE)
        (FORMAT T "Lost")
@@ -1173,27 +1381,197 @@
        (PEEK-DISPLAY)
        (FORMAT T "~2%Recent headers:")
        (PRINT-RECENT-HEADERS))
-
-;;; "Physical Support Facilities"
-
-(DEFUN CALL-ELEVATOR ()
-  (COND ((TECH-SQUARE-FLOOR-P 8)
-	 (HACK-DOOR "8"))
-	((TECH-SQUARE-FLOOR-P 9)
-	 (HACK-DOOR "9"))
-	((FERROR NIL "I don't know how to get an elevator to your location."))))
-
-(DEFUN BUZZ-DOOR ()
-  (COND ((TECH-SQUARE-FLOOR-P 9) (HACK-DOOR "D"))
-	((FERROR NIL "I can only open the 9th floor door at Tech square"))))
 
 (DEFUN HACK-DOOR (COMMAND)
   (LET ((RESULT (SIMPLE "AI" (STRING-APPEND "DOOR " COMMAND))))
-    (COND ((STRINGP RESULT) (FERROR NIL "Failed trying to hack the door: ~A" RESULT))
+    (COND ((STRINGP RESULT)
+	   (TV:NOTIFY NIL "Failed trying to hack the door: ~A" RESULT))
 	  (T (RETURN-PKT RESULT) T))))
+
+;;; System system transformation
+(DEFUN GENERATE-HOST-TABLE-1 (INPUT-FILE OUTPUT-FILE)
+  (WITH-OPEN-FILE (INPUT-STREAM INPUT-FILE '(:READ))
+    (WITH-OPEN-FILE (OUTPUT-STREAM OUTPUT-FILE '(:PRINT))
+      (FORMAT OUTPUT-STREAM "~
+;;; -*- Mode: LISP;~@[ Package: ~A;~] Base: 8 -*-
+;;; *** THIS FILE WAS AUTOMATICALLY GENERATED BY A PROGRAM, DO NOT EDIT IT ***
+;;; Host table made from ~A by ~A at ~\DATIME\~%"
+	      SI:*FORCE-PACKAGE* (FUNCALL INPUT-STREAM ':TRUENAME) USER-ID)
+      (DO ((LINE) (EOF)
+	   (I) (J)
+	   (NI) (NJ)
+	   (HOSTL) (NAMEL) (DELIM))
+	  (NIL)
+	(MULTIPLE-VALUE (LINE EOF)
+	  (FUNCALL INPUT-STREAM ':LINE-IN NIL))
+	(AND EOF (RETURN))
+	(MULTIPLE-VALUE (I J)
+	  (PARSE-HOST-TABLE-TOKEN LINE 0))
+	(COND ((AND I (STRING-EQUAL LINE "HOST" I 0 J NIL))
+	       ;; Host name
+	       (MULTIPLE-VALUE (NI NJ)
+		 (PARSE-HOST-TABLE-TOKEN LINE (1+ J)))
+	       (MULTIPLE-VALUE (I J DELIM)
+		 (PARSE-HOST-TABLE-TOKEN LINE (1+ NJ)))
+	       (SETQ HOSTL (NCONS (SUBSTRING LINE NI NJ)))
+	       (IF (= DELIM #/[)
+		   (DO ((L NIL)
+			(I1) (J1))
+		       ((= DELIM #/])
+			(SETQ J (1+ J))		;,
+			(NREVERSE L))
+		     (MULTIPLE-VALUE (I1 J1 DELIM)
+		       (PARSE-HOST-TABLE-TOKEN LINE (1+ J)))
+		     (IF (= DELIM #\SP)
+			 (MULTIPLE-VALUE (I J DELIM)
+			   (PARSE-HOST-TABLE-TOKEN LINE (1+ J1)))
+			 (SETQ I I1 J J1 J1 I1))
+		     (ADD-HOST-TABLE-ADDRESS LINE I1 J1 I J HOSTL))
+		   (LET ((I1 I) (J1 J))
+		     (IF (= DELIM #\SP)
+			 (MULTIPLE-VALUE (I J)
+			   (PARSE-HOST-TABLE-TOKEN LINE (1+ J)))
+			 (SETQ I I1 J J1 J1 I1))
+		     (ADD-HOST-TABLE-ADDRESS LINE I1 J1 I J HOSTL)))
+	       (COND ((OR (GET HOSTL ':CHAOS)	;If there were any chaosnet addresses
+			  ;; Include some popular ARPA sites for speed in SUPDUP/TELNET
+			  (AND (EQ SI:SITE-NAME ':MIT)
+			       (MEMBER (CAR HOSTL) '("MIT-DMS" "SU-AI" "S1-A" "CMU-10A"
+						     "SRI-KL"))))
+		      (DOTIMES (K 2)
+			(MULTIPLE-VALUE (I J DELIM)
+			  (PARSE-HOST-TABLE-TOKEN LINE (1+ J))))
+		      (PUTPROP HOSTL (INTERN (SUBSTRING LINE I J) "") ':SYSTEM-TYPE)
+		      (DOTIMES (K 2)
+			(MULTIPLE-VALUE (I J DELIM)
+			  (PARSE-HOST-TABLE-TOKEN LINE (1+ J)))
+			(OR I (RETURN (SETQ DELIM -1))))
+		      (SETQ NAMEL (NCONS (CAR HOSTL)))
+		      (AND (= DELIM #/[)
+			   (DO () ((= DELIM #/])
+				   (SETQ NAMEL (STABLE-SORT NAMEL
+							    #'(LAMBDA (X Y)
+								(< (STRING-LENGTH X)
+								   (STRING-LENGTH Y))))))
+			     (MULTIPLE-VALUE (I J DELIM)
+			       (PARSE-HOST-TABLE-TOKEN LINE (1+ J)))
+			     (PUSH (SUBSTRING LINE I J) NAMEL)))
+		      (PUTPROP HOSTL NAMEL ':HOST-NAMES)
+		      (PKG-BIND (OR SI:*FORCE-PACKAGE* PACKAGE)
+			(SI:GRIND-TOP-LEVEL `(SI:DEFINE-HOST ,(CAR HOSTL)
+							     . ,(MAPCAR #'(LAMBDA (X) `',X)
+									(CDR HOSTL)))
+					    95. OUTPUT-STREAM)
+			(TERPRI OUTPUT-STREAM))))))))))
 
-(DEFUN TECH-SQUARE-FLOOR-P (FLOOR)
-  (LET ((DATA (ASSQ MY-ADDRESS CONSOLE-LOCATION-ALIST)))
-    (AND DATA
-	 (EQ (CADR DATA) 'MIT-NE43)
-	 (= (CADDR DATA) FLOOR))))
+(DEFUN PARSE-HOST-TABLE-TOKEN (STRING &OPTIONAL (START 0) END)
+  (OR END (SETQ END (STRING-LENGTH STRING)))
+  (DO ((IDX START (1+ IDX))
+       (SIDX) (CH))
+      (( IDX END)
+       (VALUES SIDX IDX -1))
+    (SETQ CH (AREF STRING IDX))
+    (OR SIDX
+	(MEMQ CH '(#\SP #\TAB))
+	(SETQ SIDX IDX))
+    (AND SIDX
+	 (MEMQ CH '(#/, #\SP #\TAB #/[ #/]))
+	 (RETURN SIDX IDX CH))))
+
+(DEFUN ADD-HOST-TABLE-ADDRESS (LINE NET-START NET-END ADDRESS-START ADDRESS-END HOSTL
+			       &AUX SYMBOL PARSER)
+  (SETQ SYMBOL (IF (= NET-START NET-END) ':ARPA
+		   (INTERN (SUBSTRING LINE NET-START NET-END) "")))
+  (COND ((SETQ PARSER (GET SYMBOL 'HOST-ADDRESS-PARSER))
+	 (SETF (GET HOSTL SYMBOL)		;Keep addresses in original order
+	       (NCONC (GET HOSTL SYMBOL)
+		      (NCONS (FUNCALL PARSER SYMBOL LINE ADDRESS-START ADDRESS-END)))))))
+
+;;; For now, this is all we really support
+(DEFUN (:CHAOS HOST-ADDRESS-PARSER) (IGNORE LINE START END)
+  (ZWEI:PARSE-NUMBER LINE START END 8))
+
+(DEFUN (:ARPA HOST-ADDRESS-PARSER) (IGNORE LINE START END &AUX SLASH)
+  (SETQ SLASH (STRING-SEARCH-CHAR #// LINE START END))
+  (DPB (ZWEI:PARSE-NUMBER LINE START SLASH) 1110 (ZWEI:PARSE-NUMBER LINE (1+ SLASH) END)))
+
+(DEFUN (:DIAL HOST-ADDRESS-PARSER) (IGNORE LINE START END)
+  (SUBSTRING LINE START END))			;A phone number is just characters.
+
+(DEFUN (:LCS HOST-ADDRESS-PARSER) (IGNORE LINE START END &AUX SLASH)
+  (SETQ SLASH (STRING-SEARCH-CHAR #// LINE START END))
+  (DPB (ZWEI:PARSE-NUMBER LINE START SLASH) 1010 (ZWEI:PARSE-NUMBER LINE (1+ SLASH) END)))
+
+(DEFUN (:SU HOST-ADDRESS-PARSER) (IGNORE LINE START END &AUX SHARP)
+  (SETQ SHARP (STRING-SEARCH-CHAR #/# LINE START END))
+  (DPB (ZWEI:PARSE-NUMBER LINE START SHARP) 1010 (ZWEI:PARSE-NUMBER LINE (1+ SHARP) END)))
+
+(DEFUN CHAOS-UNKNOWN-HOST-FUNCTION (NAME)
+  (DOLIST (HOST (SI:GET-SITE-OPTION ':CHAOS-HOST-TABLE-SERVER-HOSTS))
+    (WITH-OPEN-STREAM (STREAM (OPEN-STREAM HOST "HOSTAB" ':ERROR NIL))
+      (COND ((NOT (STRINGP STREAM))
+	     (FUNCALL STREAM ':LINE-OUT NAME)
+	     (FUNCALL STREAM ':FORCE-OUTPUT)
+	     (DO ((LIST NIL)
+		  (LINE) (EOF)
+		  (LEN) (SP) (PROP))
+		 (NIL)
+	       (MULTIPLE-VALUE (LINE EOF)
+		 (FUNCALL STREAM ':LINE-IN))
+	       (AND EOF
+		    (RETURN (COND (LIST
+				   (PUTPROP LIST (STABLE-SORT (GET LIST ':HOST-NAMES)
+							      #'(LAMBDA (X Y)
+								  (< (STRING-LENGTH X)
+								     (STRING-LENGTH Y))))
+					    ':HOST-NAMES)
+				   (APPLY #'SI:DEFINE-HOST LIST)))))
+	       (SETQ LEN (STRING-LENGTH LINE)
+		     SP (STRING-SEARCH-CHAR #\SP LINE 0 LEN))
+	       (SETQ PROP (INTERN (SUBSTRING LINE 0 SP) "")
+		     SP (1+ SP))
+	       (SELECTQ PROP
+		 (:ERROR
+		  (RETURN NIL))
+		 (:NAME
+		  (LET ((NAME (SUBSTRING LINE SP LEN)))
+		    (OR LIST (SETQ LIST (NCONS NAME)))
+		    (PUSH NAME (GET LIST ':HOST-NAMES))))
+		 (:SYSTEM-TYPE
+		  (PUTPROP LIST (INTERN (SUBSTRING LINE SP LEN) "") ':SYSTEM-TYPE))
+		 (:MACHINE-TYPE)
+		 (OTHERWISE
+		  (LET ((FUNCTION (GET PROP 'HOST-ADDRESS-PARSER)))
+		    (OR FUNCTION (SETQ FUNCTION (GET ':CHAOS 'HOST-ADDRESS-PARSER)))
+		    (PUSH (FUNCALL FUNCTION PROP LINE SP LEN)
+			  (GET LIST PROP))))))
+	     (RETURN T))))))
+
+(SETQ SI:UNKNOWN-HOST-FUNCTION 'CHAOS-UNKNOWN-HOST-FUNCTION)
+
+;;; Host object support
+
+(DEFPROP :CHAOS HOST-CHAOS-MIXIN SI:NETWORK-TYPE-FLAVOR)
+
+(DEFFLAVOR HOST-CHAOS-MIXIN () ()
+  (:INCLUDED-FLAVORS SI:HOST))
+
+(DEFMETHOD (HOST-CHAOS-MIXIN :CHAOS-ADDRESSES) ()
+  (GET (LOCF SI:(HOST-ADDRESSES ALIST-ELEM)) ':CHAOS))
+
+(DEFMETHOD (HOST-CHAOS-MIXIN :CHAOS-ADDRESS) ()
+  (CAR (FUNCALL-SELF ':CHAOS-ADDRESSES)))
+
+(DEFMETHOD (HOST-CHAOS-MIXIN :CONNECT) (CONTACT-NAME)
+  (CONNECT SELF CONTACT-NAME))
+
+;;; This is here to make compile-flavor-methods win before PEEK is loaded.
+;;; The function is defined in PEEKCH.
+(DEFMETHOD (HOST-CHAOS-MIXIN :PEEK-FILE-SYSTEM-HEADER) HOST-CHAOS-PEEK-FILE-SYSTEM-HEADER)
+
+;;; Hosts whose operating system we don't know anything about.
+(SI:COMPILE-HOST-FLAVOR-COMBINATION :DEFAULT :CHAOS)
+
+;;; By default, lisp machines do not have any file computer flavor.
+;;; This is added later.
+(SI:COMPILE-HOST-FLAVOR-COMBINATION :LISPM :CHAOS)
