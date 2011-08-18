@@ -358,6 +358,7 @@
 ;;; (3) Middle-length form if any, else NIL.
 ;;; (4) Francais.
 ;;; (5) Roman numberals (used in Europe).
+;;; (6) Deutsch.
 (DEFVAR *MONTHS* '(("Jan" "January" NIL "Janvier" "I" "Januar")
 		   ("Feb" "February" NIL "Fevrier" "II" "Februar")
 		   ("Mar" "March" NIL "Mars" "III" "Maerz")
