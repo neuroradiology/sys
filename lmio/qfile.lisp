@@ -1019,7 +1019,9 @@
 
 (DEFUN FORCE-USER-TO-LOGIN (&OPTIONAL (HOST USER-LOGIN-MACHINE))
   (COND ((OR (NULL USER-ID) (STRING-EQUAL USER-ID ""))
-	 (FORMAT QUERY-IO "~&Host is ~A, login name or host:login name: " HOST)
+	 (FORMAT QUERY-IO
+		 "~&Please log in.  Type username or host:username (host defaults to ~A): "
+		 HOST)
 	 (LET ((INPUT (READLINE QUERY-IO))
 	       (COLON))
 	   (AND (SETQ COLON (STRING-SEARCH-CHAR #/: INPUT))
