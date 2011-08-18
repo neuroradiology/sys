@@ -89,8 +89,7 @@
   T)
 
 ;;; Print the error status bits
-(DEFVAR SERIAL-STREAM (SI:MAKE-SERIAL-STREAM
-			':PARITY NIL ':NUMBER-OF-DATA-BITS 8 ':BAUD 300.))
+(DEFVAR SERIAL-STREAM)
 
 (DEFUN DBG-PRINT-STATUS ()
    (CC-PRINT-SET-BITS (SELECTQ DBG-ACCESS-PATH
@@ -121,6 +120,11 @@
 
 ;;; Dummy stream for SERIAL I/O
 (DEFUN SERIAL-STREAM (OP &OPTIONAL ARG1)
+  ;; Don't do this at load time since it doesn't work if the machine doesn't have
+  ;; the serial interface hardware
+  (OR (BOUNDP 'SERIAL-STREAM)
+      (SETQ SERIAL-STREAM (SI:MAKE-SERIAL-STREAM ':PARITY NIL ':NUMBER-OF-DATA-BITS 8
+						 ':BAUD 300.)))
   (SELECTQ OP
     (:WHICH-OPERATIONS '(TYI TYO))
     (:STRING-OUT (DOTIMES (I (STRING-LENGTH ARG1))

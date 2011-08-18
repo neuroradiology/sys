@@ -1,5 +1,8 @@
-;;;-*-LISP-*-    macros for QF, CC: version of console program that runs on machine
-;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+;;; -*- Mode:Lisp; Package:CADR; Base:8 -*-
+;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+;;; ***CAUTION!! This file runs only on LISPM.  The MACLISP version is LMCONS;QFMAC***
+;;;    macros for QF, CC: version of console program that runs on machine
+
 
 ;SPECIAL VARIABLES FOR ARRAY STUFF
 
@@ -97,3 +100,8 @@
 			 BODY)))
      ,ITEM))
 
+
+;Really wants to be a bignum LSH.  On LISPM, LSH doesnt win for bignums, ASH does.
+; In MACLISP, LSH wins sufficiently.
+(DEFMACRO CC-SHIFT (QUAN AMT)
+  `(#Q ASH #M LSH ,QUAN ,AMT))

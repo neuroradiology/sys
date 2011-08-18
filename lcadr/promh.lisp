@@ -360,9 +360,6 @@ RST	(JUMP-NOT-EQUAL-XCT-NEXT M-A A-ZERO RST)
        ((M-A) SUB M-A A-1)
 	((INTERRUPT-CONTROL) DPB M-ONES		;CLEAR RESET, SET HALFWORD-MODE,
 		(BYTE-FIELD 1 27.) A-ZERO)	;AND ENABLE INTERRUPTS
-	((M-A) DPB M-ONES (BYTE-FIELD 1 22.) A-ZERO)	;DELAY FOR 1.5 SECONDS FOR MARKSMAN
-RSTDLY	(JUMP-NOT-EQUAL-XCT-NEXT M-A A-ZERO RSTDLY)
-       ((M-A) SUB M-A A-1)
 
 ;;; Set up the map.  First, write a 0 into the first location of the level
 ;;; one map.  This is the only location we use.  Read back to be safe.
@@ -421,9 +418,18 @@ PAGE-0-PARITY-FIX			;so the disk doesn't barf out when we save it
 ;;; In order to not clobber core, save a page (page 0) of physical
 ;;; memory on disk.  Block 1 is allocated to us for this purpose.
 SAVE-A-PAGE
+	((M-A) DPB M-ONES (BYTE-FIELD 1 18.) A-ZERO)	;Delay for 0.1 second in case
+SAPDLY	(JUMP-NOT-EQUAL-XCT-NEXT M-A A-ZERO SAPDLY)	; something random is happening
+       ((M-A) SUB M-A A-1)
 	((M-TEMP-1) A-1)
 	(CALL-XCT-NEXT DISK-WRITE)
        ((M-A) SETZ)
+	((M-TEMP-1) A-1)				;Now do a read-compare
+	(CALL-XCT-NEXT DISK-OP-LOW)
+       ((M-TEMP-2) DPB M-ONES (BYTE-FIELD 1 3) A-ZERO)	;OP 10 = read-compare
+	((M-TEMP-1) AND READ-MEMORY-DATA A-DISK-ERROR)
+	(JUMP-NOT-EQUAL M-TEMP-1 A-ZERO SAVE-A-PAGE)	;Got an error on readback, retry
+	(JUMP-IF-BIT-SET (BYTE-FIELD 1 22.) READ-MEMORY-DATA SAVE-A-PAGE)	;R/C failed
 
 ;;; Read the label (block 0) into physical memory page 0, get disk
 ;;; parameters, and find out where the MICR partition is.
@@ -673,6 +679,12 @@ DISK-WRITE
 	; drops in.
 
 DISK-OP
+	(CALL DISK-OP-LOW)
+	((M-TEMP-1) AND READ-MEMORY-DATA A-DISK-ERROR)
+	(JUMP-NOT-EQUAL M-TEMP-1 A-ZERO ERROR-DISK-ERROR)
+	(POPJ)
+
+DISK-OP-LOW
 	;; Wait for the disk controller to be ready.
 	((VMA-START-READ) A-DISK-REGS)
 	(JUMP-IF-PAGE-FAULT ERROR-PAGE-FAULT)
@@ -717,8 +729,6 @@ DISK-WAIT
 	(JUMP-IF-PAGE-FAULT ERROR-PAGE-FAULT)
 	(JUMP-IF-BIT-CLEAR (BYTE-FIELD 1 0) READ-MEMORY-DATA DISK-WAIT)
     (ERROR-TABLE AWAIT-DISK-DONE)		;Hangs near here while waiting for disk
-	((M-TEMP-1) AND READ-MEMORY-DATA A-DISK-ERROR)
-	(JUMP-NOT-EQUAL M-TEMP-1 A-ZERO ERROR-DISK-ERROR)
 	(POPJ)
 
 ;;; Divide two numbers.  This routine taken from UCADR 108.

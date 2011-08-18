@@ -170,6 +170,9 @@
 (DEFUN P-A-MEM-LOOP (&OPTIONAL (N 0) (ADR 0))
   (DO () (()) (CC-WRITE-A-MEM ADR N)))
 
+(DEFUN P-A-MEM-R-LOOP (&OPTIONAL (ADR 0))
+  (DO () (()) (CC-READ-A-MEM ADR)))
+
 (defun p-m-rw-a-pass (n &optional (adr 0))
   (CC-WRITE-MD n)		;PUT VALUE INTO THE MRD REGISTER
   (CC-EXECUTE  ;NOTE NO WRITE, JUST PUT IT IN IR

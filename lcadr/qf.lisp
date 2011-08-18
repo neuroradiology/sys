@@ -1,5 +1,6 @@
-;;; PHONEY -*-LISP-*- MACHINE MICROCODE -- CADR VERSION
-;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+;;; -*- Mode:Lisp; Package:CADR; Base:8 -*-
+;;; PHONEY LISP MACHINE MICROCODE -- CADR VERSION
+;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;2/4/79 MODIFIED FOR CHANGES TO MAP-STATUS-CODE IN PAGE MAP 
 
@@ -13,11 +14,6 @@
 (INCLUDE |LMDOC;.COMPL PRELUD|);DEFINE DEFMACRO, `, LET, ETC.
 (IF-FOR-MACLISP
  (INCLUDE |LMCONS;QFMAC >|) )
-
-;Really wants to be a bignum LSH.  On LISPM, LSH doesnt win for bignums, ASH does.
-; In MACLISP, LSH wins sufficiently.
-(DEFMACRO CC-SHIFT (QUAN AMT)
-  `(#Q ASH #M LSH ,QUAN ,AMT))
 
 ;ALSO SEE FIXNUM DECLARATIONS BELOW WHEN THESE ARE CHANGED.
 ;(DEFMACRO PHYS-MEM-READ (ADR)     ;THESE ARE NOW FUNCTIONS IN CC
