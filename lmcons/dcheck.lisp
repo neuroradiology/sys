@@ -1,4 +1,4 @@
-;;; -*- Mode:Lisp; Package:CADR; Base:8; Lowercase:yes -*-
+;;; -*- Mode:Lisp; Package:CADR; Base:8 -*-
 
 ;;; DCHECK - for checking out newly-constructed disk controls
 ;;; Goes in CADR package
@@ -120,94 +120,32 @@
 				  ECC-SOFT ECC-HARD ECC-HEADER HEADER-COMPARE-ERROR
 				  MEM-PARITY-ERROR NXM-ERROR CCW-CYCLE READ-COMPARE-DIFFERENCE
 				  INTERNAL-PARITY-ERROR ))
+     
      #M (PROGN (PRINC '| SEL-UNIT-BLOCK-CTR=|) (PRIN1 (LSH STATUS -24.))))
 
-(defun dc-print-marksman-status ()
-  (let ((sts))
-    (dc-print-status)
-    (terpri)
-    (let ((da (phys-mem-read dc-da-adr)))
-      (format t "~%Disk address: cylinder ~o, head ~o, block ~o (octal)~%"
-	        (ldb 2020 da) (ldb 1010 da) (ldb 0010 da)))
-    (princ "Current status: ")
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (cc-print-set-bits sts '( track-zero landing-zone ill-cmd ready
-			      spin-out-of-limit end-of-cyl diag-error track-zero-error ))
-    (princ ", Re-read status: ")
-    (dc-exec-1 5)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (cc-print-set-bits sts '( track-zero landing-zone ill-cmd ready
-			      spin-out-of-limit end-of-cyl diag-error track-zero-error ))
-
-    (dc-exec-1 200005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|sector-length=|)
-    (prin1 (logldb 0002 sts))
-    (tyo 40)
-    (cc-print-set-bits sts '( nil nil illegal-set-sector sector-switches-overridden
-			      illegal-rezero-or-illegal-seek illegal-cylinder illegal-command
-			      write-protect-violation ))
-    (terpri)
-    (dc-exec-1 400005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|last cmd byte 1=|)
-    (prin1 sts)
-    (dc-exec-1 600005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|, byte 2=|)
-    (prin1 sts)
-    (dc-exec-1 1000005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|, cur cyl=|)
-    (prin1 sts)
-    (dc-exec-1 1200005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|, sec//trk-1=|)
-    (prin1 sts)
-    (dc-exec-1 1400005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|, diag sts 1=|)
-    (prin1 sts)
-    (dc-exec-1 1600005)
-    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
-    (princ '|, diag sts 2=|)
-    (prin1 sts)))
-
 ;;; Seek, print status if error
-(DEFUN DC-SEEK (CYL)
+(DEFUN DC-SEEK (CYL &OPTIONAL (UNIT 0))
+  (PHYS-MEM-WRITE DC-DA-ADR (ASH UNIT 28.))
   (PHYS-MEM-WRITE DC-CMD-ADR DC-AT-EASE)
   (PHYS-MEM-WRITE DC-START-ADR 0)
   (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (PHYS-MEM-WRITE DC-DA-ADR (LOGDPB CYL 2014 0))
-  (PHYS-MEM-WRITE DC-CMD-ADR (logdpb cyl 3010 (logdpb 100 2010 DC-SEEK)))
+  (PHYS-MEM-WRITE DC-DA-ADR (LOGDPB CYL 2014 (ASH UNIT 28.)))
+  (PHYS-MEM-WRITE DC-CMD-ADR (LOGDPB CYL 3010 (LOGDPB 100 2010 DC-SEEK)))
   (PHYS-MEM-WRITE DC-START-ADR 0)
   (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (OR MARKSMAN-P
-      (DO () ((LDB-TEST 0201 (PHYS-MEM-READ DC-STS-ADR))) ;Await attention
-	#M (SLEEP 0.03)
-	#Q (PROCESS-ALLOW-SCHEDULE)
-	))
+  (DO () ((LDB-TEST 0201 (PHYS-MEM-READ DC-STS-ADR))) ;Await attention
+    #M (SLEEP 0.03)
+    #Q (PROCESS-ALLOW-SCHEDULE)
+    )
   (DC-CHECK-STATUS DC-SOME-ERROR-BITS))
 
-(defun dc-recal-marksman ()
-  (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (dc-exec 10000005 0 0 0 0 nil 0)
-  (dc-print-marksman-status))
-
-;;; Run internal marksman diagnostics (this doesn't work, maybe we don't have the firmware)
-(defun dc-diag-marksman (test-number)
-  (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (PHYS-MEM-WRITE DC-CMD-ADR (logdpb (+ 200 test-number) 2010 5))
-  (PHYS-MEM-WRITE DC-START-ADR 0)
-  (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (dc-print-marksman-status))
-
 ;;; Perform a read or write, check specified status bits.
-(DEFUN DC-EXEC (CMD CYL HEAD BLOCK CLP CCW ERR-BITS)
+(DEFUN DC-EXEC (CMD CYL HEAD BLOCK CLP CCW ERR-BITS &OPTIONAL (UNIT 0))
+  (PHYS-MEM-WRITE DC-DA-ADR (ASH UNIT 28.))
   (PHYS-MEM-WRITE DC-CMD-ADR DC-AT-EASE)
   (PHYS-MEM-WRITE DC-START-ADR 0)
   (DO () ((LDB-TEST 0001 (PHYS-MEM-READ DC-STS-ADR)))) ;Await Idle
-  (PHYS-MEM-WRITE DC-DA-ADR (LOGDPB CYL 2014 (+ (LSH HEAD 8) BLOCK)))
+  (PHYS-MEM-WRITE DC-DA-ADR (LOGDPB UNIT 3404 (LOGDPB CYL 2014 (+ (LSH HEAD 8) BLOCK))))
   (PHYS-MEM-WRITE DC-CLP-ADR CLP)
   (AND CCW (PHYS-MEM-WRITE CLP CCW))
   (PHYS-MEM-WRITE DC-CMD-ADR CMD)
@@ -233,7 +171,15 @@
 (DEFUN DC-CHECK-STATUS (MASK)
   (LET ((VAL (PHYS-MEM-READ-24 DC-STS-ADR)))
     (COND ((NOT (ZEROP (LOGAND MASK VAL)))
-	   (DC-PRINT-STATUS1 VAL)))))
+	   (DC-PRINT-STATUS1 VAL)
+	   (let ((ecc (phys-mem-read dc-ecc-adr))
+		 (da  (phys-mem-read dc-da-adr))
+		 (ma  (phys-mem-read dc-ma-adr)))
+	     (format t "CYL ~O, HEAD ~O, SEC ~O, MA ~O, ECC pat ~O, ECC pos ~O"
+		     (ldb 2014 da) (ldb 1010 da) (ldb 0010 da)
+		     (dpb (ldb 2010 ma) 2010 (ldb 0020 ma))
+		     (ldb 2020 ecc) (ldb 0020 ecc)))
+	   T))))
 
 ;;; This function provides a scope loop for debugging problems starting up
 ;;; the microcode that would otherwise lead to hangs.
@@ -260,14 +206,14 @@
 
 ;;; Test function
 
-(DEFUN DCHECK (&AUX CONTROLLER-TYPE)
+(DEFUN DCHECK (&OPTIONAL (UNIT 0) &AUX CONTROLLER-TYPE)
   (SETQ CONTROLLER-TYPE (LDB (BITS 2 22.) (PHYS-MEM-READ DC-MA-ADR)))
   (FORMAT T
       "~&CONTROLLER TYPE IS ~D~0G (~[Trident~;Marksman~;unused?~;Unmodified Trident~])~%"
       CONTROLLER-TYPE)
   ;Don't do this, the hardware isn't necessarily right.  This IS a diagnostic, after all.
-  ;(SETQ MARKSMAN-P (= CONTROLLER-TYPE 1))
-  (FORMAT T "~&Operating as if ~:[Trident~;Marksman~]~%" MARKSMAN-P)
+  ;(SETQ FOO-P (= CONTROLLER-TYPE 1))
+  ;(FORMAT T "~&Operating as if ~:[Trident~;Marksman~]~%" MARKSMAN-P)
   ;; Part 1 - verify bus response to reading and writing disk-address register
   (PHYS-MEM-WRITE DC-DA-ADR 1777777777) ;28 bits
   (COND ((ZEROP (PHYS-MEM-READ DC-DA-ADR))
@@ -318,23 +264,28 @@
 	   (SETQ SPURIOUS-1 (CONS I SPURIOUS-1)))))
   ;; Part 3.5 - check that the block counter is counting.  This checks
   ;; that the disk is rotating and that the index/sector pulse logic works.
+  (PHYS-MEM-WRITE DC-DA-ADR (ASH UNIT 28.))
   #Q (DCHECK-BLOCK-COUNTER)
-  ;; Part 3.6 - recalibrate.  Marksman needs this if I/O reset has been done.
+  ;; Part 3.6 - recalibrate.  
   (FORMAT T "~&Recalibrate...")
-  (DC-RECALIBRATE)
+  (DC-RECALIBRATE UNIT)
   ;; Part 4 - Test disk bus bits and basic command logic by seeking
   (COND ((NOT BYPASS-SEEKS)
-	 (DCHECK-SEEK (if marksman-p 209. 814.))
-	 (DO I (if marksman-p 128. 512.) (LSH I -1) (ZEROP I)
-	   (DCHECK-SEEK I))))
+	 (DCHECK-SEEK 814. UNIT)
+	 (DO I 512. (LSH I -1) (ZEROP I)
+	   (DCHECK-SEEK I UNIT))))
   (and local-disk-p (break the-rest-of-this-aint-gonna-work))
   ;; Part 5 - Check address logic by reading with a CLP that points at NXM
   ;;	      and then a CCW that points at NXM, check error status and MA.
   ;;   Note that if the read fails to happen, e.g. due to header-compare-error, the
   ;;   MA is naturally going to be wrong also since no memory cycles at all will happen.
   (LET ((MASK	;Bits which are suspect (this stuff is only 22 bits, fits in fixnum)
-	 (LOGIOR (DCHECK-CLP-ADR NXM-LOC1) (DCHECK-CLP-ADR NXM-LOC2) (DCHECK-CLP-ADR NXM-LOC3)
-		 (DCHECK-CCW-ADR NXM-LOC3) (DCHECK-CCW-ADR NXM-LOC2) (DCHECK-CCW-ADR NXM-LOC1)
+	 (LOGIOR (DCHECK-CLP-ADR NXM-LOC1 UNIT)
+		 (DCHECK-CLP-ADR NXM-LOC2 UNIT)
+		 (DCHECK-CLP-ADR NXM-LOC3 UNIT)
+		 (DCHECK-CCW-ADR NXM-LOC3 UNIT)
+		 (DCHECK-CCW-ADR NXM-LOC2 UNIT)
+		 (DCHECK-CCW-ADR NXM-LOC1 UNIT)
 		 )))
     (COND ((NOT (ZEROP MASK))
 	   (DCHECK-ERR-LOOP   ;Not the ultimate winning test loop, but maybe OK for now
@@ -351,7 +302,7 @@
   (DO I 100 (1+ I) (= I 400)	;Loc 100-377 get address pattern
     (PHYS-MEM-WRITE I (+ (LSH (LOGXOR 377 I) 8) I)))
   (PRINT 'WRITE)
-  (DC-EXEC DC-WRITE 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS)
+  (DC-EXEC DC-WRITE 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS UNIT)
   (LET ((MA (DC-READ-MA)))
     #M (DECLARE (FIXNUM MA))
     (COND ((NOT (= MA 377))
@@ -360,7 +311,7 @@
   (DO I 0 (1+ I) (= I 400)	;Clear buffer
     (PHYS-MEM-WRITE I 0))
   (PRINT 'READ)
-  (DC-EXEC DC-READ 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS)
+  (DC-EXEC DC-READ 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS UNIT)
   (LET ((MA (DC-READ-MA)))
     #M (DECLARE (FIXNUM MA))
     (COND ((NOT (= MA 377))
@@ -391,10 +342,10 @@
   (TERPRI)
   (PRINC "Trying reads of various blocks; will get HEADER-COMPARE if disk bus bits bad")
   (TERPRI)
-  (DC-EXEC DC-READ 0 0 0 CCW-LOC 0 DC-ALL-ERROR-BITS)
+  (DC-EXEC DC-READ 0 0 0 CCW-LOC 0 DC-ALL-ERROR-BITS UNIT)
   (PRINC " cyl 0 ")
   (DO CYL 1 (LSH CYL 1) (= CYL 2000)
-    (DC-EXEC DC-READ CYL 0 0 CCW-LOC 0 DC-ALL-ERROR-BITS)
+    (DC-EXEC DC-READ CYL 0 0 CCW-LOC 0 DC-ALL-ERROR-BITS UNIT)
     (PRINC " cyl ")
     (PRIN1 CYL))
   ;; end
@@ -403,17 +354,31 @@
   (TERPRI)
   (PRINC '|End of DCHECK.  Now run the format program and the ECC test program.|))
 
+(defun dc-read-cyl (cyl)
+    (DC-EXEC DC-READ CYL 0 0 CCW-LOC 0 DC-ALL-ERROR-BITS )
+    (PRINC " cyl ")
+    (PRIN1 CYL))
+
+(defun dc-read-block (cyl head block)
+    (DC-EXEC DC-READ CYL head block CCW-LOC 0 DC-ALL-ERROR-BITS )
+    (PRINC " cyl ")
+    (PRIN1 CYL)
+    (princ "   block ")
+    (prin1 block)
+    (princ "   head ")
+    (prin1 head))
+ 
 (DEFUN DC-RESET NIL
   (PHYS-MEM-WRITE DC-CMD-ADR DC-STOP)
   (PHYS-MEM-WRITE DC-CMD-ADR 0))
 
-(DEFUN DC-RECALIBRATE NIL
-  (DC-EXEC DC-RECAL 0 0 0 0 NIL 0)
+(DEFUN DC-RECALIBRATE (&OPTIONAL (UNIT 0))
+  (DC-EXEC DC-RECAL 0 0 0 0 NIL 0 UNIT)
   (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
     (PROCESS-ALLOW-SCHEDULE)))
 
-(DEFUN DC-FAULT-CLEAR NIL
-  (DC-EXEC DC-FAULT-CLEAR 0 0 0 0 NIL 0)
+(DEFUN DC-FAULT-CLEAR (&OPTIONAL (UNIT 0))
+  (DC-EXEC DC-FAULT-CLEAR 0 0 0 0 NIL 0 UNIT)
   (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
     (PROCESS-ALLOW-SCHEDULE)))
 
@@ -445,10 +410,8 @@
 ;;; will not run in Maclisp.
 #Q
 (DEFUN DCHECK-BLOCK-COUNTER ()
-  (DO ((DESIRED-VALUES #10R (IF MARKSMAN-P
-				'(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)
-				;; Vandals: Yes, a value of 17. can appear here
-				'(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)))
+  (DO ((DESIRED-VALUES #10R  ;; Vandals: Yes, a value of 17. can appear here
+				'(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17))
        (GOOD-VALUES NIL)
        (BAD-VALUES NIL)
        (MISSING-VALUES)
@@ -472,10 +435,10 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 	(OR (MEMQ BCTR BAD-VALUES) (PUSH BCTR BAD-VALUES)))))
 
 ;;; Check address logic, return bits which failed
-(DEFUN DCHECK-CLP-ADR (ADR)
+(DEFUN DCHECK-CLP-ADR (ADR &OPTIONAL (UNIT 0))
   (LET ((MA 0))
     (DECLARE (FIXNUM MA))
-    (DC-EXEC DC-READ 0 0 0 ADR NIL 0)
+    (DC-EXEC DC-READ 0 0 0 ADR NIL 0 UNIT)
     (COND ((NOT (= (LOGAND 14000000 (PHYS-MEM-READ-24 DC-STS-ADR))
 		   14000000))  ;NXM and CCW CYCLE
 	   (DC-PRINT-STATUS) (TERPRI)
@@ -496,10 +459,54 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
  (DO () ((KBD-TYI-NO-HANG))
    (DC-EXEC DC-READ 0 0 0 CCW-LOC 1000 0)))
 
-(DEFUN DCHECK-CCW-ADR (ADR)
+;Tight writing loop.  This is the same as the write in part 6 of DCHECK.
+(DEFUN DCHECK-WRITE-LOOP NIL
+  (DO I 0 (1+ I) (= I 40)			;Loc 0-37 get floating 1's
+      (PHYS-MEM-WRITE I (#M LSH #Q ASH 1 I)))
+  (DO I 0 (1+ I) (= I 40)			;Loc 40-77 get floating 0's
+      (PHYS-MEM-WRITE (+ 40 I) (- (#M LSH #Q ASH 1 32.) (#M LSH #Q ASH 1 I))))
+  (DO I 100 (1+ I) (= I 400)			;Loc 100-377 get address pattern
+      (PHYS-MEM-WRITE I (+ (LSH (LOGXOR 377 I) 8) I)))
+  (DO () ((KBD-TYI-NO-HANG))
+    (DC-EXEC DC-WRITE 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS)
+    (LET ((MA (DC-READ-MA)))
+      (COND ((NOT (= MA 377))
+	     (TERPRI) (PRINC '|MA wrong on write of pattern, correct=377, actual=|)
+	     (PRIN1 MA))))))
+
+
+(defun dcheck-check-da-block-increments nil
+  (dotimes (block  blocks-per-track)
+    (cc-disk-xfer dc-read (+ (* 100 blocks-per-cylinder)
+			     block)
+		1 2)))
+
+(defun dcheck-check-da-head-increments nil
+  (dotimes (head (// blocks-per-cylinder blocks-per-track))
+    (cc-disk-xfer dc-read (+ (* 100 blocks-per-cylinder)
+			     (1- blocks-per-track)
+			     (* head blocks-per-track))
+		1 2)))
+
+(defun dcheck-check-da-cylinder-increments nil
+  (dotimes (cyl n-cylinders)
+    (cc-disk-xfer dc-read (+ (* cyl blocks-per-cylinder)
+			     (1- blocks-per-cylinder))
+		  1 2)))
+
+(defun dcheck-check-da-cylinder-increments-1 nil
+  (do ((adr 12 (1+ adr))
+       (core-page 1 (1+ core-page))
+       (n (* 2 blocks-per-cylinder) (1- n)))
+      ((= n 0))
+    (phys-mem-write adr (+ (cc-shift adr 8) (cond ((= n 1) 0) (t 1)))))
+  (dotimes (cyl (- n-cylinders 2))
+    (dc-exec dc-read cyl 0 0 12 nil dc-all-error-bits)))
+
+(DEFUN DCHECK-CCW-ADR (ADR &OPTIONAL (UNIT 0))
   (LET ((MA 0))
     (DECLARE (FIXNUM MA))
-    (DC-EXEC DC-READ 0 0 0 CCW-LOC (SETQ ADR (LOGAND 77777400 ADR)) 0)
+    (DC-EXEC DC-READ 0 0 0 CCW-LOC (SETQ ADR (LOGAND 77777400 ADR)) 0 UNIT)
     (COND ((NOT (= (LOGAND 14000000 (PHYS-MEM-READ-24 DC-STS-ADR))
 		   04000000))  ;NXM and -CCW CYCLE
 	   (DC-PRINT-STATUS) (TERPRI)
@@ -516,15 +523,15 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 	  (T 0))))
 
 ;;; Alternating seek test
-(DEFUN DCHECK-SEEK (CYL)
+(DEFUN DCHECK-SEEK (CYL &OPTIONAL (UNIT 0))
   (TERPRI)
   (PRINC '|Should be seeking between cylinders 0 and |)
   (LET ((BASE 10.) (*NOPOINT NIL))
     (PRIN1 CYL))
   (PRINC '| - type space when OK. |)
   (DO () (#M (NOT (ZEROP (LISTEN))) #Q (KBD-TYI-NO-HANG))
-    (DC-SEEK 0)
-    (DC-SEEK CYL))
+    (DC-SEEK 0 UNIT)
+    (DC-SEEK CYL UNIT))
   #M (TYI)
   (TERPRI))
 
@@ -546,6 +553,8 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
     (PHYS-MEM-READ ADR)
     (PHYS-MEM-WRITE ADR VAL2)
     (PHYS-MEM-READ ADR)))
+
+
 
 ;;; ECC Test (in DCFU) error-message printer
 
@@ -605,8 +614,8 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 
 ;;; Read/Write test
 
-(declare (special dc-write-read-trace))
-(setq dc-write-read-trace t)
+(defvar dc-write-read-trace t)
+(defvar dc-test-unit 0)
 
 ;;; Low-level routine, does a write and a read and compares
 ;;; Intended to run on Lisp machine.
@@ -615,17 +624,17 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
   (setq offset 100000)  ;use this page of main memory
   ;; Trace
   (and dc-write-read-trace
-       (format t '|~%WRITE-READ-TEST: cyl=~O, head=~O, blk=~O, pattern=~A|
-	         cyl head blk pattern-func))
+       (format t '|~%WRITE-READ-TEST: unit=~O, cyl=~O, head=~O, blk=~O, pattern=~A|
+	         dc-test-unit cyl head blk pattern-func))
   ;; Fill memory with pattern
   (do i 0 (1+ i) (= i 400)
     (phys-mem-write (+ offset i) (funcall pattern-func i)))
   ;; Write it out
-  (dc-exec dc-write cyl head blk 777 (+ offset 0) dc-all-error-bits)
+  (dc-exec dc-write cyl head blk 777 (+ offset 0) dc-all-error-bits dc-test-unit)
   (do i 0 (1+ i) (= i 400)
       (phys-mem-write (+ offset i) 0))
   ;; Read it back
-  (dc-exec dc-read cyl head blk 777 (+ offset 0) dc-all-error-bits)  
+  (dc-exec dc-read cyl head blk 777 (+ offset 0) dc-all-error-bits dc-test-unit)
   ;; Check pattern
   (do ((i 0 (1+ i))
        (good) (bad) (heading-printed nil))
@@ -655,10 +664,10 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
   (setq offset 100000)  ;use this page of main memory
   ;; Trace
   (and dc-write-read-trace
-       (format t "~%READ-TEST: cyl=~O, head=~O, blk=~O"
-	         cyl head blk))
+       (format t "~%READ-TEST: unit=~O, cyl=~O, head=~O, blk=~O"
+	         dc-test-unit cyl head blk))
   ;; Read it
-  (dc-exec dc-read cyl head blk 777 (+ offset 0) dc-all-error-bits)  
+  (dc-exec dc-read cyl head blk 777 (+ offset 0) dc-all-error-bits dc-test-unit)
 )
 
 ;;; An address specifier is a single number, a list of cases,
@@ -740,13 +749,9 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 ;;; User interface to write-read test
 ;;; This version is kludged up, you should step only one addr at a time!
 (defun dc-write-read-test (&optional response-list
-				     (all-list (if marksman-p
-						   '( (do 0 210.)
-						      (do 0 4)
-						      (do 0 21.))
-						   '( (do 0 815.)
-						      (do 0 5)
-						      (do 0 17.) ))))
+				     (all-list '( (do 0 815.)
+						 (do 0 5)
+						 (do 0 17.) )))
   (multiple-value-bind (cyl head blk pattern-func)
       (dc-get-addr-specs response-list all-list)
     (do () ((kbd-char-available))
@@ -756,13 +761,9 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 (defun dc-wrt ()
   (dc-write-read-test '(all all all all)))
 
-(defun dc-read-test (&optional response-list (all-list (if marksman-p
-							   '( (do 0 210.)
-							      (do 0 4)
-							      (do 0 21.))
-							   '( (do 0 815.)
-							      (do 0 5)
-							      (do 0 17.) ))))
+(defun dc-read-test (&optional response-list (all-list '( (do 0 815.)
+							 (do 0 5)
+							 (do 0 17.) )))
   (multiple-value-bind (cyl head blk pattern-func)
       (dc-get-addr-specs response-list all-list T)
     (do () ((kbd-char-available))
@@ -951,13 +952,13 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 
 ;This function reads in a track and types out some approximation of what's on it
 ;If cyl is nil, decode what's in core
-(defun decode-track (cyl head &optional (blk 0))
+(defun decode-track (cyl head &optional (blk 0) (unit 0))
   (cond ((not (null cyl))
 	 ;; First, read in 20. blocks, which is more than 20160. bytes
 	 (do i 0 (1+ i) (= i 20.)
 	   (dbg-write-xbus i (+ (lsh (1+ i) 8)
 				(cond ((= i 19.) 0) (t 1)))))  
-	 (dc-exec dc-read-all cyl head blk 0 nil dc-some-error-bits)
+	 (dc-exec dc-read-all cyl head blk 0 nil dc-some-error-bits unit)
 	 (get-buffer) ;gobble it down from other machine
 	 ))
   ;; Map over sectors
