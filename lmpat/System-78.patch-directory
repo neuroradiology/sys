@@ -1,8 +1,8 @@
 ;;; -*- Mode: Lisp; Package: User; Base: 10.; Patch-File: T -*-
 ;;; Patch directory for System version 78
-;;; Written 1/11/82 13:52:10 by BSG,
-;;; while running on Beagle from band 4
-;;; with System 78.45, ZMail 38.5, Tape 6.5, LMFS 21.33, Symbolics 8.12, microcode 841, Distribution copy.
+;;; Written 7/25/08 02:14:22 by RJS,
+;;; while running on Unknown from band 1
+;;; with System 78.49, ZMail 38.5, Tape 6.5, LMFS 21.34, Symbolics 8.13, microcode 841.
 
 (RELEASED
  ((0 "System Loaded" "rg")
@@ -54,4 +54,7 @@
   (46 "VMS Patch pathnames" "RWK")
   (47 "Fix minor bug in VMS-DEVNAME-CHECK" "HIC")
   (48 "(CHAOS:HOST-TRUSTED-P <host-address>) & :TRUSTED-CHAOS-SUBNETS site variable." "BSG")
+  (49 "Y2K Fixes." "RJS")
+  (50 "Extra Y2K fix." "RJS")
   ))
+
