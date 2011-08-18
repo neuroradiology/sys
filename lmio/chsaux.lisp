@@ -832,6 +832,27 @@
        (FORMAT STREAM (IF (NULL FREE) "~&No Free Lisp machines~%"
 			  "~&Free Lisp machines: ~{~<~%~5X~2:;~A ~A~>~^, ~}")
 	       FREE)))
+
+;;; Dummy mail server, rejects all incoming mail
+(DEFUN DUMMY-MAIL-SERVER (&AUX CONN STREAM RCPT)
+  (SETQ CONN (LISTEN "MAIL"))
+  (COND ((EQ (STATE CONN) 'RFC-RECEIVED-STATE)
+	 (ACCEPT CONN)
+	 (SETQ STREAM (STREAM CONN))
+	 (*CATCH 'DONE
+	   (CONDITION-BIND (((READ-ON-CLOSED-CONNECTION LOS-RECEIVED-STATE HOST-DOWN)
+			     #'(LAMBDA (&REST IGNORE) (*THROW 'DONE NIL))))
+	     (DO () (NIL)			;Read the rcpts
+	       (SETQ RCPT (FUNCALL STREAM ':LINE-IN NIL))
+	       (AND (ZEROP (STRING-LENGTH RCPT))	;Blank line = start text
+		    (RETURN))
+	       (FUNCALL STREAM ':LINE-OUT
+		 "-Lisp Machines do not accept mail, maybe you want the :LMSEND command."))))
+	 (CLOSE CONN "all rcpts read")))
+  (REMOVE-CONN CONN))
+
+(ADD-INITIALIZATION "MAIL" '(PROCESS-RUN-FUNCTION "MAIL-SERVER" 'DUMMY-MAIL-SERVER)
+		    NIL 'SERVER-ALIST)
 
 ;;; Remote disk facilities.
 
