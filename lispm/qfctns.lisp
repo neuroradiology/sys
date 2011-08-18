@@ -1536,6 +1536,12 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
             ((ZEROP N))
 	  (SETF (ARRAY-LEADER NEW-ARRAY I) (ARRAY-LEADER ARRAY I)))
 
+	;; Check for zero-size array, which the code below doesn't handle correctly
+	(AND (DO ((L DIMENSIONS (CDR L)) (L1 OLD-DIMS (CDR L1))) ((NULL L) NIL)
+	       (AND (OR (ZEROP (CAR L)) (ZEROP (CAR L1)))
+		    (RETURN T)))
+	     (GO DONE))
+
 	;; Create a vector of fixnums to use as subscripts to step thru the arrays.
 	(SETQ INDEX NIL)
 	(DO ((L DIMENSIONS (CDR L))) ((NULL L))

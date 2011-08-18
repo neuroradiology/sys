@@ -1348,6 +1348,8 @@ LP	(COND ((NULL INPUT-LIST) (RETURN INIT)))
 	   (CHAOS:RESET)
 	   
 	   ;Cause cold boot initializations to happen when rebooted
+	   ;and do the BEFORE-COLD initializations now
+	   (INITIALIZATIONS 'BEFORE-COLD-INITIALIZATION-LIST T)
 	   (RESET-INITIALIZATIONS 'COLD-INITIALIZATION-LIST)
 	   (SETQ WHO-LINE-JUST-COLD-BOOTED-P T)
 	   

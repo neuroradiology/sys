@@ -128,7 +128,10 @@
 	  ("AI: LISPM2; CMANY QFASL")
 ;	  ("AI: LISPM; LFL QFASL") ;ACTUALLY, IS IN COLD LOAD therefore in SI like it or not
 	  ("AI: LISPM; DEFMIC >") ;MUST BE AFTER QCFILE
-	  ("AI: LISPM; DOCMIC >"))
+	  ("AI: LISPM; DOCMIC >")
+	  ("AI: LISPM; UCINIT QFASL"))	;Contains MCLAP properties for initially
+					;microcompiled functions.  There is no
+					;source for this file!
 	 (EXTERNAL COMPILE LOAD FASLOAD COMPILE-FILE-ALIST COMPILE-FILE-ALIST-MAP
 		   LOAD-FILE-ALIST QC-FILE
 		   QC-FILE-LOAD DISASSEMBLE UNCOMPILE FASD-UPDATE-FILE SPECIAL

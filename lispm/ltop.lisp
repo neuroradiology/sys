@@ -259,6 +259,7 @@
 ;;; WARM	Use the warm boot list
 ;;; ONCE	Use the once-only list
 ;;; SYSTEM	Use the system list
+;;; BEFORE-COLD	The list that gets done before disk-save'ing out
 ;;; If neither WARM nor COLD are specified, warm is assumed.  If a fourth argument
 ;;; is given, then it is the list to use.  WARM and COLD will override the fourth argument.
 (DEFUN ADD-INITIALIZATION (NAME FORM &OPTIONAL KEYWORDS (LIST-NAME 'WARM-INITIALIZATION-LIST)
@@ -274,7 +275,8 @@
             ((STRING-EQUAL "REDO" V) (SETQ WHEN 'REDO))
             ((STRING-EQUAL "WARM" V) (SETQ LIST-NAME 'WARM-INITIALIZATION-LIST))
             ((STRING-EQUAL "COLD" V) (SETQ LIST-NAME 'COLD-INITIALIZATION-LIST))
-            ((STRING-EQUAL "SYSTEM" V)
+            ((STRING-EQUAL "BEFORE-COLD" V) (SETQ LIST-NAME 'BEFORE-COLD-INITIALIZATION-LIST))
+	    ((STRING-EQUAL "SYSTEM" V)
              (SETQ LIST-NAME 'SYSTEM-INITIALIZATION-LIST)
              (SETQ WHEN 'FIRST))
             ((STRING-EQUAL "ONCE" V)
@@ -303,6 +305,7 @@
 ;;; WARM	Use the warm boot list
 ;;; ONCE	Use the once-only list
 ;;; SYSTEM	Use the system list
+;;; BEFORE-COLD	The list that gets done before disk-save'ing out
 ;;; If neither WARM nor COLD are specified, warm is assumed.  If a third argument
 ;;; is given, then it is the list to use.  WARM and COLD will override the third argument.
 (DEFUN DELETE-INITIALIZATION (NAME &OPTIONAL KEYWORDS (LIST-NAME 'WARM-INITIALIZATION-LIST))
@@ -313,6 +316,7 @@
       (SETQ V (GET-PNAME (CAR L)))
       (COND ((STRING-EQUAL "WARM" V) (SETQ LIST-NAME 'WARM-INITIALIZATION-LIST))
             ((STRING-EQUAL "COLD" V) (SETQ LIST-NAME 'COLD-INITIALIZATION-LIST))
+            ((STRING-EQUAL "BEFORE-COLD" V) (SETQ LIST-NAME 'BEFORE-COLD-INITIALIZATION-LIST))
             ((STRING-EQUAL "ONCE" V) (SETQ LIST-NAME 'ONCE-ONLY-INITIALIZATION-LIST))
             ((STRING-EQUAL "SYSTEM" V) (SETQ LIST-NAME 'SYSTEM-INITIALIZATION-LIST))
             (T (FERROR NIL "Illegal keyword ~S" (CAR L)))))
@@ -326,9 +330,6 @@
   (DO ((L (SYMEVAL LIST-NAME) (CDR L)))
       ((NULL L))
       (SETF (INIT-FLAG (CAR L)) NIL)))
-
-(ADD-INITIALIZATION "LTOP-CLEAR-SCREEN" '(FUNCALL COLD-LOAD-STREAM ':CLEAR-SCREEN) '(COLD))
-
 
 ;Small version of FSET-CAREFULLY to be used until all the full
 ;mechanisms are there (bootstrapping from cold-load)
