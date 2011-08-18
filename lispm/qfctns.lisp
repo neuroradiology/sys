@@ -1980,7 +1980,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 ;;;  :REGION-SIZE - size for regions, defaults to :SIZE if specified else medium-size.
 ;;;  :REPRESENTATION (:LIST, :STRUCTURE, number) - just for the initial region, default=struc
 ;;;  :GC (:STATIC, :DYNAMIC) - default = dynamic
-;;;  :READ-ONLY, :PDL, :COMPACT-CONS - attributes
+;;;  :READ-ONLY, :PDL - attributes
 ;;;   (more attributes to be added, especially for additional region-space-types)
 ;;;  SYS:%%REGION-MAP-BITS - over-ride on map bits
 ;;;  SYS:%%REGION-SPACE-TYPE - over-ride on space type 
@@ -1988,7 +1988,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 (DEFUN MAKE-AREA (&REST KEYWORDS
 		  &AUX (NAME NIL) (SIZE 37777777) (THE-REGION-SIZE NIL)
 		       (REPRESENTATION %REGION-REPRESENTATION-TYPE-STRUCTURE)
-		       (GC ':DYNAMIC) (READ-ONLY NIL) (PDL NIL) (COMPACT-CONS NIL)
+		       (GC ':DYNAMIC) (READ-ONLY NIL) (PDL NIL)
 		       (MAP-BITS NIL) (SPACE-TYPE NIL) (SCAV-ENB NIL)
 		       AREA-NUMBER REGION-NUMBER ARG THE-REGION-BITS)
   ;; Process keyword arguments
@@ -2017,7 +2017,6 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	(SETQ GC ARG))
       (:READ-ONLY (SETQ READ-ONLY ARG))
       (:PDL (SETQ PDL ARG))
-      (:COMPACT-CONS (SETQ COMPACT-CONS ARG))
       (%%REGION-MAP-BITS (SETQ MAP-BITS ARG))
       (%%REGION-SPACE-TYPE (SETQ SPACE-TYPE ARG))
       (%%REGION-SCAVENGE-ENABLE (SETQ SCAV-ENB ARG))
@@ -2027,8 +2026,6 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
   (AND (NULL THE-REGION-SIZE)
        (SETQ THE-REGION-SIZE (COND ((= SIZE 37777777) 40000)  ;Size unspecified
 				   (T SIZE)))) ;Size specified, assume user wants single region
-  (OR (NUMBERP COMPACT-CONS)
-      (SETQ COMPACT-CONS (IF COMPACT-CONS 1 0)))
   (AND (NULL SPACE-TYPE)
        (SETQ SPACE-TYPE (IF (EQ GC ':STATIC) %REGION-SPACE-STATIC %REGION-SPACE-NEW)))
   (AND (NULL SCAV-ENB)
@@ -2055,9 +2052,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 				   %%PHT2-MAP-ACCESS-CODE 0))))))))
   (SETQ THE-REGION-BITS
 	(%LOGDPB MAP-BITS %%REGION-MAP-BITS
-		 (%LOGDPB COMPACT-CONS %%REGION-COMPACT-CONS-FLAG
-		      (%LOGDPB SPACE-TYPE %%REGION-SPACE-TYPE
-			   (%LOGDPB SCAV-ENB %%REGION-SCAVENGE-ENABLE 0)))))
+		 (%LOGDPB SPACE-TYPE %%REGION-SPACE-TYPE
+			  (%LOGDPB SCAV-ENB %%REGION-SCAVENGE-ENABLE 0))))
   (LET ((INHIBIT-SCHEDULING-FLAG T)  ;Lock the area data-structure
 	(INHIBIT-SCAVENGING-FLAG T))
     (AND (MEMQ NAME AREA-LIST)

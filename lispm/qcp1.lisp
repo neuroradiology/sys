@@ -372,7 +372,7 @@
 		    ;; Old Maclisp evaluated functions.
 		    (BARF FORM '|function is a form to be evaluated; use FUNCALL| 'WARN)
 		    (RETURN (P1 `(FUNCALL . ,FORM))))))
-#Q	      ((NOT (EQ (TYPEP (CAR FORM)) ':SYMBOL))
+	      ((NOT (SYMBOLP (CAR FORM)))
 	       (BARF (CAR FORM) '|function is not a symbol or list| 'WARN)
 	       (RETURN (P1 (CONS 'PROGN (CDR FORM)))))
 	      ((MEMQ (CAR FORM) '(PROG PROG* PPROG SPROG)) (RETURN (P1PROG FORM)))
@@ -420,45 +420,81 @@
 
 ;Given a form, apply optimizations and expand macros until no more is possible
 ;(at the top level).  Also apply style-checkers to the supplied input
-;but not to generated output.
+;but not to generated output.  This function is also in charge of checking for
+;too few or too many arguments so that this happens before optimizers are applied.
 (DEFUN OPTIMIZE (FORM CHECK-STYLE)
-       (PROG (TM)
-	     (AND CHECK-STYLE (NULL INHIBIT-STYLE-WARNINGS-SWITCH)
-		  (NOT (ATOM FORM))
-		  (COND ((ATOM (CAR FORM))
-			 (AND (SYMBOLP (CAR FORM))
-			      (SETQ TM (GET (CAR FORM) 'STYLE-CHECKER))
-			      (FUNCALL TM FORM)))
-			((NOT RUN-IN-MACLISP-SWITCH))
-			((OR (EQ (CAAR FORM) 'LAMBDA) (EQ (CAAR FORM) 'NAMED-LAMBDA))
-			 (LAMBDA-STYLE (CAR FORM)))
-			((MEMQ (CAAR FORM) '(CURRY-BEFORE CURRY-AFTER))
-			 (BARF (CAAR FORM) '|does not work in Maclisp| 'WARN))))
-	     ;; APPLY OPTIMIZATIONS, AND EXPAND MACROS, UNTIL THEY STOP CHANGING ANYTHING.
-	     OPT
-	     (AND (ATOM FORM) (RETURN FORM))
-	     (AND (ATOM (CAR FORM)) (NOT (SYMBOLP (CAR FORM)))
-		  (RETURN FORM))	;P1 will barf at it soon enough; don't get error
-	     (OR (NOT (ATOM (CAR FORM)))
-		 (AND (DO ((OPTS (GET (CAR FORM) 'OPTIMIZERS) (CDR OPTS)))
-			  ((NULL OPTS) NIL)
-			 (COND ((NEQ FORM (SETQ TM (FUNCALL (CAR OPTS) FORM)))
-				;; Expression changed, so replace it and try again
-				;; but first make sure the number of args was right
-				;; so that optimizers don't have to check this manually
-			     #Q (LET* ((AI (%ARGS-INFO (CAR FORM))))
-				  (AND (< (LENGTH (CDR FORM)) (LDB %%ARG-DESC-MIN-ARGS AI))
-				       (BARF FORM "too few arguments" 'WARN))
-				  (AND (ZEROP (LDB %%ARG-DESC-QUOTED-REST AI))
-				       (ZEROP (LDB %%ARG-DESC-EVALED-REST AI))
-				       (> (LENGTH (CDR FORM)) (LDB %%ARG-DESC-MAX-ARGS AI))
-				       (BARF FORM "too many arguments" 'WARN)))
-				(SETQ FORM TM)		;EXPRESSION CHANGED, START OVER
-				(RETURN T))))
-		      (GO OPT)))
-	     (OR (EQ FORM (SETQ FORM (MACROEXPAND-1 FORM T)))	;EXPAND ALL TOP LEVEL MACROS
-		 (GO OPT))
-	     (RETURN FORM)))
+  (DO ((TM) (FN)) ((ATOM FORM))	;Do until no more expansions possible
+    (SETQ FN (CAR FORM))
+    ;; Check for too few or too many arguments
+    (CHECK-NUMBER-OF-ARGS FORM)
+    ;; Do style checking
+    (AND CHECK-STYLE (NULL INHIBIT-STYLE-WARNINGS-SWITCH)
+	 (COND ((ATOM FN)
+		(AND (SYMBOLP FN)
+		     (SETQ TM (GET FN 'STYLE-CHECKER))
+		     (FUNCALL TM FORM)))
+	       ((NOT RUN-IN-MACLISP-SWITCH))
+	       ((OR (EQ (CAR FN) 'LAMBDA) (EQ (CAR FN) 'NAMED-LAMBDA))
+		(LAMBDA-STYLE FN))
+	       ((MEMQ (CAR FN) '(CURRY-BEFORE CURRY-AFTER))
+		(BARF (CAR FN) '|does not work in Maclisp| 'WARN))))
+    ;; Apply optimizations
+    (COND ((NOT (SYMBOLP FN)) (RETURN))
+	  ((DOLIST (OPT (GET FN 'OPTIMIZERS))
+	     (OR (EQ FORM (SETQ FORM (FUNCALL OPT FORM)))
+		 (RETURN T))))	;Optimizer changed something, don't do macros this pass
+	  ;; Expand if macro
+	  ((EQ FORM (SETQ FORM (MACROEXPAND-1 FORM T)))
+	   (RETURN)))				;Stop looping, no expansions apply
+    ;; Only do style checking the first time around
+    (SETQ CHECK-STYLE NIL))
+  ;; Result is FORM
+  FORM)
+
+;Given a non-atomic form issue any warnings required because of wrong number of arguments.
+;This function has some of the same knowledge as GETARGDESC but doesn't call
+;it because GETARGDESC has to do a lot more.
+(DEFUN CHECK-NUMBER-OF-ARGS (FORM)
+  (PROG ((FN (CAR FORM)) (NARGS (LENGTH (CDR FORM))) (MIN NIL) (MAX 0) (ARGS-INFO NIL) TEM)
+   TOP
+    (COND ((LISTP FN)
+	   (COND ((EQ (CAR FN) 'LAMBDA) (SETQ TEM (CADR FN)))
+		 ((EQ (CAR FN) 'NAMED-LAMBDA) (SETQ TEM (CADDR FN)))
+		 ((EQ (CAR FN) 'SUBST) (SETQ TEM (CADR FN)))
+		 (T (RETURN NIL)))		;Unknown type, don't check
+	   (DOLIST (X TEM)
+	     (COND ((EQ X '&OPTIONAL) (SETQ MIN MAX))
+		   ((EQ X '&REST) (SETQ MIN MAX MAX 37777777) (RETURN))
+		   ((EQ X '&AUX) (RETURN))
+		   ((MEMQ X LAMBDA-LIST-KEYWORDS))
+		   (T (SETQ MAX (1+ MAX))))))
+	  ((NOT (SYMBOLP FN)) (RETURN NIL))	;Unknown type, don't check
+	  ((SETQ TEM (GET FN 'ARGDESC))
+	   (DOLIST (X TEM)
+	     (COND ((MEMQ 'FEF-ARG-REQ (CADR X)) (SETQ MAX (+ MAX (CAR X))))
+		   ((MEMQ 'FEF-ARG-OPT (CADR X)) (SETQ MIN MAX MAX (+ MAX (CAR X))))
+		   ((MEMQ 'FEF-ARG-REST (CADR X)) (SETQ MIN MAX MAX 37777777)))))
+	  ((SETQ TEM (GET FN 'QINTCMP))
+	   (SETQ MAX TEM))
+	  ((SETQ TEM (GET FN 'Q-ARGS-PROP))
+	   (SETQ ARGS-INFO TEM))
+	  ((FBOUNDP FN)
+	   (SETQ TEM (FSYMEVAL FN))
+	   (COND ((OR (SYMBOLP TEM) (LISTP TEM))
+		  (SETQ FN TEM)
+		  (GO TOP))
+		 (T (SETQ ARGS-INFO (%ARGS-INFO TEM)))))
+	  (T (RETURN NIL)))			;No information available
+    (AND ARGS-INFO
+	 (SETQ MIN (LDB %%ARG-DESC-MIN-ARGS ARGS-INFO)
+	       MAX (IF (BIT-TEST (LOGIOR %ARG-DESC-QUOTED-REST %ARG-DESC-EVALED-REST)
+				 ARGS-INFO)
+		       37777777
+		       (LDB %%ARG-DESC-MAX-ARGS ARGS-INFO))))
+    (COND ((< NARGS (OR MIN MAX))
+	   (BARF FORM '|Too few arguments| 'WARN))
+	  ((> NARGS MAX)
+	   (BARF FORM '|Too many arguments| 'WARN)))))
 
 ;(DEFOPTIMIZER FOO-BAR FOO (UGH BLETCH) ...)
 ;defines a function FOO-BAR which is an optimizer on FOO
@@ -613,8 +649,7 @@
 		    (COND ((NULL DESCS-LEFT)
 			   ;; Out of descs for arga, and out of args, => return.
 			   (OR ARGS-LEFT (RETURN (CONS FCTN ARG-P1-RESULTS)))
-			   ;; Out of descriptors => complain, and treat excess args as evalled.
-			   (BARF FORM '|Too many arguments| 'WARN)
+			   ;; Out of descriptors => treat excess args as evalled.
 			   (SETQ DESCS-LEFT '((1005 (FEF-ARG-OPT FEF-QT-EVAL))))))
 		    (SETQ COUNT (CAAR DESCS-LEFT))
 		    (SETQ TOKEN-LIST (CADAR DESCS-LEFT))
@@ -624,10 +659,8 @@
 		    ;; Check ZEROP again!
 		    (GO L3)))
 
-	     ;; If all arguments processed, return, complaining if more args required.
+	     ;; If all arguments processed, return.
 	     (COND ((NULL ARGS-LEFT)
-		    (AND (MEMQ 'FEF-ARG-REQ TOKEN-LIST)
-			 (BARF FORM '|Too few arguments| 'WARN))
 		    (RETURN (CONS FCTN ARG-P1-RESULTS))))
 
 	     ;; Process the next argument according to its descriptor.

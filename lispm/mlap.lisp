@@ -37,6 +37,7 @@
 ;    (mclap-micro-micro-linkage <microcoded fctn> <nargs>)
 ;    (mclap-linkage-eval <mc-linkage-symbol>)
 ;    (mclap-get-quote-index <s-exp>)
+;    (mclap-get-quote-index-vector <list of sexps>)
 ;    (mclap-get-a-constant <inum number>)
 ;   The MA- prefix form of each of the above is called from MA- and is the only
 ;     place the MCLAP- form is generated
@@ -89,7 +90,8 @@
   (MCLAP-LOAD 'PRINT (GET FUNCTION-NAME 'MCLAP)))
 
 (DEFUN MA-RESET NIL		;UNLOADS ALL
-  (MCLAP-UNLOAD (CAR (LAST *MCLAP-LOADED-FUNCTIONS*))))
+  (MCLAP-UNLOAD (CAR (LAST *MCLAP-LOADED-FUNCTIONS*)))
+  (MA-REBOOT))
 
 (DEFUN MCLAP-LOAD (LOAD-P MCLAP)
   (LET ((PARAM-LIST (FIRST MCLAP))
@@ -310,18 +312,22 @@
 	   0)
 	  (T (CADR ANS)))))
 
-(DEFUN MCLAP-GET-QUOTE-INDEX (QUAN &OPTIONAL ALWAYS-ADD)
+(DEFUN MCLAP-GET-QUOTE-INDEX (QUAN &OPTIONAL IGNORE)  ;for compatibility.  Flush soon.
   (PROG (TEM)
-	(COND (ALWAYS-ADD
-	       (SETQ *MCLAP-EXIT-VECTOR-TABLE* (NCONC *MCLAP-EXIT-VECTOR-TABLE*
-						(LIST QUAN)))
-	       (RETURN (+ (1- (LENGTH *MCLAP-EXIT-VECTOR-TABLE*))
-			  *MCLAP-EXIT-VECTOR-OFFSET*))))
      L  (COND ((SETQ TEM (FIND-POSITION-IN-LIST-EQUAL QUAN *MCLAP-EXIT-VECTOR-TABLE*))
 	       (RETURN (+ TEM *MCLAP-EXIT-VECTOR-OFFSET*))))
 	(SETQ *MCLAP-EXIT-VECTOR-TABLE* (NCONC *MCLAP-EXIT-VECTOR-TABLE*
 					 (LIST QUAN)))
 	(GO L)))
+
+;add a vector of frobs.  Used by DO-SPECBIND.
+(DEFUN MCLAP-GET-QUOTE-INDEX-VECTOR (LIST-OF-QUANS)
+  (LET ((VAL (+ (LENGTH *MCLAP-EXIT-VECTOR-TABLE*)
+		*MCLAP-EXIT-VECTOR-OFFSET*)))
+    (DOLIST (QUAN LIST-OF-QUANS)
+      (SETQ *MCLAP-EXIT-VECTOR-TABLE* (NCONC *MCLAP-EXIT-VECTOR-TABLE*
+					     (LIST QUAN))))
+    VAL))
 
 (DEFUN MCLAP-GET-A-CONSTANT (CON)
   (PROG (TEM)
@@ -445,12 +451,15 @@
        N)
 
 (DEFUN MA-REBOOT NIL	;should not be neccessary now that SCRATCH-PAD-INIT-AREA hacked
-  (SETQ SYSTEM:%NUMBER-OF-MICRO-ENTRIES NUMBER-MICRO-ENTRIES)
-  (SETQ SI:%MC-CODE-EXIT-VECTOR (+ (%POINTER *MC-EXIT-VECTOR-ARRAY*)
-				   1
-				   (%P-LDB-OFFSET %%ARRAY-LONG-LENGTH-FLAG
-						  *MC-EXIT-VECTOR-ARRAY*
-						  0))))
+			;--mumble-- called by MA-RESET.
+  (IF (NUMBERP NUMBER-MICRO-ENTRIES)
+      (SETQ SYSTEM:%NUMBER-OF-MICRO-ENTRIES NUMBER-MICRO-ENTRIES))
+  (IF *MC-EXIT-VECTOR-ARRAY*
+      (SETQ SI:%MC-CODE-EXIT-VECTOR (+ (%POINTER *MC-EXIT-VECTOR-ARRAY*)
+				       1
+				       (%P-LDB-OFFSET %%ARRAY-LONG-LENGTH-FLAG
+						      *MC-EXIT-VECTOR-ARRAY*
+						      0)))))
 
 (DEFUN MA-LOAD-C-MEM (ADR I)
   (SI:%WRITE-INTERNAL-PROCESSOR-MEMORIES 1 ADR

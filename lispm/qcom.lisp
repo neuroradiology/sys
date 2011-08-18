@@ -21,9 +21,7 @@
 						; MUST HAVE DATA-TYPE DTP-FIX AND NO CDR-CODE
 						; DOES NOT INCLUDE FREE REGIONS & FREE REGION#S
 		;END WIRED AREAS
-	REGION-FREE-POINTER			;FIXNUM, RELATIVE ALLOCATION POINT.  ALLOC IS
-						; UP FOR STRUCTURES, DOWN FOR THOSE LIST 
-						; REGIONS THAT HAVE %%REGION-COMPACT-CONS-FLAG
+	REGION-FREE-POINTER			;FIXNUM, RELATIVE ALLOCATION POINT.
 	REGION-GC-POINTER			;GC USE, MAINLY RELATIVE DIRTY/CLEAN BOUNDARY
 	REGION-LIST-THREAD			;NEXT REGION# IN AREA, OR 1_23.+AREA#
 						; THREADS FREE REGIONS (IN FREE-AREA), FREE #S
@@ -211,9 +209,7 @@
 	  %REGION-REPRESENTATION-TYPE-LIST 0
 	  %REGION-REPRESENTATION-TYPE-STRUCTURE 1   ;2 and 3 reserved for future
 	 ;1602 spare meta bits
-	%%REGION-COMPACT-CONS-FLAG 1501	;1 => CONS tries to use cdr-coding
-					; and conses down instead of up (ignored except
-					; in list space.)
+	;1501 spare (formerly unimplemented compact-cons flag)
 	%%REGION-SPACE-TYPE 1104	;Code for type of space:
 	 %REGION-SPACE-FREE 0		;0 free region (in FREE-AREA) or free region#
 	 %REGION-SPACE-OLD 1		;1 oldspace region of dynamic area
@@ -747,6 +743,9 @@
   					; quantities.  Replaces MICRO-CODE-EXIT-AREA.
   ALPHABETIC-CASE-AFFECTS-STRING-COMPARISON ;If T, upper and lower case are not equal
   ZUNDERFLOW				;If non-NIL, floating pointer underflow yields zero
+  %GC-GENERATION-NUMBER			;Increments whenever any new oldspace is created.
+					; Thus if this has changed, objects' addresses
+					; may have changed.
 ))
 
 (SETQ A-MEMORY-COUNTER-BLOCK-NAMES '(

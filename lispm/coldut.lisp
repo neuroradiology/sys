@@ -3,6 +3,13 @@
 
 ; Utilities for cold-load generator
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; To compile this:			       ;;;
+;;;   (1) Load the old QFASL of it	       ;;;
+;;;   (2) Run (LOAD-PARAMETERS)		       ;;;
+;;;   (3) Now you may compile it	       ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;;; Little variables that have to do with the word format
 (defvar big-fixnum)
 (defvar little-fixnum)

@@ -8,7 +8,7 @@
 			      (REGULAR-PDL-AREA PDL-AREA)
 			      (SPECIAL-PDL-AREA DEFAULT-CONS-AREA)
 			      (REGULAR-PDL-SIZE 3000)
-			      (SPECIAL-PDL-SIZE 600)
+			      (SPECIAL-PDL-SIZE 2000)  ;big for flavors
 			      (CAR-SYM-MODE 1)
 			      (CAR-NUM-MODE 0)
 			      (CDR-SYM-MODE 1)

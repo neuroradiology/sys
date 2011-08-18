@@ -54,10 +54,10 @@
 (defun cold-fasload (filespec &aux qfasl-binary-file fdefine-file-symbol)
   (unwind-protect (progn
       (or (boundp 'q-fasl-group-dispatch) (initialize-fasl-environment))
-      (setq filespec (file-expand-pathname filespec))	;Canonicalize
+      (setq filespec (fs:file-parse-name filespec))	;Canonicalize
       (format t "~&Cold-fasload ~A" filespec)
       (setq qfasl-binary-file (open filespec '(in fixnum)))
-      (multiple-value-bind (ignore fgs) (si:get-file-symbols filespec)
+      (multiple-value-bind (ignore fgs) (fs:get-file-symbols filespec)
 	(setq fdefine-file-symbol (qintern fgs))	;Make file-group-symbol
 	(vstore-contents (+ fdefine-file-symbol 4)	;Set package cell to FILES
 			 (qintern 'sym:files)))

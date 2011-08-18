@@ -225,6 +225,7 @@
 ; :NOCONFIRM (don't ask for confirmation for each package of files)
 ; :SELECTIVE (ask for confirmation for every file)
 (DEFUN RECOMPILE-WORLD (&REST KEYWORDS)
+  (LOAD-FILE-LIST '(("AI: LISPM; PKGDCL >")) KEYWORDS)
   (LEXPR-FUNCALL #'RECOMPILE-WORLD-MAP #'FUNCALL KEYWORDS))
 
 (DEFUN RECOMPILE-WORLD-MAP (FCTN &REST KEYWORDS)
