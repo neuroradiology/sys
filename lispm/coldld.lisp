@@ -3,6 +3,13 @@
 
 ;Loader of QFASL files into cold-loads
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; To compile this:			       ;;;
+;;;   (1) Load COLDUT QFASL		       ;;;
+;;;   (2) Run (LOAD-PARAMETERS)		       ;;;
+;;;   (3) Now you may compile it	       ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (declare (special evals-to-be-sent-over
 		  last-fasl-eval  ;the element of evals-to-be-sent-over created by the last 
 				  ; fasl-op-eval.

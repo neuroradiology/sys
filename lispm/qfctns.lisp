@@ -1446,13 +1446,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 
 ;Returns the number of bits that fit in an element of an array.
 (DEFUN ARRAY-ELEMENT-SIZE (ARRAY)
-  (LET ((TYPE (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0)))
-    (COND ((= TYPE (LDB %%ARRAY-TYPE-FIELD ART-TVB-PIXEL))
-	   (DO ((MASK (ARRAY-LEADER ARRAY 0) (LSH MASK -1))
-		(POP-COUNT 0 (+ (LOGAND 1 MASK) POP-COUNT)))
-	       ((ZEROP MASK) POP-COUNT)))
-	  ((AR-1 ARRAY-BITS-PER-ELEMENT TYPE))
-	  (T 24.)))) ;Q-type, assume going to use unsigned fixnums.
+  (OR (AR-1 ARRAY-BITS-PER-ELEMENT (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0))
+      24.))	;Q-type, assume going to use unsigned fixnums.
 
 (DEFUN ARRAY-PUSH-EXTEND (ARRAY DATA &OPTIONAL EXTENSION
 			  &AUX (INHIBIT-SCHEDULING-FLAG T))

@@ -205,6 +205,9 @@
 		   (SETQ - (READ-FOR-TOP-LEVEL))
 		   (COND ((EQ - 'P)	;Altmode-P proceeds from BREAK
 			  (RETURN NIL))
+			 ((AND (SYMBOLP -)
+			       (STRING-EQUAL - "’"))  ;so does Resume
+			  (RETURN NIL))
 			 ((EQ - 'G)	;Altmode-G quits to top level (semi-obsolete)
 			  (*THROW 'TOP-LEVEL NIL))
 			 ((AND (LISTP -) (EQ (CAR -) 'RETURN))	;(RETURN form) proceeds

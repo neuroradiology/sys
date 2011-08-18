@@ -1,4 +1,4 @@
-;-*- MODE: LISP; PACKAGE: COMPILER -*-
+;-*- MODE: LISP; PACKAGE: COMPILER; BASE: 8 -*-
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 (DECLARE (SPECIAL FCTN-NAME ALLVARS FREEVARS MC-MODE

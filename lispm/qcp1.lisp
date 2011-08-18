@@ -454,6 +454,7 @@
 ;Given a non-atomic form issue any warnings required because of wrong number of arguments.
 ;This function has some of the same knowledge as GETARGDESC but doesn't call
 ;it because GETARGDESC has to do a lot more.
+(IF-FOR-LISPM	;to inhibit the Maclisp style warnings
 (DEFUN CHECK-NUMBER-OF-ARGS (FORM)
   (PROG ((FN (CAR FORM)) (NARGS (LENGTH (CDR FORM))) (MIN NIL) (MAX 0) (ARGS-INFO NIL) TEM)
    TOP
@@ -495,6 +496,7 @@
 	   (BARF FORM '|Too few arguments| 'WARN))
 	  ((> NARGS MAX)
 	   (BARF FORM '|Too many arguments| 'WARN)))))
+);if-for-lispm
 
 ;(DEFOPTIMIZER FOO-BAR FOO (UGH BLETCH) ...)
 ;defines a function FOO-BAR which is an optimizer on FOO
