@@ -1,4 +1,5 @@
  ;;;QFASL FILE DISASSEMBLER  -*-LISP-*-
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
  ;FOR BEST RESULTS, RUN THIS INSIDE A CC
 
 (DECLARE (FIXNUM (LOGLDB-FROM-FIXNUM FIXNUM FIXNUM)

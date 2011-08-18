@@ -1,22 +1,4 @@
-;;;Random declarations, etc.			-*-lisp-*-
-(DECLARE (EVAL (READ)))
-(PROGN (LOAD '(MACROS > DSK LISPM))
-       (LOAD '(DEFMAC FASL DSK LISPM2))
-       (LOAD '(LMMAC > DSK LISPM2)))
-
-(DECLARE (EVAL (READ)))
-       (DEFUN **STRING** MACRO (X) `',(CADR X)) ;Bubbles in my brain
-
-(INCLUDE ((LMCONS)CADMAC >))
-
-(DECLARE (FIXNUM I J K M N NBITS BITNO REGADR PPSS SHIFT RELAD)
-	 (SPECIAL CC-SUSPECT-BIT-LIST CC-DIAG-TRACE CC-TEST-ADR-BARFED)
-	 (FIXNUM (CC-SYNC-E FIXNUM)(PHYS-MEM-READ FIXNUM))
-	 (MUZZLED T)) ;WHY?
-
-(DEFMACRO LOGAND* (&REST X) `(BOOLE 1 . ,X))
-
-(DEFMACRO LOGXOR* (&REST X) `(BOOLE 6 . ,X))
+;;; -*- Mode: LISP;  Package: CADR;  Base: 8 -*-
 
 ;;;Subrs for data path diagnostics (which don't work) 
 
@@ -235,15 +217,15 @@
    231. (2 32) (7 12) 12 53 (8. 3 43) 3 343 3
 ))
 
+(DEFVAR SYNC-CPT)
 (DEFUN CPT ()
-    (cadpmi)
     (PHYS-MEM-WRITE VSP 0)
     (TV-FILL SYNC-CPT)
     (TV-VERIFY SYNC-CPT)
     (PHYS-MEM-WRITE TV (+ (LSH BOW 2) 0))
     (PHYS-MEM-WRITE VSP 200))
 
-(SETQ BOW 0)
+(SETQ BOW 1)
 
 (DEFUN OLD-TV (RELOAD)
     (PHYS-MEM-WRITE VSP 0)					;DISABLES SYNC PULSES

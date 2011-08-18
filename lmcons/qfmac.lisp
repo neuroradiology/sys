@@ -251,13 +251,3 @@
 			 BODY)))
      ,ITEM))
 
-(IF-FOR-MACLISP
-(DEFUN LET MACRO (X)
-   ((LAMBDA (LS BOD)
-       (CONS (CONS 'LAMBDA
-		   (CONS (MAPCAR (FUNCTION CAR) LS)
-			 BOD))
-	     (MAPCAR (FUNCTION CADR) LS)))
-    (CADR X)
-    (CDDR X)))
-)

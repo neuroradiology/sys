@@ -1,10 +1,6 @@
 ;;; -*-LISP-*- Patch file for CADR microcode loader
 
 (INCLUDE |LMDOC;.COMPL PRELUD|)
-;(DECLARE (EVAL (READ)))
-;(PROGN (LOAD '(MACROS > DSK LISPM))
-;       (LOAD '(DEFMAC FASL DSK LISPM2))
-;       (LOAD '(LMMAC > DSK LISPM2)))
 
 (IF-FOR-MACLISP (DECLARE (EVAL (READ))))
 (IF-FOR-MACLISP (DEFUN **STRING** MACRO (X) `',(CADR X)) ;Bubbles in my brain

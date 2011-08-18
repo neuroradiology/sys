@@ -1,5 +1,7 @@
 ; LOW-LEVEL CONS-MUNGING ROUTINES FOR CC		-*-LISP-*-
 
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
 ;** Still have to worry about how to detect that the pdp11 has
 ;** 105 foobar'ed the machine and invalidated our saved status.
 ;** Also what to do when initially starting up.

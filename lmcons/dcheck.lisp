@@ -1,4 +1,6 @@
-;;; DCHECK - for checking out newly-constructed disk controls		-*-LISP-*-
+;;; -*- Mode:Lisp; Package:CADR; Base:8; Lowercase:yes -*-
+
+;;; DCHECK - for checking out newly-constructed disk controls
 ;;; Goes in CADR package
 
 (DECLARE (COND ((STATUS FEATURE LISPM))   ;DO NOTHING ON LISP MACHINE.
@@ -124,10 +126,19 @@
   (let ((sts))
     (dc-print-status)
     (terpri)
+    (let ((da (phys-mem-read dc-da-adr)))
+      (format t "~%Disk address: cylinder ~o, head ~o, block ~o (octal)~%"
+	        (ldb 2020 da) (ldb 1010 da) (ldb 0010 da)))
+    (princ "Current status: ")
+    (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
+    (cc-print-set-bits sts '( track-zero landing-zone ill-cmd ready
+			      spin-out-of-limit end-of-cyl diag-error track-zero-error ))
+    (princ ", Re-read status: ")
     (dc-exec-1 5)
     (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
     (cc-print-set-bits sts '( track-zero landing-zone ill-cmd ready
 			      spin-out-of-limit end-of-cyl diag-error track-zero-error ))
+
     (dc-exec-1 200005)
     (setq sts (logldb 3010 (phys-mem-read dc-ma-adr)))
     (princ '|sector-length=|)
@@ -439,9 +450,9 @@
        (AND (OR BAD-VALUES MISSING-VALUES)
 	    (FORMAT T "~&Problems with block counter.  May be disk not spinning, lack of
  index or sector pulse, or problem with block counter logic.~%"))
-       (AND BAD-VALUES (FORMAT T "Erroneous values seen (octal): ~{~O~}~%" BAD-VALUES))
-       (AND MISSING-VALUES (FORMAT T "Values not seen (octal): ~{~O~}
-Good values that were seen: ~{~O~}~%" MISSING-VALUES GOOD-VALUES)))
+       (AND BAD-VALUES (FORMAT T "Erroneous values seen (octal): ~{~O~^,~}~%" BAD-VALUES))
+       (AND MISSING-VALUES (FORMAT T "Values not seen (octal): ~{~O~^,~}
+Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
     (SETQ BCTR (LDB 3010 (PHYS-MEM-READ DC-STS-ADR)))
     (IF (MEMQ BCTR DESIRED-VALUES)
 	(OR (MEMQ BCTR GOOD-VALUES) (PUSH BCTR GOOD-VALUES))
@@ -745,6 +756,28 @@ Good values that were seen: ~{~O~}~%" MISSING-VALUES GOOD-VALUES)))
       (apply 'dc-read-test-0
 	     (dc-step-addr-specs (list pattern-func blk head cyl))))))
 
+;Useful for debugging disk problems, particularly read-compare errors
+(defvar copy-page-buffer)
+
+(defun copy-page (start-address)
+  (or (boundp 'copy-page-buffer) (setq copy-page-buffer (make-array nil 'art-q page-size)))
+  (dotimes (i page-size)
+    (aset (phys-mem-read (+ start-address i)) copy-page-buffer i)))
+
+(defun compare-page (start-address)
+  (dotimes (i page-size)
+    (let ((old (aref copy-page-buffer i))
+	  (new (phys-mem-read (+ start-address i))))
+      (cond ((not (= old new))
+	     (format t "~&~O// old ~O new ~O, xor ~O bits "
+		       (+ start-address i) old new (logxor old new))
+	     (do ((bitlist nil)
+		  (bits (logxor old new))
+		  (bitno 0 (1+ bitno)))
+		 ((= bitno 32.)
+		  (cc-print-bit-list "" bitlist))
+	       (and (bit-test (ash 1 bitno) bits)
+		    (push bitno bitlist))))))))
 
 ;;; Formatting stuff
 ;;; This is too slow for bulk use, but useful for figuring out how you've lost.
