@@ -1054,26 +1054,25 @@ I    -- Toggle imlac simulation.
 	  ((AND (= CH NVT-IAC) NEW-TELNET-P)
 	   (FUNCALL STREAM ':TYO 377)))))	;IAC's must be quoted
 
-(DEFMETHOD (BASIC-TELNET :BUFFERED-TYO) (CH)
-  (MULTIPLE-VALUE-BIND (IGNORE Y) (FUNCALL-SELF ':READ-CURSORPOS)
-    (COND ((= CH NVT-IAC)
-	   (FUNCALL-SELF ':HANDLE-IAC))		;Perform new telnet negotiations.
-	  (( CH 200))				;Ignore otelnet negotiations
-	  ((= CH 7) (TV:BEEP))			;^G rings the bell.
-	  ((= CH 15)
-	   (FUNCALL-SELF ':FORCE-OUTPUT)
-	   (FUNCALL-SELF ':SET-CURSORPOS 0 Y))
-	  ((= CH 12)
-	   (FUNCALL-SELF ':FORCE-OUTPUT)
-	   (FUNCALL-SELF ':INCREMENT-CURSORPOS 0 1 ':CHARACTER)
-	   (FUNCALL-SELF ':CLEAR-EOL))
-	  ((AND (= CH 177) SIMULATE-IMLAC-FLAG)	;Escape character
-	   (FUNCALL-SELF ':HANDLE-IMLAC-ESCAPE))
-	  (T
-	   (AND ( CH 10) ( CH 15) ( CH 13)	;Convert formatting controls
-		(SETQ CH (+ CH 200)))		;to Lisp machine char set.
-	   (DO () ((ARRAY-PUSH OUTPUT-BUFFER CH))
-	     (FUNCALL-SELF ':FORCE-OUTPUT))))))
+(DEFMETHOD (BASIC-TELNET :BUFFERED-TYO) (CH &AUX CH1)
+  (COND ((= CH NVT-IAC)
+	 (FUNCALL-SELF ':HANDLE-IAC))		;Perform new telnet negotiations.
+	(( CH 200))				;Ignore otelnet negotiations
+	((= CH 7) (TV:BEEP))			;^G rings the bell.
+	((AND (= CH 15)
+	      (IF (= (SETQ CH1 (NVT-NETI)) 12)	;CR LF is NVT newline "character"
+		  NIL				;Output normally
+		  (FUNCALL-SELF ':FORCE-OUTPUT)
+		  (MULTIPLE-VALUE-BIND (IGNORE Y) (FUNCALL-SELF ':READ-CURSORPOS)
+		    (FUNCALL-SELF ':SET-CURSORPOS 0 Y))
+		  (ZEROP CH1))))		;CR NUL is bare carriage return
+	((AND (= CH 177) SIMULATE-IMLAC-FLAG)	;Escape character
+	 (FUNCALL-SELF ':HANDLE-IMLAC-ESCAPE))
+	(T
+	 (AND ( CH 10) ( CH 15) ( CH 13)	;Convert formatting controls
+	      (SETQ CH (+ CH 200)))		;to Lisp machine char set.
+	 (DO () ((ARRAY-PUSH OUTPUT-BUFFER CH))
+	   (FUNCALL-SELF ':FORCE-OUTPUT)))))
 
 ;;;New telnet protocol IAC handler
 (DEFMETHOD (BASIC-TELNET :HANDLE-IAC) (&AUX COMMAND OPTION)

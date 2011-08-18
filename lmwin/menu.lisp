@@ -200,20 +200,16 @@ the state beneath itself when exposed."))
   (BLINKER-SET-VISIBILITY (CAR BLINKER-LIST) NIL))
 
 ;;; Mouse-click handler for menus.
-;;; The left button "selects".  The meaning of this depends on the type of menu.
-;;; The middle button calls for documentation.
-;;; The right button is reserved.
+;;; All buttons are treated the same, select the item you are on.
 ;;; There are no double-clicks and you can't get to the system command menu.
 ;;; Clicking when the menu is not exposed just exposes it.
 
 (DEFMETHOD (BASIC-MENU :MOUSE-BUTTONS) (BD X Y)
-  X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
+  BD X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
   (COND ((NOT EXPOSED-P)	;Button pushed while not exposed, expose self.
 	 (FUNCALL-SELF ':EXPOSE))
-	((BIT-TEST 2 BD)	;Middle button, get documentation
-	 (FUNCALL-SELF ':DOCUMENT))
 	((NULL CURRENT-ITEM))
-	(T			;Left or Right button, select item.
+	(T			;Any button, select item.
 	 (SETQ LAST-ITEM CURRENT-ITEM
 	       CHOSEN-ITEM CURRENT-ITEM))))
 
@@ -831,11 +827,9 @@ Clicking on a choice box simulates clicking on a menu item")
 ;Modified mouse-button handler.  Does normal thing for special-choices, otherwise
 ;just complements highlight state.
 (DEFMETHOD (MULTIPLE-MENU-MIXIN :MOUSE-BUTTONS) (BD X Y &AUX ITEM)
-  X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
+  BD X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
   (COND ((NOT EXPOSED-P)	;Button pushed while not exposed, expose self.
 	 (FUNCALL-SELF ':EXPOSE))
-	((BIT-TEST 2 BD)	;Middle button, get documentation
-	 (FUNCALL-SELF ':DOCUMENT))
 	((NULL (SETQ ITEM CURRENT-ITEM)))
 	((AND (NOT (ATOM ITEM))	;Special-choice selected?
 	      (NOT (ATOM (CDR ITEM)))

@@ -741,3 +741,295 @@ SHEET-TRUNCATE-LINE-OUT-FLAG in the window is set."))
 				   (+ (SHEET-INSIDE-LEFT) PX3) (+ (SHEET-INSIDE-TOP) PY3)
 				   (+ (SHEET-INSIDE-LEFT) PX4) (+ (SHEET-INSIDE-TOP) PY4)
 				   ALU SELF))))))))
+
+;;; Cubic splines from Rogers and Adams, "Mathematical Elements
+;;; for Computer Graphics".  This began as a translation from
+;;; a BASIC program, but has been changed a bit.  The original
+;;; program uses a full matrix inversion when the boundary conditions
+;;; are cyclic or anti-cyclic, which is inefficient; in this version
+;;; the special-case tridiagonal solver is extended to handle the
+;;; cyclic and anti-cyclic end conditions.  (Also, the original program
+;;; has a bug wherein it neglects to initialize one diagonal of the M matrix.)
+
+;;; The caller has a sequence of points, in PX and PY, through which he
+;;; wants a smooth curve drawn.  This program generates Z intermediate
+;;; points between each pair of points, returning a sequence of points
+;;; in CX and CY that includes the original points with the intermediate
+;;; points inserted.  The caller can then plot lines between successive
+;;; pairs of points of CX and CY to draw the curve.
+
+;;; The caller may pass in arrays to be filled in with the answers (used as
+;;; CX and CY); they should be (+ N (* Z (- N 1))) long.  If NIL is passed,
+;;; this function creates the arrays itself.  If they are not long enough,
+;;; they are adjusted with ADJUST-ARRAY-SIZE.  The optional argument C1 is
+;;; the initial end condition, one of :RELAXED, :CLAMPED, :CYCLIC, or
+;;; :ANTI-CYCLIC; C2 is the final end condition, one of :RELAXED or
+;;; :CLAMPED.  The first defaults to :RELAXED, and the second defaults
+;;; to the first.  The second must be the same as the first if the
+;;; first is :CYCLIC or :ANTI-CYCLIC.  The last four arguments are
+;;; the X and Y values to which the endpoints are being clamped if
+;;; the corresponding boundary condition is :CLAMPED.  For cyclic splines
+;;; that join themselves, the caller must pass the same point twice, as
+;;; both the first point and the last point.
+
+;;; Three values are returned: The two arrays CX and CY, and the number
+;;; of elements in the original P array.
+
+(DEFUN SPLINE (PX PY Z &OPTIONAL CX CY (C1 ':RELAXED) (C2 C1)
+	       P1-PRIME-X P1-PRIME-Y PN-PRIME-X PN-PRIME-Y
+	       &AUX N N-1 N-2 N-3 BX BY L UX UY N1 N2 N3 N4 SIGN
+		    (ZUNDERFLOW T))
+  (SETQ N (ARRAY-ACTIVE-LENGTH PX)		;The number of points
+	N-1 (1- N)
+	N-2 (1- N-1)
+	N-3 (1- N-2))
+
+  ;; Create the arrays if they were not given them, or redimension them if needed.
+  (LET ((CLEN (+ N (* N-1 Z))))
+    (COND ((NULL CX)
+	   (SETQ CX (MAKE-ARRAY NIL 'ART-Q CLEN)))
+	  ((< (ARRAY-LENGTH CX) CLEN)
+	   (SETQ CX (ADJUST-ARRAY-SIZE CX CLEN))))
+    (COND ((NULL CY)
+	   (SETQ CY (MAKE-ARRAY NIL 'ART-Q CLEN)))
+	  ((< (ARRAY-LENGTH CY) CLEN)
+	   (SETQ CY (ADJUST-ARRAY-SIZE CY CLEN)))))
+
+  ;; Set up L to hold the approximate spline segment lengths.
+  ;; The Nth element of L holds the distance between the Nth and N+1st
+  ;; points of PX,PY.  The last element of L is not used.
+  (SETQ L (MAKE-ARRAY NIL 'ART-Q N))
+  (LOOP FOR J FROM 0 TO N-2
+	DO (ASET (SMALL-FLOAT (SQRT (+ (^ (- (AREF PX (1+ J)) (AREF PX J)) 2)
+				       (^ (- (AREF PY (1+ J)) (AREF PY J)) 2))))
+		 L J))
+
+  ;; The bulk of the code here is concerned with solving a set of
+  ;; simultaneous linear equations, expressed by the matrix equation
+  ;; M * U = B.  M is an N by N square matrix, and B and U are N by 1
+  ;; column matricies.  U will hold the values of the slope of the curve
+  ;; at each point PX, PY.
+
+  ;; The M matrix is tridiagonal for :RELAXED and :CLAMPED end conditions.
+  ;; We represent it by storing M(I,I-1) in N1(I), M(I,I) in N2(I), and
+  ;; M(I,I+1) in N3(I).  This means N1(0) and N3(N-1) are unused.
+  (SETQ N1 (MAKE-ARRAY NIL 'ART-Q N)
+	N2 (MAKE-ARRAY NIL 'ART-Q N)
+	N3 (MAKE-ARRAY NIL 'ART-Q N))
+
+  ;; These quantities are meaningless, but they get referred to as part
+  ;; of array bound conditions; these values just prevent errors from happening.
+  (ASET 0.0s0 N1 0)
+  (ASET 0.0s0 N3 N-1)
+
+  (COND ((MEMQ C1 '(:CYCLIC :ANTI-CYCLIC))
+	 ;; With these conditions, the M matrix is not quite tri-diagonal;
+	 ;; it is initialize with a 1 in the upper-right hand corner, and
+	 ;; during the solution of the equations the whole right column
+	 ;; gets non-zero values.  Also, it is only N-1 by N-1!  So the upper
+	 ;; right corner is M(0, N-2).  N4 represents the N-2 column; element
+	 ;; M(I,N-2) is stored in N4(I).  The last two elements are not
+	 ;; used, because N4(N-2) = N2(N-2) and N4(N-3) = N3(N-3).  We also
+	 ;; set up this handy SIGN variable.
+	 (SETQ N4 (MAKE-ARRAY NIL 'ART-Q (1- N)))
+	 (SETQ SIGN (IF (EQ C1 ':CYCLIC) 1.0s0 -1.0s0)))
+	((NOT (MEMQ C1 '(:RELAXED :CLAMPED)))
+	 (FERROR NIL "~S is not known spline type" C1)))
+  ;; B is just a column vector, represented normally.
+  (SETQ BX (MAKE-ARRAY NIL 'ART-Q N)
+	BY (MAKE-ARRAY NIL 'ART-Q N))
+
+  ;; Set up the boundary conditions.
+  ;; The 0th row of M and B are determined by the initial boundary conditions,
+  ;; and the N-1st row is determined by the final boundary condition.
+  ;; Note that the 0th row of M is implemented as the 0th element of N2, N3,
+  ;; and sometimes N4; N1(0) is not used.  A similar thing is true of the
+  ;; N-1st row.
+  (SELECTQ C1
+    (:CLAMPED
+       (ASET 1.0s0 N2 0)
+       (ASET 0.0s0 N3 0)
+       (ASET P1-PRIME-X BX 0)
+       (ASET P1-PRIME-Y BY 0))
+    (:RELAXED
+       (ASET 1.0s0 N2 0)
+       (ASET 0.5s0 N3 0)
+       (LET ((TEM (// 3.0s0 (* 2.0s0 (AREF L 0)))))
+	 (ASET (* TEM (- (AREF PX 1) (AREF PX 0))) BX 0)
+	 (ASET (* TEM (- (AREF PY 1) (AREF PY 0))) BY 0)))
+    ((:CYCLIC :ANTI-CYCLIC)
+       (LET ((S3 (// (AREF L N-2) (AREF L 0))))
+	 (ASET (+ 2.0s0 (* S3 2.0s0)) N2 0)
+	 (ASET S3 N3 0)
+	 (ASET SIGN N4 0)
+	 (LET ((TEM (// 3.0s0 (AREF L 0))))
+	   (ASET (* TEM (+ (* S3 (- (AREF PX 1) (AREF PX 0)))
+			   (* SIGN (// (- (AREF PX N-1) (AREF PX N-2)) S3))))
+		 BX 0)
+	   (ASET (* TEM (+ (* S3 (- (AREF PY 1) (AREF PY 0)))
+			   (* SIGN (// (- (AREF PY N-1) (AREF PY N-2)) S3))))
+		 BY 0)))))
+  (SELECTQ C2
+    (:CLAMPED
+       (ASET 0.0s0 N1 N-1)
+       (ASET 1.0s0 N2 N-1)
+       (ASET PN-PRIME-X BX N-1)
+       (ASET PN-PRIME-Y BY N-1))
+    (:RELAXED
+       (ASET 2.0s0 N1 N-1)
+       (ASET 4.0s0 N2 N-1)
+       (LET ((TEM (// 6.0s0 (AREF L N-2))))
+	 (ASET (* TEM (- (AREF PX N-1) (AREF PX N-2))) BX N-1)
+	 (ASET (* TEM (- (AREF PY N-1) (AREF PY N-2))) BY N-1)))
+    ;; Note: there are no final end conditions for :CYCLIC and :ANTI-CYCLIC,
+    ;; since they are the same at each end.  The M matrix has no N-1st row,
+    ;; either, as it is smaller by one row and one column.
+    )
+
+  ;; Now fill in the insides of M and B arrays.
+  (LOOP FOR J FROM 1 TO N-2
+	AS L0 := (AREF L 0) THEN L1
+	AS L1 := (AREF L 1) THEN (AREF L J)
+	AS PX0 := (AREF PX 0) THEN PX1
+	AS PX1 := (AREF PX 1) THEN PX2
+	AS PX2 := (AREF PX (1+ J))
+	AS PY0 := (AREF PY 0) THEN PY1
+	AS PY1 := (AREF PY 1) THEN PY2
+	AS PY2 := (AREF PY (1+ J))
+	DO (ASET L1 N1 J)
+	   (ASET (* 2 (+ L0 L1)) N2 J)
+	   (ASET L0 N3 J)
+	   (IF N4 (ASET 0.0s0 N4 J))
+	   (ASET (// (* 3.0s0 (+ (* (^ L0 2) (- PX2 PX1)) (* (^ L1 2) (- PX1 PX0))))
+		     (* L0 L1)) BX J)
+	   (ASET (// (* 3.0s0 (+ (* (^ L0 2) (- PY2 PY1)) (* (^ L1 2) (- PY1 PY0))))
+		     (* L0 L1)) BY J))
+
+  ;; Now that we have the matricies filled in, we solve the equations.
+  ;; We use Gaussian elimination, with a special version that takes
+  ;; advantage of the sparsity of this tridiagonal or almost-tridiagonal
+  ;; matrix to run in time O(n) instead of O(n**3).  No pivoting is used,
+  ;; because for any real dat (not all zeroes, for example) the matrix
+  ;; is both irreducible and diagonally-dominant, and therefore pivoting
+  ;; is not needed (Forsythe and Moler, p. 117,  exercise 23.10).
+  ;; The first step is to make the matrix upper-triangular, by making all of
+  ;; N1 be zero.
+  (LET ((Q (AREF N2 0)))				;Normalize row 0.
+    (ASET (// (AREF N3 0) Q) N3 0)
+    (IF N4 (ASET (// (AREF N4 0) Q) N4 0))
+    (ASET (// (AREF BX 0) Q) BX 0)
+    (ASET (// (AREF BY 0) Q) BY 0))
+  (LOOP FOR I FROM 1 TO (IF (NULL N4) N-1 N-2)
+	AS N1I := (AREF N1 I)
+	WHEN (NOT (ZEROP N1I))				;If it is zero already, OK.
+	DO (LET ((D (// 1.0s0 N1I)))
+	     ;; D = M(I-1, I-1) / M(I, I-1)  so multiply row I
+	     ;;   by D and subtract row I-1 from row I.
+	     (ASET (- (* D (AREF N2 I)) (AREF N3 (1- I))) N2 I)
+	     (ASET (* D (AREF N3 I)) N3 I) ; Uses N3(N-1), a garbage element.
+	     (COND (N4
+		    (ASET (- (* D (AREF N4 I)) (AREF N4 (1- I))) N4 I)
+		    (IF (= I N-3)
+			;; In this case, N4(N-4) is above N3(N-3), so
+			;; it must be subtracted out.
+			(ASET (- (AREF N3 I) (AREF N4 (1- I))) N3 I))))
+	     (ASET (- (* D (AREF BX I)) (AREF BX (1- I))) BX I)
+	     (ASET (- (* D (AREF BY I)) (AREF BY (1- I))) BY I)
+	     )
+	;; Next normalize, by dividing row I through by M(I,I).
+	;; This leaves the center diagonal all 1.0s0, which the
+	;; back-solver in R&A doesn't take advantage of.
+	   (LET ((Q (AREF N2 I)))
+	     (ASET (// (AREF N3 I) Q) N3 I)
+	     (IF N4 (ASET (// (AREF N4 I) Q) N4 I))
+	     (ASET (// (AREF BX I) Q) BX I)
+	     (ASET (// (AREF BY I) Q) BY I)))
+
+  ;; Create the arrays to hold the answers.
+  (SETQ UX (MAKE-ARRAY NIL 'ART-Q N)		;Tangent vector matrix
+	UY (MAKE-ARRAY NIL 'ART-Q N))
+
+  ;; Backsolve the upper-triangular matrix.
+  (COND ((NOT N4)
+	 ;; Simpler version if there is no N4.
+	 (ASET (AREF BX N-1) UX N-1)
+	 (ASET (AREF BY N-1) UY N-1)
+	 (LOOP FOR J FROM N-2 DOWNTO 0
+	       DO (LET ((N3J (AREF N3 J)))
+		    (ASET (- (AREF BX J) (* N3J (AREF UX (1+ J)))) UX J)
+		    (ASET (- (AREF BY J) (* N3J (AREF UY (1+ J)))) UY J))))
+	(T
+	 ;; Hairier version with N4.
+	 (LET ((UXN-2 (AREF BX N-2))
+	       (UYN-2 (AREF BY N-2)))
+	   (ASET UXN-2 UX N-2)
+	   (ASET UYN-2 UY N-2)
+	   (ASET (- (AREF BX N-3) (* (AREF N3 N-3) UXN-2)) UX N-3)
+	   (ASET (- (AREF BY N-3) (* (AREF N3 N-3) UYN-2)) UY N-3)
+	   (LOOP FOR J FROM (1- N-3) DOWNTO 0
+		 DO (LET ((N3J (AREF N3 J))
+			  (N4J (AREF N4 J)))
+		      (ASET (- (AREF BX J)
+			       (* N3J (AREF UX (1+ J)))
+			       (* N4J UXN-2))
+			    UX J)
+		      (ASET (- (AREF BY J)
+			       (* N3J (AREF UY (1+ J)))
+			       (* N4J UYN-2))
+			    UY J))))
+	 (ASET (* SIGN (AREF UX 0)) UX N-1)
+	 (ASET (* SIGN (AREF UY 0)) UY N-1)))
+
+  (MULTIPLE-VALUE (CX CY N)
+    (CURGEN N-1 PX PY (1+ Z) CX CY L UX UY))	;Generate it
+
+  (RETURN-ARRAY UY)
+  (RETURN-ARRAY UX)
+  (RETURN-ARRAY BY)
+  (RETURN-ARRAY BX)
+  (IF N4 (RETURN-ARRAY N4))
+  (RETURN-ARRAY N3)
+  (RETURN-ARRAY N2)
+  (RETURN-ARRAY N1)
+  (RETURN-ARRAY L)
+
+  (PROG () (RETURN CX CY N)))
+
+;;; Generate the spline curve points.
+;;; This is a separate function because if it got merged, there would
+;;; be too many local variables.
+(DEFUN CURGEN (N-1 PX PY Z CX CY L UX UY)
+  (LOOP WITH I := 0
+	FOR J FROM 0 TO (1- N-1)
+	AS FX1 := (AREF PX J)
+	AND FX2 := (AREF UX J)
+	AS TEMX := (- (AREF PX (1+ J)) FX1)
+	AND TEMX1 := (+ (AREF UX (1+ J)) FX2)
+	AND LEN := (AREF L J)
+	AS LEN^2 := (^ LEN 2)
+	AS LEN^3 := (* LEN^2 LEN)
+	AS FX3 := (- (* (// 3.0s0 LEN^2) TEMX) (// (+ TEMX1 FX2) LEN))
+	AND FX4 := (+ (* (// -2.0s0 LEN^3) TEMX) (// TEMX1 LEN^2))
+	AS FY1 := (AREF PY J)
+	AND FY2 := (AREF UY J)
+	AS TEMY := (- (AREF PY (1+ J)) FY1)
+	AND TEMY1 := (+ (AREF UY (1+ J)) FY2)
+	AS FY3 := (- (* (// 3.0s0 LEN^2) TEMY) (// (+ TEMY1 FY2) LEN))
+	AND FY4 := (+ (* (// -2.0s0 LEN^3) TEMY) (// TEMY1 LEN^2))
+	DO (LOOP FOR X FROM 0 BY (// LEN Z) TO LEN
+		 WHEN (OR (= J 0) ( X 0))
+		 DO (ASET (+ FX1 (* FX2 X) (* FX3 (^ X 2)) (* FX4 (^ X 3))) CX I)
+		    (ASET (+ FY1 (* FY2 X) (* FY3 (^ X 2)) (* FY4 (^ X 3))) CY I)
+		    (SETQ I (1+ I)))
+	FINALLY (RETURN CX CY I)))
+
+(DEFMETHOD (GRAPHICS-MIXIN :DRAW-CUBIC-SPLINE)
+	   (PX PY Z &OPTIONAL CURVE-WIDTH ALU (C1 ':RELAXED) (C2 C1)
+	               P1-PRIME-X P1-PRIME-Y PN-PRIME-X PN-PRIME-Y)
+  (IF (NULL ALU)
+      (SETQ ALU CHAR-ALUF))
+  (MULTIPLE-VALUE-BIND (CX CY I)
+      (SPLINE PX PY Z NIL NIL C1 C2 P1-PRIME-X P1-PRIME-Y PN-PRIME-X PN-PRIME-Y)
+    (IF (= CURVE-WIDTH 1)
+	(FUNCALL-SELF ':DRAW-CURVE CX CY I ALU)
+	(FUNCALL-SELF ':DRAW-WIDE-CURVE CX CY CURVE-WIDTH I ALU))))
