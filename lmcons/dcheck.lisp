@@ -779,6 +779,11 @@ Good values that were seen: ~{~O~^,~}~%" MISSING-VALUES GOOD-VALUES)))
 		  (cc-print-bit-list "" bitlist))
 	       (and (bit-test (ash 1 bitno) bits)
 		    (push bitno bitlist))))))))
+
+(defun dc-repeat-read (cyl head sec &optional (error-bits dc-all-error-bits)
+			   	    &aux (offset 100000))
+  (do () (())
+    (dc-exec dc-read cyl head sec 777 (+ offset 0) error-bits)))
 
 ;;; Formatting stuff
 ;;; This is too slow for bulk use, but useful for figuring out how you've lost.

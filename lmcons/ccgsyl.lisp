@@ -95,11 +95,12 @@
 (IF-FOR-LISPM
 (DEFUN CC-STREAM (OP &REST ARGS)
   (SELECTQ OP
-           (:TYI (LET ((CHAR (KBD-TYI)))
-                      (COND ((ZEROP (LOGAND CHAR 600)) CHAR)
+           (:TYI (LET ((CHAR (FUNCALL STANDARD-INPUT ':TYI)))
+                      (COND ((AND (ZEROP (LDB %%KBD-CONTROL-META CHAR))
+				  (< CHAR 200))	;Printing
+			     CHAR)
                             ((OR (= CHAR #/L) (= CHAR #/l) (= CHAR #\FORM))
-                             (TV-CLEAR-SCREEN)	;Kludge for echoing of form/c-L
-			     (TV-HOME (FUNCALL OLD-STREAM ':PC-PPR))
+                             (FUNCALL STANDARD-INPUT ':CLEAR-SCREEN)
 			     14)
                             ((= CHAR #\RUBOUT) 177) ;Map rubout
                             (T (LOGAND CHAR 37))))) ;Map CR, LF, etc.

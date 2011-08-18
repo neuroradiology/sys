@@ -1,5 +1,6 @@
 ;;; -*- Mode:Lisp; Package:CADR; Base:8 -*-
 ;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+;;; ***CAUTION!! This file runs only on MACLISP.  The LISPM version is LCADR;LQFMAC***
 
 ;BYTE HACKING ROUTINES
 
