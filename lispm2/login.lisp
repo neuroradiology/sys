@@ -10,19 +10,14 @@
 ;; or T meaning dont do any of that hair.
 (DEFUN LOGIN (USER-NAME &OPTIONAL (MACHINE-OR-T "AI"))
   (LOGOUT)
-  (SETQ USER-ID (STRING-TRIM '(#\SP #/; #/:) (STRING USER-NAME)))
+  (SETQ USER-ID (STRING-TRIM '(#\SP) (STRING USER-NAME)))
   (FS:FILE-LOGIN USER-ID)
   (COND ((NOT (EQ MACHINE-OR-T T))
 	 (SETQ MACHINE-OR-T (STRING MACHINE-OR-T)) ;canonicalize for ASSOC's in FS:FILE...
-	 (LET ((FILE-NAME (STRING-APPEND (FS:FILE-USER-ID-HSNAME MACHINE-OR-T T)
-					 USER-ID " LISPM")))
-	   (LOAD FILE-NAME "USER" T))
-	 ;; Load fix file "Fmm.n >" where mm.n is the system version.
-	 (LOAD (STRING-APPEND MACHINE-OR-T
-			      ":LISPM1;F"
-			      (EXTRACT-SYSTEM-VERSION)
-			      " >")
-	       "USER" T)))
+	 (LET ((FILE-NAME (FS:FILE-PARSE-NAME (FS:FILE-USER-ID-HSNAME MACHINE-OR-T T)
+					      MACHINE-OR-T)))
+	   (FUNCALL FILE-NAME ':INIT-FILE "LISPM")
+	   (LOAD FILE-NAME "USER" T))))
   T)
 
 (DEFUN LOGOUT ()

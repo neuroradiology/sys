@@ -566,9 +566,10 @@
     ;; it is a :COMBINED method, which is the result of compilation, not a client of it.
     ;; The reason there are two things to check to see if it is a new method
     ;; is because of FLAVOR-NOTICE-METHOD.
-    (AND (OR (FLAVOR-ADD-METHOD FL TYPE MESSAGE METHOD-SYMBOL) (NOT REDEFINING))
-	 (NEQ TYPE ':COMBINED)
-	 (RECOMPILE-FLAVOR (FLAVOR-NAME FL) MESSAGE))
+    (COND ((AND (OR (FLAVOR-ADD-METHOD FL TYPE MESSAGE METHOD-SYMBOL) (NOT REDEFINING))
+		(NEQ TYPE ':COMBINED))
+	   (RECOMPILE-FLAVOR (FLAVOR-NAME FL) MESSAGE)
+	   (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL)))	;Needs to be recomputed
     ;; Always return the method symbol, for want of anything better
     METHOD-SYMBOL))
 
