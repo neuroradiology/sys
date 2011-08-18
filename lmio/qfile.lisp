@@ -1591,7 +1591,7 @@ Type either password or loginname<space>password: " UID HOST)
 	   (COND ((OR (NOT (NUMBERP OLD-IDLE)) ( OLD-IDLE IDLE))
 		  (TV:WHO-LINE-PREPARE-FIELD ITEM)
 		  (WITHOUT-INTERRUPTS
-		    (LET ((STRING (FORMAT NIL "Keyboard idle ~D minute~P" IDLE IDLE)))
+		    (LET ((STRING (FORMAT NIL "Console idle ~D minute~P" IDLE IDLE)))
 		      (TV:SHEET-STRING-OUT TV:WHO-LINE-WINDOW STRING)
 		      (RETURN-ARRAY STRING)))
 		  (SETF (TV:WHO-LINE-ITEM-STATE ITEM) IDLE)))))
