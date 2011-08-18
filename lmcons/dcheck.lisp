@@ -321,9 +321,7 @@
   #Q (DCHECK-BLOCK-COUNTER)
   ;; Part 3.6 - recalibrate.  Marksman needs this if I/O reset has been done.
   (FORMAT T "~&Recalibrate...")
-  (DC-EXEC DC-RECAL 0 0 0 0 NIL 0)
-  (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
-    (PROCESS-ALLOW-SCHEDULE))
+  (DC-RECALIBRATE)
   ;; Part 4 - Test disk bus bits and basic command logic by seeking
   (COND ((NOT BYPASS-SEEKS)
 	 (DCHECK-SEEK (if marksman-p 209. 814.))
@@ -404,6 +402,15 @@
   (PRINC "You might enjoy trying DC-WRITE-READ-TEST")
   (TERPRI)
   (PRINC '|End of DCHECK.  Now run the format program and the ECC test program.|))
+
+(DEFUN DC-RESET NIL
+  (PHYS-MEM-WRITE DC-CMD-ADR DC-STOP)
+  (PHYS-MEM-WRITE DC-CMD-ADR 0))
+
+(DEFUN DC-RECALIBRATE NIL
+  (DC-EXEC DC-RECAL 0 0 0 0 NIL 0)
+  (DO () ((NOT (BIT-TEST 1_8 (PHYS-MEM-READ DC-STS-ADR))))
+    (PROCESS-ALLOW-SCHEDULE)))
 
 ;;; Compare pattern, set special variables if lose
 ;;; Also obeys CC-DIAG-TRACE
