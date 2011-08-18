@@ -272,8 +272,7 @@
    ;; Prepare arguments.
    (CHECK-ARG A 2D-ARRAYP "a two-dimensional array")
    (SETQ N (ARRAY-DIMENSION-N 1 A))
-   (OR (= N (ARRAY-DIMENSION-N 2 A))
-       (FERROR NIL "The first argument must be a square array."))
+   (CHECK-ARG A (= N (ARRAY-DIMENSION-N 2 A)) "a square array.")
    (IF LU
        (CHECK-ARG LU 2D-ARRAYP "a two-dimensional array")
        (SETQ LU (MAKE-ARRAY NIL (ARRAY-TYPE A) (LIST N N))))

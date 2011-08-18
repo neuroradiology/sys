@@ -1,7 +1,7 @@
 ; -*- Mode:Lisp; Package:System-Internals; Base:8 -*-
 
 ;To do:
-; For %P-CONTENTS-WEAK really to work, must change implementation of AP-1
+; For %P-CONTENTS-EQ really to work, must change implementation of AP-1
 
 ;A hash-table is an array whose leader is described by the following defstruct.
 ;It is used to associate keys with values.  Neither a key nor a value may be NIL;
@@ -19,8 +19,7 @@
 ;simultaneously by more than one process.
 
 ;This is temporary until this really exists
-(DEFSUBST %P-CONTENTS-WEAK (P) (CAR P))
-(DEFSUBST %P-CONTENTS-NULL (P) (NULL (CAR P)))
+(DEFSUBST %P-CONTENTS-EQ (P X) (EQ (CAR P) X))
 
 (DEFSTRUCT (HASH-TABLE :NAMED :ARRAY-LEADER (:CONSTRUCTOR MAKE-HASH-TABLE-INTERNAL))
     (HASH-TABLE-REHASH-FUNCTION 'HASH-TABLE-REHASH)
@@ -91,7 +90,7 @@
 	      (FUNCALL (HASH-TABLE-REHASH-FUNCTION HASH-TABLE) HASH-TABLE NIL)
 	      (GETHASH KEY HASH-TABLE))
 	     (T NIL)))				;Result is NIL if not found
-    (AND (EQ (%P-CONTENTS-WEAK P) KEY)
+    (AND (%P-CONTENTS-EQ P KEY)
 	 (RETURN (%P-CONTENTS-OFFSET P 8)))))
 
 ;Putting a value of NIL means to remove
@@ -117,14 +116,14 @@
 	      (FUNCALL (HASH-TABLE-REHASH-FUNCTION HASH-TABLE)
 		       HASH-TABLE (HASH-TABLE-REHASH-SIZE HASH-TABLE))
 	      (PUTHASH KEY VALUE HASH-TABLE))))
-    (COND ((EQ (%P-CONTENTS-WEAK P) KEY)	;Found existing entry
+    (COND ((%P-CONTENTS-EQ P KEY)	;Found existing entry
 	   (COND ((NULL VALUE)			;Remove it
 		  (%P-STORE-CONTENTS P NIL)
 		  (SETF (HASH-TABLE-FULLNESS HASH-TABLE)
 			(1- (HASH-TABLE-FULLNESS HASH-TABLE)))))
 	   (%P-STORE-CONTENTS-OFFSET VALUE P 8)	;Update or flush associated value
 	   (RETURN VALUE))
-	  ((%P-CONTENTS-NULL P)			;Remember empty slot
+	  ((%P-CONTENTS-EQ P NIL)		;Remember empty slot
 	   (SETQ EMPTYP P)))))
 
 ;These are not the same order of arguments as in Interlisp

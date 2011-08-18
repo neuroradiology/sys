@@ -80,8 +80,12 @@
 	   (PRINC "(MISC) ") ;Moon likes to see this
 	   (COND ((< DISP 100) (FORMAT T "LIST ~D long " DISP))
 		 ((< DISP 200) (FORMAT T "LIST-IN-AREA ~D long " (- DISP 100)))
-		 ((< DISP 220) (FORMAT T "UNBIND ~D bindings " (- DISP 177)))
-		 ((< DISP 240) (FORMAT T "POP-PDL ~D times " (- DISP 217)))
+		 ((< DISP 220)
+		  (FORMAT T "UNBIND ~D binding~:P " (- DISP 177))  ;code 200 does 1 unbind.
+		  (AND (ZEROP DEST) (RETURN 1)))
+		 ((< DISP 240)
+		  (FORMAT T "POP-PDL ~D time~:P " (- DISP 220)) ;code 220 does 0 pops.
+		  (AND (ZEROP DEST) (RETURN 1)))
 		 (T
                   (LET ((OP (MICRO-CODE-SYMBOL-NAME-AREA (- DISP 200))))
                     (COND ((NULL OP) (FORMAT T "#~O " DISP))

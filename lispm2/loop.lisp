@@ -1,7 +1,14 @@
-;-*- Mode:LISP; Package:SYSTEM-INTERNALS -*-
+;-*- Mode:LISP; Package:System-Internals; Base:8; Lowercase:T -*-
+
+;The master copy of this file is on ML:LSB1;LOOP >
+;The current Lisp machine copy is on AI:LISPM2;LOOP >
+;The FASL and QFASL should also be accessible from LIBLSP; on all machines.
+
 ; Bugs/complaints/suggestions/solicitations-for-documentation to BUG-LOOP
 ; at any ITS site.
+
 ;;;; LOOP Iteration Macro
+
 ; Set up some LISPM compatibility macros etc.
 ;     We use sharpsign to conditionalize code;  this means that the
 ; conditionalized code must at least be able to READ in both Maclisp
@@ -795,12 +802,13 @@
 
 
 (defmacro define-loop-path (names &rest cruft
-			    &aux (forms (mapcar
-					   '(lambda (name)
-						`(loop-add-path
-						    ',name ',cruft))
-					   (cond ((atom names) (list names))
-						 (t names)))))
+			    &aux forms)
+   (setq forms (mapcar
+		 #'(lambda (name)
+		     `(loop-add-path
+			',name ',cruft))
+		 (cond ((atom names) (list names))
+		       (t names))))
    #-Multics `(eval-when (eval load compile) ,@forms)
    #+Multics `(progn 'compile (declare ,@forms) ,@forms))
 

@@ -9,30 +9,30 @@
 ;; MACHINE-OR-T is the machine to get the init and fix files from (default = AI)
 ;; or T meaning dont do any of that hair.
 (DEFUN LOGIN (USER-NAME &OPTIONAL (MACHINE-OR-T "AI"))
-    (LOGOUT)
-    (SETQ USER-ID (STRING-TRIM '(#\SP #/; #/:) (STRING USER-NAME)))
-    (SI:FILE-LOGIN USER-ID)
-    (COND ((NOT (EQ MACHINE-OR-T T))
-	   (SETQ MACHINE-OR-T (STRING MACHINE-OR-T)) ;canonicalize for ASSOC's in SI:FILE...
-	   (SETQ FILE-DSK-DEVICE-NAME MACHINE-OR-T)
-	   (LET ((FILE-NAME (STRING-APPEND (SI:FILE-USER-ID-HSNAME MACHINE-OR-T T)
-					   USER-ID " LISPM")))
-	     (LOAD FILE-NAME "USER" T))
-	  ;; Load fix file "Fmm.n >" where mm.n is the system version.
-	   (LOAD (STRING-APPEND MACHINE-OR-T
-				":LISPM1;F"
-				(EXTRACT-SYSTEM-VERSION)
-				" >")
-		 "USER" T)))
-    T)
+  (LOGOUT)
+  (SETQ USER-ID (STRING-TRIM '(#\SP #/; #/:) (STRING USER-NAME)))
+  (FS:FILE-LOGIN USER-ID)
+  (COND ((NOT (EQ MACHINE-OR-T T))
+	 (SETQ MACHINE-OR-T (STRING MACHINE-OR-T)) ;canonicalize for ASSOC's in FS:FILE...
+	 (LET ((FILE-NAME (STRING-APPEND (FS:FILE-USER-ID-HSNAME MACHINE-OR-T T)
+					 USER-ID " LISPM")))
+	   (LOAD FILE-NAME "USER" T))
+	 ;; Load fix file "Fmm.n >" where mm.n is the system version.
+	 (LOAD (STRING-APPEND MACHINE-OR-T
+			      ":LISPM1;F"
+			      (EXTRACT-SYSTEM-VERSION)
+			      " >")
+	       "USER" T)))
+  T)
 
 (DEFUN LOGOUT ()
-    (MAPC 'EVAL LOGOUT-LIST)
-    (SETQ USER-ID "" USER-HSNAMES NIL USER-PERSONAL-NAME "" USER-GROUP-AFFILIATION #/-
-	  USER-LOGIN-MACHINE "AI")
-    (SETQ LOGOUT-LIST NIL)
-    (SI:FILE-LOGIN NIL)
-    T)
+  (MAPC 'EVAL LOGOUT-LIST)
+  (SETQ USER-ID ""
+	FS:USER-HSNAMES NIL FS:USER-PERSONAL-NAME "" FS:USER-GROUP-AFFILIATION #/-
+	FS:USER-LOGIN-MACHINE "AI")
+  (SETQ LOGOUT-LIST NIL)
+  (FS:FILE-LOGIN NIL)
+  T)
 
 (DEFUN LOGIN-EVAL (X)  ;Value returned by such a form is how to undo it
     (PUSH X LOGOUT-LIST))

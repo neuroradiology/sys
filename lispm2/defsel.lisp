@@ -31,17 +31,44 @@
        ,@(mapcar (function defselect-internal) methods)
        (declare (special ,wo-list-name))
        ,(or no-which-operations
-	    (defselect-internal `(:WHICH-OPERATIONS (&rest ignore) ,wo-list-name)))
+	    (defselect-internal
+	      `(:WHICH-OPERATIONS (&rest ignore)
+		 (cond (,wo-list-name)	;Do this at runtime because of possible tail pointers.
+		       (t (setq ,wo-list-name
+				(defselect-make-which-operations
+				  ',**defselect-function**)))))))
        (declare (*EXPR ,**defselect-function**))
        (defselect-add-methods ',**defselect-function** ',**defselect-alist** ',tail-pointer)
        ,(or no-which-operations
-	    `(setq ,wo-list-name
-		   (delq ':WHICH-OPERATIONS
-			 (do ((ops (%make-pointer dtp-list (fsymeval ',**defselect-function**))
-				   (cdr ops))
-			      (list nil (cons (caar ops) list)))
-			     ((atom ops) list))
-			 1_22.))))))
+	    `(setq ,wo-list-name nil)))))
+
+
+(defun defselect-make-which-operations (fctn)
+  (prog (ops subr)
+    l   (cond ((or (null fctn)
+		   (and (symbolp fctn)
+			(not (fboundp fctn))))
+	       (return ops))
+	      ((symbolp fctn)
+	       (setq fctn (fsymeval fctn)))
+	      ((listp fctn)
+	       (cond ((symbolp (car fctn))
+		      (cond (subr (setq fctn subr)	;Already one deep, return
+				  (setq subr nil))
+			    (t (setq subr (cdr fctn)	;explore subroutine
+				     fctn (car fctn)))))
+		     ((eq (caar fctn) ':which-operations)   ;Dont add that.
+		      (setq fctn (cdr fctn)))
+		     (t (setq ops (cons (caar fctn) ops))
+			(setq fctn (cdr fctn)))))
+	      ((eq (data-type fctn) 'dtp-select-method)
+	       (setq fctn (%make-pointer dtp-list fctn)))
+	      ((memq (data-type fctn) '(dtp-closure dtp-instance))
+	       (setq fctn (car (%make-pointer dtp-list fctn))))
+	      ((eq (data-type fctn) 'dtp-instance)
+	       (setq fctn (flavor-select-method (get (typep fctn) 'flavor))))
+	      (t (setq fctn nil)))
+	(go l)))
 
 (defun defselect-internal (method)
   (cond ((listp (car method))

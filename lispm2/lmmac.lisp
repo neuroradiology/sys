@@ -404,28 +404,30 @@
 ;The flags are :FLAG and :FALG;  if :FLAG is seen, FLAG is set to T.
 ;<otherwise> is one or more SELECTQ clauses which can be used
 ;to recognize whatever else you like, in nonstandard format.
-;To gobble the next thing from the <keylist>, say (FETCHR KEY).
+;To gobble the next thing from the <keylist>, say (CAR (SETQ KEY (CDR KEY))).
 ;Note that by default the actual keywords are in the user package and
 ;the variables are in the current package.  Because of this, you
 ;cannot compile except on the real machine unless you restrict yourself
 ;to specifying the keywords and variables, both, as in (UGH BLETCH).
 ;That is ok, since code written any other way which put the keywords in
-;the user package as it should would require colons and have teh same problem.
-(DEFMACRO-DISPLACE KEYWORD-EXTRACT (KEYLIST KEYVAR KEYWORDS FLAGS &REST OTHERWISE)
-    `(ITER-FETCHR ((MAPC ,KEYVAR ,KEYLIST)) NIL
-	   (SELECTQ KEY
-		    ,@(MAPCAR (FUNCTION (LAMBDA (KEYWORD)
-				  (COND ((ATOM KEYWORD)
-					 `(,(INTERN (STRING KEYWORD) "USER")
-					   (SETQ ,KEYWORD (FETCHR ,KEYVAR))))
-					(T `(,(CAR KEYWORD)
-					     (SETQ ,(CADR KEYWORD) (FETCHR ,KEYVAR)))))))
-			      KEYWORDS)
-		    ,@(MAPCAR (FUNCTION (LAMBDA (KEYWORD)
-				  `(,(INTERN (STRING KEYWORD) "USER")
-				    (SETQ ,KEYWORD T))))
-			      FLAGS)
-		    . ,OTHERWISE)))
+;the user package as it should would require colons and have the same problem.
+(DEFMACRO-DISPLACE KEYWORD-EXTRACT (KEYLIST KEYVAR KEYWORDS &OPTIONAL FLAGS &REST OTHERWISE)
+    `(DO ((,KEYVAR ,KEYLIST (CDR ,KEYVAR)))
+	 ((NULL ,KEYVAR))
+       (SELECTQ (CAR ,KEYVAR)
+	   ,@(MAPCAR (FUNCTION (LAMBDA (KEYWORD)
+				 (COND ((ATOM KEYWORD)
+					`(,(INTERN (STRING KEYWORD) "USER")
+					  (SETQ ,KEYWORD (CAR (SETQ ,KEYVAR (CDR ,KEYVAR))))))
+				       (T `(,(CAR KEYWORD)
+					    (SETQ ,(CADR KEYWORD)
+						  (CAR (SETQ ,KEYVAR (CDR ,KEYVAR)))))))))
+		     KEYWORDS)
+	   ,@(MAPCAR (FUNCTION (LAMBDA (KEYWORD)
+				 `(,(INTERN (STRING KEYWORD) "USER")
+				   (SETQ ,KEYWORD T))))
+		     FLAGS)
+	   . ,OTHERWISE)))
 
 ;PSETQ looks like SETQ but does its work in parallel.
 (DEFMACRO-DISPLACE PSETQ (&REST REST)

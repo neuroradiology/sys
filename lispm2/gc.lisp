@@ -8,8 +8,12 @@
 ;*** Needs a way to sound a warning when you are close to running out of virtual memory
 
 
-(DEFVAR GC-REPORT-STREAM STANDARD-OUTPUT)	;If non-NIL, junk output here
-						;For now, goes to magic auto-exposing window
+(DEFVAR GC-REPORT-STREAM T)
+	;Where junk output from the garbage collector goes:
+	;NIL - discard
+	;stream - send there
+	;T - notify (this is the default)
+
 (DEFVAR GC-PROCESS)		;Process that runs the flipper
 
 ;; These are lists of forms which are evaluated after reclaiming oldspace
@@ -106,6 +110,9 @@
 			(%LOGDPB (MAX 0 (- PAGE-PART-SIZE
 					   (LDB PAGE-NUMBER-FIELD (REGION-ORIGIN REGION))))
 				 PAGE-NUMBER-FIELD 0)))))))))
+
+(DEFUN GC-REPORT-STREAM ()
+  (IF (EQ GC-REPORT-STREAM T) (TV:GET-NOTIFICATION-STREAM) GC-REPORT-STREAM))
 
 ;;; Flipper
 
@@ -139,7 +146,7 @@
   (MULTIPLE-VALUE-BIND (DYNAMIC-SIZE STATIC-SIZE EXITED-SIZE FREE-SIZE)
 		(GC-GET-SPACE-SIZES)
     (AND GC-REPORT-STREAM
-	 (FORMAT GC-REPORT-STREAM ;separate static from exited when exited exists?
+	 (FORMAT (GC-REPORT-STREAM) ;separate static from exited when exited exists?
 	     "~&[GC: About to flip.  Dynamic space=~D., Static space=~D., Free space=~D.]~%"
 	     DYNAMIC-SIZE (+ STATIC-SIZE EXITED-SIZE) FREE-SIZE))
     ;; Perform whatever actions other programs need to do on flips
@@ -282,8 +289,9 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 	      (OLD-TOTAL-SIZE 0)
 	      (OLD-USED-SIZE 0))
 	     ((MINUSP REGION)
-	      (FORMAT GC-REPORT-STREAM "~&[GC: Flushing oldspace.  allocated=~D., used=~D.]~%"
-				       OLD-TOTAL-SIZE OLD-USED-SIZE))
+	      (FORMAT (GC-REPORT-STREAM)
+		      "~&[GC: Flushing oldspace.  allocated=~D., used=~D.]~%"
+		      OLD-TOTAL-SIZE OLD-USED-SIZE))
 	   (COND ((= (LDB %%REGION-SPACE-TYPE (REGION-BITS REGION)) %REGION-SPACE-OLD)
 		  (SETQ OLD-TOTAL-SIZE (+ (24-BIT-UNSIGNED (REGION-LENGTH REGION))
 					  OLD-TOTAL-SIZE)
@@ -364,7 +372,7 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 	      (T		;Wait a while before flipping, then compute frob again
 	       (SETQ %PAGE-CONS-ALARM 0)
 	       (AND GC-REPORT-STREAM
-		    (FORMAT GC-REPORT-STREAM
+		    (FORMAT (GC-REPORT-STREAM)
 			    "~&[GC: Allowing ~D. words more consing before flip.]~%"
 			    (- FREE-SPACE COMMITTED-FREE-SPACE)))
 	       (SETQ GC-PAGE-CONS-ALARM-MARK
@@ -413,7 +421,7 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 		   (GC-FLIP-NOW))
 		(T		;Wait a while before flipping, then compute frob again
 		 (AND GC-REPORT-STREAM
-		      (FORMAT GC-REPORT-STREAM
+		      (FORMAT (GC-REPORT-STREAM)
 			      "~&[GC: Allowing ~D. words more consing before flip.]~%"
 			      (- FREE-SPACE COMMITTED-FREE-SPACE)))
 		 (SETQ %PAGE-CONS-ALARM 0

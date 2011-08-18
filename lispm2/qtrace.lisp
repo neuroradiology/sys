@@ -365,6 +365,7 @@
 		(RETURN AP))
 	       (( AP INIFN) (RETURN NIL)))))
 
+(COMMENT					;OBSOLETE
 ;;; Display Features
 
 (DECLARE (SPECIAL TRACE-POP-UP-WINDOW TRACE-POP-UP-MENU))
@@ -470,3 +471,4 @@
 	;Undo things in the reverse order that they were done
         (<- TRACE-POP-UP-MENU ':DEACTIVATE)
 	(<- TRACE-POP-UP-WINDOW ':POP-DOWN))))
+)

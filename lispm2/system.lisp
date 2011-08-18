@@ -25,6 +25,7 @@
  SYSTEM-VERSION-STRING
  TYPEP-ALIST			;Used by TYPEP and by its optimizers.
  ACTIVE-PROCESSES
+ LISP-ERROR-HANDLER
 
 ;; Shared between LFL which is in COMPILER and stuff in SI
  GET-FILE-LOADED-ID

@@ -96,13 +96,15 @@
 ;Make a new plane, for the user.  Specify the array type, the number of dimensions,
 ;and the default element.
 (DEFUN MAKE-PLANE (TYPE RANK DEFAULT &OPTIONAL (EXTENSION 32.) &AUX SIZE ORIGIN)
-       ;; SIZE gets a list of 1's, as many as there are dimensions.
-       (SETQ SIZE (MAKE-LIST DEFAULT-CONS-AREA RANK))
-       (MAPC #'RPLACA SIZE (CIRCULAR-LIST 1))
-       ;; ORIGIN gets a similar list of zeros.
-       (SETQ ORIGIN (MAKE-LIST DEFAULT-CONS-AREA RANK))
-       (MAPC #'RPLACA SIZE (CIRCULAR-LIST 0))
-       (MAKE-PLANE-INTERNAL TYPE SIZE ORIGIN DEFAULT EXTENSION))
+  ;; SIZE gets a list of 1's, as many as there are dimensions.
+  (SETQ SIZE (MAKE-LIST DEFAULT-CONS-AREA RANK))
+  (DO L SIZE (CDR L) (NULL L)
+    (SETF (CAR L) 1))
+  ;; ORIGIN gets a similar list of zeros.
+  (SETQ ORIGIN (MAKE-LIST DEFAULT-CONS-AREA RANK))
+  (DO L ORIGIN (CDR L) (NULL L)
+    (SETF (CAR L) 0))
+  (MAKE-PLANE-INTERNAL TYPE SIZE ORIGIN DEFAULT EXTENSION))
 
 ;Create a new plane of specified type (an array type) and default value,
 ;with a specified region in actual existence.

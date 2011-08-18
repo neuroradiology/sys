@@ -1191,14 +1191,24 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 ;No error (returns NIL) if flavor not fully defined yet, although you may get a 
 ;declared-special warning from the compiler.
 (DEFUN FLAVOR-SPECIAL-DECLARATION (FLAVOR-NAME &AUX FL)
-  (COND ((AND (SETQ FL (GET FLAVOR-NAME 'FLAVOR))
-	      (FLAVOR-COMPONENTS-DEFINED-P FLAVOR-NAME))
-	 (LET ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA))
-	   (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL)))
-	 (LET ((VARS (FLAVOR-ALL-INSTANCE-VARIABLES FL))
-	       (MORE-VARS (GET (LOCF (FLAVOR-PLIST FL)) 'ADDITIONAL-SPECIAL-VARIABLES)))
-	   (AND MORE-VARS (SETQ VARS (APPEND MORE-VARS VARS)))
-	   (CONS 'SPECIAL VARS)))))
+  (AND (SETQ FL (GET FLAVOR-NAME 'FLAVOR))
+       (COND ((FLAVOR-COMPONENTS-DEFINED-P FLAVOR-NAME)
+	      (OR (FLAVOR-DEPENDS-ON-ALL FL) (LET ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA))
+					       (COMPOSE-FLAVOR-COMBINATION FL)))
+	      (LET ((VARS (FLAVOR-ALL-INSTANCE-VARIABLES FL))
+		    (MORE-VARS (GET (LOCF (FLAVOR-PLIST FL)) 'ADDITIONAL-SPECIAL-VARIABLES)))
+		(AND MORE-VARS (SETQ VARS (APPEND MORE-VARS VARS)))
+		(CONS 'SPECIAL VARS)))
+	     (T		;Try to get as many variables as we can.
+	      (CONS 'SPECIAL
+		    (APPEND (GET (LOCF (FLAVOR-PLIST FL)) 'ADDITIONAL-SPECIAL-VARIABLES)
+			    (MAP-OVER-COMPONENT-FLAVORS 0 NIL NIL
+			      #'(LAMBDA (FL VL)
+				  (DOLIST (X (FLAVOR-LOCAL-INSTANCE-VARIABLES FL))
+				    (OR (ATOM X) (SETQ X (CAR X)))
+				    (OR (MEMQ X VL) (PUSH X VL)))
+				  VL)
+			      FLAVOR-NAME NIL)))))))
 
 ;This is a flavor which is automatically made a component of nearly all
 ;other flavors.  It provides some basic facilities such as PRINT

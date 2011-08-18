@@ -1,6 +1,15 @@
-;;;-*-lisp-*-
+;;;-*- Mode: Lisp; Package: System-Internals -*-
+
+;; Destructuring DEFUN must be added to this at some point.
 
 (declare (special let-macro-vals))
+
+;; Kludge to avoid warning that a different file is redefining
+;; LET and LET*.  SI has LET and LET* externed, so there is no
+;; "illegally defining" warning.
+
+(remprop 'let 'source-file-name)
+(remprop 'let* 'source-file-name)
 
 (defmacro let (pairs . body)
        (do ((pairs pairs (cdr pairs))
@@ -62,6 +71,8 @@
 				    `((setq ,(let-macro-get-last-var (car p))
 					    . ,tem)
 				      . ,(let-macro-hair (car p) (cadr p) tem))))))))
+
+(globalize 'desetq)
 				    
 (defun let-macro-get-last-var (pattern)
        (cond ((atom pattern) pattern)

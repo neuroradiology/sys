@@ -918,6 +918,8 @@
 ;; This is the function at the top level in each second level error handler sg.
 (DEFUN EH-SECOND-LEVEL (SG M ERRSET-FLAG ERRSET-PRINT-MSG CONDITION
                            &AUX PKG (ERRSET NIL) (EH-RUNNING T) (ETE (SG-TRAP-TAG SG))
+			   ;; Prevent blowup if PACKAGE is bad.
+			   (PACKAGE PKG-USER-PACKAGE)
 			   BREAK-FLAG
 			   (TERMINAL-IO (OR ERROR-HANDLER-IO
 					    (SYMEVAL-IN-STACK-GROUP 'TERMINAL-IO SG)))
@@ -978,7 +980,7 @@
           ;; right package.
           (SETQ PKG (SYMEVAL-IN-STACK-GROUP 'PACKAGE SG)) ;Use same package as at point of error
           (PKG-BIND (IF (EQ (TYPEP PKG) 'PACKAGE) PKG    ;If it looks reasonably trustworthy
-                        "USER")
+                        PKG-USER-PACKAGE)
                     (OR (LISTP
 			 (ERRSET (PROGN (COND ((EQ (CAR M) ':BREAK)
 					       (TERPRI)
@@ -1043,7 +1045,7 @@
         (())
       (SETQ PKG (SYMEVAL-IN-STACK-GROUP 'PACKAGE EH-SG)) ;Get package again in case user
       (SETQ PACKAGE (IF (EQ (TYPEP PKG) 'PACKAGE) PKG    ; does a PKG-GOTO
-                        (PKG-FIND-PACKAGE "USER")))
+                        OKG-USER-PACKAGE))
       ;; Wait until we are selected, in a way that shows up in PEEK.
       (COND ((AND CURRENT-PROCESS
 		  (NEQ CURRENT-PROCESS SELECTED-PROCESS))

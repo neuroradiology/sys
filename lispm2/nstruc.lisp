@@ -431,7 +431,7 @@
 	     (T (ERROR "No LOCF property found, can't work." X)))))
 
 (DEFUN LOCF-APPLY (FCN REF VAL-P VAL)
-    (COND ((NLISTP FCN)
+    (COND ((ATOM FCN)
 	   (COND (VAL-P (FUNCALL FCN REF VAL))
 		 (T (FUNCALL FCN REF))))
 	  (T (DO ((PATTERN (CDAR FCN) (CDR PATTERN))
@@ -551,9 +551,9 @@
 (DEFPROP FUNCALL FUNCALL-SETF SETF)
 (DEFUN FUNCALL-SETF (REF VAL)
   (OR (AND (= (LENGTH REF) 3)
-	   (LISTP (CADDR REF)) (EQ (CAADDR REF) 'QUOTE))
+	   (NOT (ATOM (CADDR REF))) (EQ (CAADDR REF) 'QUOTE))
       (ERROR "Can only setf message sending funcalls" REF))
-  `(FUNCALL ,(CADR REF) ',(INTERN (STRING-APPEND "SET-" (CADR (CADDR REF)))) ,VAL))
+  `(FUNCALL ,(CADR REF) ',(INTERN (STRING-APPEND "SET-" (CADR (CADDR REF))) "") ,VAL))
 
 (defprop function function-setf setf)
 (defun function-setf (ref val)
@@ -647,7 +647,7 @@
 ;decomposition pattern, so that (setf `(a ,b) foo)
 ;always sets b and ignores a.
 (DEFUN SETF-MATCH (PATTERN OBJECT)
-  (COND ((AND (LISTP PATTERN) (EQ (CAR PATTERN) 'QUOTE))
+  (COND ((AND (NOT (ATOM PATTERN)) (EQ (CAR PATTERN) 'QUOTE))
 	 NIL)
 	(T `(SETF ,PATTERN ,OBJECT))))
 

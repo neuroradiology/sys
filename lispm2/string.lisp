@@ -511,3 +511,6 @@
     (:WHICH-OPERATIONS '(:TYO :STRING-OUT :LINE-OUT))
     (OTHERWISE (STREAM-DEFAULT-HANDLER
 		  #'WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION OP ARG1 REST))))
+
+;;; This is used by the filesystem.  Included here since needed before FNUTIL loaded.
+(DEFUN NULL-S (X) (OR (NULL X) (AND (STRINGP X) (STRING-EQUAL X ""))))
