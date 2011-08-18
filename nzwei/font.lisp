@@ -1,4 +1,5 @@
-;;; Font hacking function and commands -*-Mode:LISP;Package:NZWEI-*-
+;;; Font hacking function and commands -*-Mode:LISP;Package:ZWEI-*-
+;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;;; Change the font in the given area
 (DEFUN CHANGE-FONT-INTERVAL (START-BP &OPTIONAL END-BP IN-ORDER-P (FONT-NUM *FONT*))
@@ -52,8 +53,15 @@
 			   (RETURN NIL))))
 		   ((AND ( (SETQ CH (CHAR-UPCASE CH)) #/A) ( CH #/Z))
 		    (SETQ NUM (- CH #/A))
-		    (RETURN NIL)))
-	     (BEEP))
+		    (RETURN NIL))
+		   ((OR (= CH #\HELP) (= CH #/?))
+		    (TYPEIN-LINE "Type a font letter, ~
+				  or altmode to enter a new font in a mini-buffer, ~@
+				  or mouse a character left for its font, ~
+				  or mouse-right for a menu.~%")
+		    (TYPEIN-LINE-MORE "Font ID: "))
+		   (T
+		    (BEEP))))
 	 (TYPEIN-LINE-MORE "~C (~A)" (+ NUM #/A) (CAR (NTH NUM (WINDOW-FONT-ALIST *WINDOW*))))
 	 (SETQ *SAVE-FONT-NUM* NUM))))
 );LOCAL-DECLARE
@@ -66,11 +74,8 @@
 	 (SETQ NEW-P T)	;Wasn't previously in the A-list, add it
 	 (PKG-BIND "FONTS"
 	   (SETQ FONT (READ-FROM-STRING FONT '*EOF*)))
-	 (COND ((NOT (SYMBOLP FONT))
-		(BARF "~S is not the name of a font" FONT))
-	       ((NOT (BOUNDP FONT))
-		(LOAD (FORMAT NIL "DSK: LMFONT; ~A QFASL" FONT) "FONTS" T)
-		(OR (BOUNDP FONT) (BARF "~S is not a known font" FONT))))
+	 (SETQ FONT (FONT-NAME (FUNCALL (TV:SHEET-GET-SCREEN (WINDOW-SHEET *WINDOW*))
+					':PARSE-FONT-DESCRIPTOR FONT)))
 	 (SETQ FONT (CONS (GET-PNAME FONT) (SYMEVAL FONT)))
 	 (LET ((OLD-LIST (WINDOW-FONT-ALIST *WINDOW*)))
 	   (AND ( (LENGTH OLD-LIST) 26.) (BARF "The maximum number of fonts is 26."))
@@ -375,3 +380,4 @@ With an argument, also lists the font files on the file computer." ()
     (PUTPROP (LOCF (LINE-PLIST LINE)) ACTOR ':DIAGRAM)
     (FUNCALL ACTOR ':ADD-LINE LINE)
     (INSERT-LINE-WITH-LEADER LINE AT-LINE)))
+               

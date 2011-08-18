@@ -266,7 +266,7 @@ or with a numeric argument, vice versa" (SM)
     DIS-BPS)
 
 (DEFCOM COM-MARK-DEFUN "Put point and mark around current defun." ()
-  (LET ((INT (DEFUN-INTERVAL (POINT) *NUMERIC-ARG*)))
+  (LET ((INT (DEFUN-INTERVAL (POINT) *NUMERIC-ARG* NIL T T))) ;including previous blank line
     (OR INT (BARF))
     (SETF (WINDOW-MARK-P *WINDOW*) T)
     (SETQ *MARK-STAYS* T)

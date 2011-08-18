@@ -185,7 +185,7 @@
   (DO ((INDEX 0 (1+ INDEX)) (CH) (SYNTAX)
        (IN-STRING (LISP-PARSE-FROM-DEFUN LINE)))
       (( INDEX END-INDEX) NIL)
-    (SETQ CH (LDB %%CH-CHAR (AR-1 LINE INDEX)))
+    (SETQ CH (LDB %%CH-CHAR (AREF LINE INDEX)))
     (SETQ SYNTAX (LIST-SYNTAX CH))
     (COND ((= SYNTAX LIST-SLASH) (SETQ INDEX (1+ INDEX)))
 	  (IN-STRING (AND (= CH IN-STRING) (SETQ IN-STRING NIL)))
@@ -208,7 +208,7 @@
 	;; Now find the end.  Skip over the semicolons and the spaces after them.
 	(DO ((I1 INDEX (1+ I1)))
 	    ((OR (= I1 END-INDEX)
-		 ( (LIST-SYNTAX (AR-1 LINE I1)) LIST-COMMENT))
+		 ( (LIST-SYNTAX (AREF LINE I1)) LIST-COMMENT))
 	     (SETQ I2 I1)))
 	(RETURN INDEX (BP-INDEX (FORWARD-OVER *BLANKS* (CREATE-BP LINE I2))))))
 

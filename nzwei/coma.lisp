@@ -280,6 +280,7 @@ With two U's, pops the point pdl and throws it away" (KM)
 	 DIS-NONE)))
 
 (DEFCOM COM-PUSH-POP-POINT-EXPLICIT "Push or pop point onto the point pdl.
+With no argument, push point onto the point pdl.
 With an argument, exchanges point with the nth position on the stack." (KM)
   (COND ((NOT *NUMERIC-ARG-P*)
 	 (POINT-PDL-PUSH (POINT) *WINDOW* T NIL)

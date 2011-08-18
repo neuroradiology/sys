@@ -249,6 +249,7 @@
      BUFFER-FILE-ID			;ID string from file job.
      BUFFER-TICK			;If FILE-ID is a string, this is the tick
 					;at which we got that ID.  Else meaningless.
+     BUFFER-FILE-NAME			;The filename object for if a file, else meaningless
      BUFFER-SAVED-POINT			;POINT the last time this was on a window.
      BUFFER-SAVED-MARK			;Same for MARK.
      BUFFER-SAVED-MODE-LIST		;Saved *MODE-LIST* for this buffer.

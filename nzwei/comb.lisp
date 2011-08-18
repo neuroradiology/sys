@@ -321,7 +321,7 @@ comment column." ()
 	     (SETQ START-START-INDEX (STRING-SEARCH (OR *COMMENT-START* *COMMENT-BEGIN*)
 						    LINE))
 	     (SETQ START-END-INDEX (+ START-START-INDEX
-				      (STRING-LENGTH *COMMENT-START*)))))
+				      (STRING-LENGTH (OR *COMMENT-START* *COMMENT-BEGIN*))))))
     (RETURN START-START-INDEX START-END-INDEX)))
 
 (DEFCOM COM-KILL-COMMENT "Delete any comment on the current line." ()
@@ -376,7 +376,7 @@ Sets *COMMENT-COLUMN* to position of previous comment then does COM-INDENT-FOR-C
     ;; Find a line, before our starting one, which has a comment on it.
     (DO ((LINE (LINE-PREVIOUS (BP-LINE (POINT))) (LINE-PREVIOUS LINE)))
 	((NULL LINE) (BARF))
-      (SETQ START-INDEX (FIND-COMMENT-START LINE))
+      (SETQ START-INDEX (FIND-COMMENT-START LINE T))
       (AND START-INDEX (RETURN (SETQ BP (CREATE-BP LINE START-INDEX)))))
     (SETQ *COMMENT-COLUMN* (BP-INDENTATION BP))
     (COM-INDENT-FOR-COMMENT)))

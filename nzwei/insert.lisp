@@ -1,4 +1,5 @@
-;;; -*- Mode:LISP; Package:NZWEI -*-
+;;; -*- Mode:LISP; Package:ZWEI -*-
+;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 ;;;  This file contains basic text manipulation functions for ZWEI. 
 
 ;;; This file provides the following functions:
