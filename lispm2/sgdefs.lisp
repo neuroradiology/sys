@@ -1,10 +1,16 @@
-;;; This is file of definitions of the format of stack groups.   dlw 10/15/77 -*-LISP-*-
+;;; -*-Package:SYSTEM-INTERNALS; Mode:LISP-*-
+;;; This is file of definitions of the format of stack groups.   dlw 10/15/77
 ;;; It will be used by error handlers.
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;If this file is changed, it goes without saying that you need to make a new cold load.
+;(Comments below may not be correct!)
 ;  Also LISPM; QCOM and LISPM2;GLOBAL must be changed to agree.
+
+;-----------------------------------------------------------------------------------------
 ;  LISPM2;SYSTEM has a list of the symbols defined here which belong in the SYSTEM package
+;-----------------------------------------------------------------------------------------
+
 ;The microcode must be reassembled, and at least the following must be recompiled:
 ;    LISPM2;EH >, LISPM2;EHR >, LISPM;SGFCTN >, LISPM; QMISC > (for DESCRIBE)
 ;    LISPM2;PROCES >, LMIO;KBD > (for PROCESS-WAIT), LISPM2;QTRACE (for FUNCTION-ACTIVE-P)
@@ -55,25 +61,17 @@
       SG-SAVED-QLARYH		    ;Saved A-QLARYH
       SG-SAVED-QLARYL		    ;Saved A-QLARYL
       ((SG-SAVED-M-FLAGS)	    ;Saved M-FLAGS
-	;The below doesn't work due to a cretinous misfeature in DEFSTRUCT
-;       (SG-FLAGS-QBBFL %%M-FLAGS-QBBFL)	    ; Binding-block-pushed flag
-;       (SG-FLAGS-CAR-SYM-MODE %%M-FLAGS-CAR-SYM-MODE)  ;UPDATE PRINT-ERROR-MODE IN QMISC
-;       (SG-FLAGS-CAR-NUM-MODE %%M-FLAGS-CAR-NUM-MODE)  ;  IF ADD ANY..
-;       (SG-FLAGS-CDR-SYM-MODE %%M-FLAGS-CDR-SYM-MODE) 
-;       (SG-FLAGS-CDR-NUM-MODE %%M-FLAGS-CDR-NUM-MODE) 
-;       (SG-FLAGS-DONT-SWAP-IN %%M-FLAGS-DONT-SWAP-IN)
-;       (SG-FLAGS-TRAP-ENABLE %%M-FLAGS-TRAP-ENABLE)
-;       (SG-FLAGS-MAR-MODE %%M-FLAGS-MAR-MODE)
-;       (SG-FLAGS-PGF-WRITE %%M-FLAGS-PGF-WRITE)
-       (SG-FLAGS-QBBFL 0001)	    ; Binding-block-pushed flag
-       (SG-FLAGS-CAR-SYM-MODE 0102)  ;UPDATE PRINT-ERROR-MODE IN QMISC
-       (SG-FLAGS-CAR-NUM-MODE 0302)  ;  IF ADD ANY..
-       (SG-FLAGS-CDR-SYM-MODE 0502) 
-       (SG-FLAGS-CDR-NUM-MODE 0702) 
-       (SG-FLAGS-DONT-SWAP-IN 1101)
-       (SG-FLAGS-TRAP-ENABLE 1201)
-       (SG-FLAGS-MAR-MODE 1302)
-       (SG-FLAGS-PGF-WRITE 1501)
+       (SG-FLAGS-QBBFL %%M-FLAGS-QBBFL)	    ; Binding-block-pushed flag
+       (SG-FLAGS-CAR-SYM-MODE %%M-FLAGS-CAR-SYM-MODE)  ;UPDATE PRINT-ERROR-MODE IN QMISC
+       (SG-FLAGS-CAR-NUM-MODE %%M-FLAGS-CAR-NUM-MODE)  ;  IF ADD ANY..
+       (SG-FLAGS-CDR-SYM-MODE %%M-FLAGS-CDR-SYM-MODE) 
+       (SG-FLAGS-CDR-NUM-MODE %%M-FLAGS-CDR-NUM-MODE) 
+       (SG-FLAGS-DONT-SWAP-IN %%M-FLAGS-DONT-SWAP-IN)
+       (SG-FLAGS-TRAP-ENABLE %%M-FLAGS-TRAP-ENABLE)
+       (SG-FLAGS-MAR-MODE %%M-FLAGS-MAR-MODE)
+       (SG-FLAGS-PGF-WRITE %%M-FLAGS-PGF-WRITE)
+       (SG-FLAGS-METER-ENABLE %%M-FLAGS-METER-ENABLE)
+       (SG-FLAGS-TRAP-ON-CALL %%M-FLAGS-TRAP-ON-CALL)
        )
       SG-AC-K
       SG-AC-S
@@ -102,41 +100,40 @@
 (DEFSTRUCT (SPECIAL-PDL :ARRAY-LEADER (:CONSTRUCTOR NIL))
       SPECIAL-PDL-SG)
 
+;; Defsubsts for accessing the Regular Pdl.
 
-;; Macros for accessing the Regular Pdl.
-
-(DEFMACRO RP-CALL-WORD     (RP L) `(AR-1 ,RP (+ ,L %LP-CALL-STATE)))
-(DEFMACRO RP-EXIT-WORD     (RP L) `(AR-1 ,RP (+ ,L %LP-EXIT-STATE)))
-(DEFMACRO RP-ENTRY-WORD    (RP L) `(AR-1 ,RP (+ ,L %LP-ENTRY-STATE)))
-(DEFMACRO RP-FUNCTION-WORD (RP L) `(AR-1 ,RP (+ ,L %LP-FEF)))
-
+(DEFSUBST RP-CALL-WORD     (RP AP) (AR-1 RP (+ AP %LP-CALL-STATE)))
+(DEFSUBST RP-EXIT-WORD     (RP AP) (AR-1 RP (+ AP %LP-EXIT-STATE)))
+(DEFSUBST RP-ENTRY-WORD    (RP AP) (AR-1 RP (+ AP %LP-ENTRY-STATE)))
+(DEFSUBST RP-FUNCTION-WORD (RP AP) (AR-1 RP (+ AP %LP-FEF)))
 
 ; (DEFINE-RP-MACROS ((RP-FOO %%FOO) (RP-BAR %%BAR)) RP-CALL-WORD)
 
 ; produces
 
 ; (PROGN 'COMPILE
-;	 (MACRO RP-FOO (X)
-;		`(LDB %%FOO (RP-CALL-WORD ,(CADR X) ,(CADDR X))))
-;	 (MACRO RP-BAR (X)
-;		`(LDB %%BAR (RP-CALL-WORD ,(CADR X) ,(CADDR X)))))
+;	 (DEFSUBST RP-FOO (RP AP)
+;		(LDB %%FOO (RP-CALL-WORD RP AP)))
+;	 (DEFSUBST RP-BAR (RP AP)
+;		(LDB %%BAR (RP-CALL-WORD RP AP))))
 
 (DEFMACRO DEFINE-RP-MACROS (SPEC-LIST WORD-MACRO)
     (DO ((L SPEC-LIST (CDR L))
          (BYTE)
          (NAME)
          (ACCUM))
-        ((NULL L) `(PROGN 'COMPILE ,@ACCUM))
+        ((NULL L) `(PROGN 'COMPILE . ,ACCUM))
       (SETQ NAME (CAAR L) BYTE (CADAR L))
-      (PUSH `(MACRO ,NAME (X)
-	       `(LDB ,',BYTE (,',WORD-MACRO ,(CADR X) ,(CADDR X))))
+      (PUSH `(DEFSUBST ,NAME (RP AP)
+	       (LDB ,BYTE (,WORD-MACRO RP AP)))
             ACCUM)))
 
 (DEFINE-RP-MACROS ((RP-DOWNWARD-CLOSURE-PUSHED %%LP-CLS-DOWNWARD-CLOSURE-PUSHED)
 		   (RP-ADI-PRESENT %%LP-CLS-ADI-PRESENT)
 		   (RP-DESTINATION %%LP-CLS-DESTINATION)
 		   (RP-DELTA-TO-OPEN-BLOCK %%LP-CLS-DELTA-TO-OPEN-BLOCK)
-		   (RP-DELTA-TO-ACTIVE-BLOCK %%LP-CLS-DELTA-TO-ACTIVE-BLOCK))
+		   (RP-DELTA-TO-ACTIVE-BLOCK %%LP-CLS-DELTA-TO-ACTIVE-BLOCK)
+		   (RP-TRAP-ON-EXIT %%LP-CLS-TRAP-ON-EXIT))
 		  RP-CALL-WORD)
 
 (DEFINE-RP-MACROS ((RP-MICRO-STACK-SAVED %%LP-EXS-MICRO-STACK-SAVED)
@@ -146,28 +143,27 @@
 		  RP-EXIT-WORD)
 
 (DEFINE-RP-MACROS ((RP-NUMBER-ARGS-SUPPLIED %%LP-ENS-NUM-ARGS-SUPPLIED) ;Only for macro frames
-		   (RP-LOCAL-BLOCK-ORIGIN				; can this be extended?
+		   (RP-LOCAL-BLOCK-ORIGIN				;can this be extended?
 		    %%LP-ENS-MACRO-LOCAL-BLOCK-ORIGIN))	;Only for macro frames
 		  RP-ENTRY-WORD)
 
+;; Defsubsts for accessing fields of the headers of Function Entry Frames.
 
-;; Macros for accessing fields of the headers of Function Entry Frames.
-
-(MACRO DEFINE-OFFSET-BYTE-MACROS (X)
-   (DO ((LL (CDR X) (CDR LL))
-        (ACCUM)
+(DEFMACRO DEFINE-OFFSET-BYTE-MACROS (PTR . WORDS)
+   (DO ((LL WORDS (CDR LL))
+	(ACCUM)
         (INDEX 0 (1+ INDEX)))
-       ((NULL LL) `(PROGN 'COMPILE ,@ACCUM))
+       ((NULL LL) `(PROGN 'COMPILE . ,ACCUM))
       (DO ((L (CAR LL) (CDR L))
            (NAME)
            (BYTE))
           ((NULL L))
          (SETQ NAME (CAAR L) BYTE (CADAR L))
-         (PUSH `(MACRO ,NAME (X)
-                 `(%P-LDB-OFFSET ,',BYTE ,(CADR X) ,',INDEX))
+         (PUSH `(DEFSUBST ,NAME (,PTR)
+                  (%P-LDB-OFFSET ,BYTE ,PTR ,INDEX))
                ACCUM))))
 
-(DEFINE-OFFSET-BYTE-MACROS
+(DEFINE-OFFSET-BYTE-MACROS FEF
  ((FEF-INITIAL-PC %%FEFH-PC)
   (FEF-NO-ADL-P %%FEFH-NO-ADL)
   (FEF-FAST-ARGUMENT-OPTION-P %%FEFH-FAST-ARG)
@@ -181,7 +177,7 @@
   (FEF-ADL-ORIGIN %%FEFHI-ARG-DESC-ORG)
   (FEF-ADL-LENGTH %%FEFHI-BIND-DESC-LENGTH)))
 
-(DEFMACRO FEF-NAME (FEF) `(%P-CONTENTS-OFFSET ,FEF %FEFHI-FCTN-NAME))
+(DEFSUBST FEF-NAME (FEF) (%P-CONTENTS-OFFSET FEF %FEFHI-FCTN-NAME))
 
 ;; Randomness.
 ;   %%US-RPC						;RETURN PC
@@ -203,5 +199,3 @@
 ;    ADI-LEXPR-CALL
 ;    ADI-BIND-STACK-LEVEL
 ;    ADI-USED-UP-RETURN-INFO
-
-

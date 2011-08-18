@@ -1,0 +1,381 @@
+;;-*-Mode:LISP; Package:SYSTEM-INTERNALS-*-
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+;; CAUTION! This file must be compilable both by NCOMPLR and by QC; be quite
+;;    careful not to use anything which is dependent on one or the other Lisp dialect.
+
+;; NOTE: These macros make no attempt to preserve order of evaluation,
+;; or number of times evaluation, in the reference being expanded.
+;; The caller should not depend on such things.
+
+(DECLARE (COND ((STATUS FEATURE LISPM))
+	       ((NULL (MEMQ 'NEWIO (STATUS FEATURES)))
+		(BREAK 'YOU-HAVE-TO-COMPILE-THIS-WITH-QCOMPL T))
+	       ((NULL (GET 'IF-FOR-MACLISP 'MACRO))
+		(LOAD '(MACROS > DSK LISPM))
+		(LOAD '(DEFMAC FASL DSK LISPM2))
+		(LOAD '(LMMAC > DSK LISPM2))
+		(MACROS T))))	;SEND OVER THE REST OF THE MACROS IN THIS FILE
+
+(DECLARE (SETQ RUN-IN-MACLISP-SWITCH T))
+
+(IF-FOR-MACLISP (SETSYNTAX '/: '/  NIL)) ;Ignore colon prefixes in Maclisp
+
+;(SETF (element pntr) value)
+
+(DEFUN SETF MACRO (X) (SETF-1 X))
+
+(DEFUN SETF-1 (X)
+    (OR (= (LENGTH X) 3)
+	(ERROR "SETF called with wrong number of arguments" X)) 
+    (DO ((REF (CADR X)) (VAL (CADDR X)) (FCN)) (NIL)
+       (COND ((SYMBOLP REF)				;SPECIAL CASE NEEDED.
+	      (RETURN (LIST 'SETQ REF VAL)))
+	     ((NOT (SYMBOLP (CAR REF)))
+	      (FERROR NIL "~S non-symbolic function in SETF" (CAR REF)))
+	     ((SETQ FCN (GET (CAR REF) 'SETF))
+	      (RETURN (LOCF-APPLY FCN REF T VAL)))
+	     ((SETQ FCN (GET (CAR REF) 'SETF-EXPANDER))
+	      (SETQ REF (LOCF-APPLY FCN REF NIL NIL)))
+	  #Q ((IF-FOR-LISPM (AND (FBOUNDP (CAR REF)) (ARRAYP (FSYMEVAL (CAR REF)))))
+	      (RETURN `(STORE ,REF ,VAL)))	;IF-FOR-LISPM prevents compiler warning
+	     ((NOT (EQ REF (SETQ REF (MACROEXPAND-1 REF T)))))
+	     (T (ERROR "No SETF property found, can't invert this reference" X)))))
+
+;(LOCF (element pntr))
+;Constructs a form which returns a locative pointer to the "referenced" element
+;of the structure.
+(DEFUN LOCF MACRO (X) (LOCF-1 X))
+
+(DEFUN LOCF-1 (X)
+    (OR (= (LENGTH X) 2)
+	(ERROR "LOCF called with wrong number of arguments" X))
+    (DO ((REF (CADR X)) (FCN)) (NIL)
+       (COND ((SYMBOLP REF)			;SPECIAL CASE NEEDED.
+	      (RETURN `(VALUE-CELL-LOCATION ',REF)))
+	     ((NOT (SYMBOLP (CAR REF)))
+	      (FERROR NIL "~S non-symbolic function in LOCF" (CAR REF)))
+	     ((SETQ FCN (GET (CAR REF) 'LOCF))
+	      (RETURN (LOCF-APPLY FCN REF NIL NIL)))
+	     ((SETQ FCN (GET (CAR REF) 'SETF-EXPANDER))
+	      (SETQ REF (LOCF-APPLY FCN REF NIL NIL)))
+	     ((NOT (EQ REF (SETQ REF (MACROEXPAND-1 REF T)))))
+	     (T (ERROR "No LOCF property found, can't work." X)))))
+
+(DEFUN LOCF-APPLY (FCN REF VAL-P VAL)
+    (COND ((OR (ATOM FCN) (EQ (CAR FCN) 'NAMED-LAMBDA))
+	   (COND (VAL-P (FUNCALL FCN REF VAL))
+		 (T (FUNCALL FCN REF))))
+	  (T (DO ((PATTERN (CDAR FCN) (CDR PATTERN))
+		  (REF (CDR REF) (CDR REF))
+		  (SUBS
+		     (AND VAL-P (LIST (CONS 'VAL VAL)))
+		     (CONS (CONS (CAR PATTERN) (CAR REF)) SUBS)))
+		 ((OR (ATOM PATTERN) (ATOM REF))
+		  (COND ((AND (ATOM PATTERN) (NOT (NULL PATTERN)))
+			 (PUSH (CONS PATTERN REF) SUBS))
+			((OR PATTERN REF)
+			 (ERROR "Reference not same length as pattern - LOCF or SETF" REF)))
+		  (SUBLIS SUBS (CDR FCN)))))))
+
+;(GET-LIST-POINTER-INTO-STRUCT (element pntr))
+
+(DEFUN GET-LIST-POINTER-INTO-STRUCT MACRO (X)
+  (PROG (REF)
+    (SETQ REF (MACROEXPAND (CADR X) T))	;EXPAND MACROS LOOKING AT BAG-BITING MACRO LIST
+    (COND ((EQ (CAR REF) 'AR-1)
+	   (RETURN (LIST 'GET-LIST-POINTER-INTO-ARRAY
+			 (LIST 'FUNCALL (CADR REF) (CADDR REF)))))
+	  ((ERROR "LOSES - GET-LIST-POINTER-INTO-STRUCT" X)))))
+
+(DEFMACRO INCF (REFERENCE &OPTIONAL AMOUNT)
+  (IF (NULL AMOUNT)
+      `(SETF ,REFERENCE (1+ ,REFERENCE))
+      `(SETF ,REFERENCE (+ ,REFERENCE ,AMOUNT))))
+
+(DEFMACRO DECF (REFERENCE &OPTIONAL AMOUNT)
+  (IF (NULL AMOUNT)
+      `(SETF ,REFERENCE (1- ,REFERENCE))
+      `(SETF ,REFERENCE (- ,REFERENCE ,AMOUNT))))
+
+(DEFMACRO SWAPF (A B)
+  `(SETF ,A (PROG1 ,B (SETF ,B ,A))))
+
+;Load time defprops for SETF and LOCF.
+;Value of the SETF property is either an symbol which is a function
+; which is applied to two arguments: the reference and the value 
+; to be stored into it, or it is CONS of a 1-level pattern to
+; match against REF and a form in which substitutions
+; are made for the symbol VAL and the pattern atoms.
+;The value of the LOCF property is very similar; if it is
+;a symbol then it is a function to be applied to one argument,
+;the reference.  Otherwise it is a pattern as in SETF, except
+;that the symbol VAL is not special.
+
+;A SETF-EXPANDER property looks like a LOCF property,
+;but instead of telling how to get the location of the value
+;it gives another expression for the same value.
+;The idea is that that expression will be amenable to SETF/LOCF.
+
+;;; (DEFPROP AREF ((AREF ARRAY . SUBSCRIPTS)
+;;;                 ASET VAL ARRAY . SUBSCRIPTS) SETF)
+;;; (DEFPROP AREF ((AREF ARRAY . SUBSCRIPTS)
+;;;                 ALOC ARRAY . SUBSCRIPTS) LOCF)
+
+(DEFPROP AREF AREF-SETF SETF)
+(DEFUN AREF-SETF (REF VAL)
+    `(ASET ,VAL . ,(CDR REF)))
+(DEFPROP AREF AREF-LOCF LOCF)
+(DEFUN AREF-LOCF (REF)
+    `(ALOC . ,(CDR REF)))
+
+(DEFPROP AR-1 ((AR-1 ARRAY INDEX)
+	       AS-1 VAL ARRAY INDEX) SETF)
+(DEFPROP AR-1 ((AR-1 ARRAY INDEX)
+	       AP-1 ARRAY INDEX) LOCF)
+
+(DEFPROP AR-2 ((AR-2 ARRAY INDEX1 INDEX2)
+	       AS-2 VAL ARRAY INDEX1 INDEX2) SETF)
+(DEFPROP AR-2 ((AR-2 ARRAY INDEX1 INDEX2)
+	       AP-2 ARRAY INDEX1 INDEX2) LOCF)
+
+(DEFPROP AR-3 ((AR-3 ARRAY INDEX1 INDEX2 INDEX3)
+	       AS-3 VAL ARRAY INDEX1 INDEX2 INDEX3) SETF)
+(DEFPROP AR-3 ((AR-3 ARRAY INDEX1 INDEX2 INDEX3)
+	       AP-3 ARRAY INDEX1 INDEX2 INDEX3) LOCF)
+
+(DEFPROP ARRAY-LEADER ((ARRAY-LEADER ARRAY INDEX)
+		       STORE-ARRAY-LEADER VAL ARRAY INDEX) SETF)
+(DEFPROP ARRAY-LEADER ((ARRAY-LEADER ARRAY INDEX)
+		       AP-LEADER ARRAY INDEX) LOCF)
+
+(DEFPROP ARRAYCALL ARRAYCALL-SETF SETF)
+(DEFUN ARRAYCALL-SETF (REF VAL)
+  `(ASET ,VAL . ,(CDDR REF)))
+(DEFPROP ARRAYCALL ARRAYCALL-LOCF LOCF)
+(DEFUN ARRAYCALL-LOCF (REF)
+  `(ALOC . ,(CDDR REF)))
+
+(DEFPROP CDR ((CDR ITEM) . (RPLACD ITEM VAL)) SETF)
+(DEFPROP CDR ((CDR LIST) . LIST) LOCF)
+
+(DEFPROP CAR ((CAR LIST) . (RPLACA LIST VAL)) SETF)
+(DEFPROP CAR ((CAR LIST) . (CAR-LOCATION LIST)) LOCF)
+
+(DEFPROP CDDR ((CDDR ITEM) . (CDR (CDR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDDR ((CDDDR ITEM) . (CDR (CDDR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDDDR ((CDDDDR ITEM) . (CDR (CDDDR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDDAR ((CDDDAR ITEM) . (CDR (CDDAR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDAR ((CDDAR ITEM) . (CDR (CDAR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDADR ((CDDADR ITEM) . (CDR (CDADR ITEM))) SETF-EXPANDER)
+(DEFPROP CDDAAR ((CDDAAR ITEM) . (CDR (CDAAR ITEM))) SETF-EXPANDER)
+(DEFPROP CDAR ((CDAR ITEM) . (CDR (CAR ITEM))) SETF-EXPANDER)
+(DEFPROP CDADR ((CDADR ITEM) . (CDR (CADR ITEM))) SETF-EXPANDER)
+(DEFPROP CDADDR ((CDADDR ITEM) . (CDR (CADDR ITEM))) SETF-EXPANDER)
+(DEFPROP CDADAR ((CDADAR ITEM) . (CDR (CADAR ITEM))) SETF-EXPANDER)
+(DEFPROP CDAADR ((CDAADR ITEM) . (CDR (CAADR ITEM))) SETF-EXPANDER)
+(DEFPROP CDAAAR ((CDAAAR ITEM) . (CDR (CAAAR ITEM))) SETF-EXPANDER)
+(DEFPROP CADR ((CADR ITEM) . (CAR (CDR ITEM))) SETF-EXPANDER)
+(DEFPROP CADDR ((CADDR ITEM) . (CAR (CDDR ITEM))) SETF-EXPANDER)
+(DEFPROP CADDDR ((CADDDR ITEM) . (CAR (CDDDR ITEM))) SETF-EXPANDER)
+(DEFPROP CADDAR ((CADDAR ITEM) . (CAR (CDDAR ITEM))) SETF-EXPANDER)
+(DEFPROP CADAR ((CADAR ITEM) . (CAR (CDAR ITEM))) SETF-EXPANDER)
+(DEFPROP CADADR ((CADADR ITEM) . (CAR (CDADR ITEM))) SETF-EXPANDER)
+(DEFPROP CADAAR ((CADAAR ITEM) . (CAR (CDAAR ITEM))) SETF-EXPANDER)
+(DEFPROP CAAR ((CAAR ITEM) . (CAR (CAR ITEM))) SETF-EXPANDER)
+(DEFPROP CAADR ((CAADR ITEM) . (CAR (CADR ITEM))) SETF-EXPANDER)
+(DEFPROP CAADDR ((CAADDR ITEM) . (CAR (CADDR ITEM))) SETF-EXPANDER)
+(DEFPROP CAADAR ((CAADAR ITEM) . (CAR (CADAR ITEM))) SETF-EXPANDER)
+(DEFPROP CAAADR ((CAAADR ITEM) . (CAR (CAADR ITEM))) SETF-EXPANDER)
+(DEFPROP CAAAAR ((CAAAAR ITEM) . (CAR (CAAAR ITEM))) SETF-EXPANDER)
+
+(DEFPROP NTH ((NTH N LIST) . (CAR (NTHCDR N LIST))) SETF-EXPANDER)
+
+(DEFPROP NTHCDR ((NTHCDR N LIST) . (CDR (NTHCDR (1- N) LIST))) SETF-EXPANDER)
+
+(DEFPROP FSYMEVAL ((FSYMEVAL SYMBOL) . (FSET SYMBOL VAL)) SETF)
+(DEFPROP FSYMEVAL ((FSYMEVAL SYMBOL) . (FUNCTION-CELL-LOCATION SYMBOL)) LOCF)
+
+(DEFPROP FDEFINITION ((FDEFINITION FUNCTION-SPEC)
+		      . (FDEFINE FUNCTION-SPEC VAL T)) SETF)
+(DEFPROP FDEFINITION ((FDEFINITION FUNCTION-SPEC)
+		      . (FDEFINITION-LOCATION FUNCTION-SPEC)) LOCF)
+
+(DEFPROP SYMEVAL ((SYMEVAL SYMBOL) . (SET SYMBOL VAL)) SETF)
+(DEFPROP SYMEVAL ((SYMEVAL SYMBOL) . (VALUE-CELL-LOCATION SYMBOL)) LOCF)
+
+(DEFPROP SYMEVAL-IN-CLOSURE ((SYMEVAL-IN-CLOSURE CLOSURE PTR)
+			     SET-IN-CLOSURE CLOSURE PTR VAL) SETF)
+(DEFPROP SYMEVAL-IN-CLOSURE ((SYMEVAL-IN-CLOSURE CLOSURE PTR)
+			     LOCATE-IN-CLOSURE CLOSURE PTR) LOCF)
+
+(DEFPROP SYMBOL-PACKAGE ((SYMBOL-PACKAGE SYMBOL)
+			 . (RPLACD (PACKAGE-CELL-LOCATION SYMBOL) VAL)) SETF)
+(DEFPROP SYMBOL-PACKAGE ((SYMBOL-PACKAGE SYMBOL)
+			 . (PACKAGE-CELL-LOCATION SYMBOL)) LOCF)
+
+(defprop values values-setf setf)
+(defun values-setf (values-form value)
+  `(multiple-value ,(cdr values-form) ,value))
+
+;;; This really should be called SEND or something like that
+(DEFPROP FUNCALL FUNCALL-SETF SETF)
+(DEFUN FUNCALL-SETF (REF VAL &AUX MESSAGE-NAME SPECIAL-EXPANDER REST)
+  (AND (OR (ATOM (CADDR REF)) (NEQ (CAADDR REF) 'QUOTE))
+       (ERROR "Can only setf message sending funcalls" REF))
+  (SETQ REST (CDDR REF)
+	MESSAGE-NAME (CADAR REST))
+  (SETQ REST (IF (SETQ SPECIAL-EXPANDER (GET MESSAGE-NAME 'FUNCALL-SETF))
+		 (LOCF-APPLY SPECIAL-EXPANDER REST T VAL)
+		 (OR (= (LENGTH REST) 1)
+		     (ERROR "Too many arguments for funcall-setf" REF))
+		 `(',(INTERN (STRING-APPEND "SET-" MESSAGE-NAME) "") ,VAL)))
+  `(FUNCALL ,(CADR REF) ,@REST))
+
+(DEFPROP GET (('GET INDICATOR) . ('PUTPROP VAL INDICATOR)) FUNCALL-SETF)
+
+(defprop function function-setf setf)
+(defun function-setf (ref val)
+       (or (symbolp (cadr ref))
+	   (error "Cannot setf this." ref))
+       `(fset ',(cadr ref) ,val))
+
+(defprop function function-locf locf)
+(defun function-locf (ref)
+       (or (symbolp (cadr ref))
+	   (error "Cannot locf this." ref))
+       `(function-cell-location ',(cadr ref)))
+
+(defprop plist ((plist foo) . (setplist foo val)) setf)
+(defprop plist ((plist foo) . (property-cell-location foo)) locf)
+
+;The old thing.  Also evals ref twice, lose lose.
+(DEFPROP LDB ((LDB PPSS REF) . (SETF REF (DPB VAL PPSS REF))) SETF)
+;The following tried to fix a hairy bug associated with (setf (ldb (cdr x)) 105).
+; Unfortunately, it suffers from a worse problem, namely, the ref can be a
+; array element of a numeric array, in which case it is illegal (and impossible)
+; to make a locative pointer.
+;(DEFPROP LDB ((LDB PPSS REF) . (DPB-VIA-LOCATIVE VAL PPSS (LOCF REF))) SETF)
+;(IF-FOR-LISPM
+;(DEFUN DPB-VIA-LOCATIVE (VAL PPSS LOCATIVE)  ;THIS MUST BE IN QRAND BECAUSE IT MUST BE
+;    (RPLACD LOCATIVE (DPB VAL PPSS (CDR LOCATIVE)))))  ;IN THE COLD LOAD
+
+(DEFPROP GET ((GET ATOM PROP) . (PUTPROP ATOM VAL PROP)) SETF)
+(DEFPROP GET ((GET ATOM PROP) . (GET-LOCATION ATOM PROP)) LOCF)
+
+(DEFPROP GETHASH
+	 ((GETHASH KEY HASH-TABLE) . (PUTHASH KEY VAL HASH-TABLE)) SETF)
+
+(DEFPROP GETHASH-EQUAL
+	 ((GETHASH-EQUAL KEY HASH-TABLE) . (PUTHASH-EQUAL KEY VAL HASH-TABLE)) SETF)
+
+(DEFPROP ARG ((ARG N) . (SETARG N VAL)) SETF)
+
+(DEFPROP %UNIBUS-READ ((%UNIBUS-READ ADDR) . (%UNIBUS-WRITE ADDR VAL)) SETF)
+(DEFPROP %XBUS-READ ((%XBUS-READ ADDR) . (%XBUS-WRITE ADDR VAL)) SETF)
+
+(DEFPROP %P-CONTENTS-OFFSET ((%P-CONTENTS-OFFSET BASE OFFSET)
+			     %P-STORE-CONTENTS-OFFSET VAL BASE OFFSET) SETF)
+(DEFPROP %P-CONTENTS-OFFSET ((%P-CONTENTS-OFFSET POINTER OFFSET)
+			     %MAKE-POINTER-OFFSET DTP-LOCATIVE POINTER OFFSET) LOCF)
+
+(DEFPROP %P-LDB ((%P-LDB PPSS POINTER)
+		 %P-DPB VAL PPSS POINTER) SETF)
+
+(DEFPROP %P-LDB-OFFSET ((%P-LDB-OFFSET PPSS POINTER OFFSET)
+			%P-DPB-OFFSET VAL PPSS POINTER OFFSET) SETF)
+
+(DEFPROP %P-MASK-FIELD ((%P-MASK-FIELD PPSS POINTER)
+			%P-DEPOSIT-FIELD VAL PPSS POINTER) SETF)
+
+(DEFPROP %P-MASK-FIELD-OFFSET ((%P-MASK-FIELD-OFFSET PPSS POINTER OFFSET)
+			       %P-DEPOSIT-FIELD-OFFSET VAL PPSS POINTER OFFSET) SETF)
+
+(DEFPROP %P-POINTER ((%P-POINTER POINTER)
+		     %P-STORE-POINTER POINTER VAL) SETF)
+
+(DEFPROP %P-DATA-TYPE ((%P-DATA-TYPE POINTER)
+		       %P-STORE-DATA-TYPE POINTER VAL) SETF)
+
+(DEFPROP %P-CDR-CODE ((%P-CDR-CODE POINTER)
+		      %P-STORE-CDR-CODE POINTER VAL) SETF)
+
+(DEFPROP %P-FLAG-BIT ((%P-FLAG-BIT POINTER)
+		      %P-STORE-FLAG-BIT POINTER VAL) SETF)
+
+;Handle SETF of backquote expressions, for decomposition.
+;For example, (SETF `(A ,B (D ,XYZ)) FOO)
+;sets B to the CADR and XYZ to the CADADDR of FOO.
+;The constants in the pattern are ignored.
+
+;Backquotes which use ,@ or ,. other than at the end of a list
+;expand into APPENDs or NCONCs and cannot be SETF'd.
+
+(COMMENT
+;This was used for making (setf `(a ,b) foo) return t if
+;foo matched the pattern (had A as its car).
+;The other change for reinstalling this
+;would be to replace the PROGNs with ANDs
+;in the expansions produced by (LIST SETF), etc.
+(DEFUN SETF-MATCH (PATTERN OBJECT)
+  (COND ((NULL PATTERN) T)
+	((SYMBOLP PATTERN)
+	 `(PROGN (SETQ ,PATTERN ,OBJECT) T))
+	((EQ (CAR PATTERN) 'QUOTE)
+	 `(EQUAL ,PATTERN ,OBJECT))
+	((MEMQ (CAR PATTERN)
+	       '(CONS LIST LIST*))
+	 `(SETF ,PATTERN ,OBJECT))
+	(T `(PROGN (SETF ,PATTERN ,OBJECT) T)))))
+
+;This is used for ignoring any constants in the
+;decomposition pattern, so that (setf `(a ,b) foo)
+;always sets b and ignores a.
+(DEFUN SETF-MATCH (PATTERN OBJECT)
+  (COND ((AND (NOT (ATOM PATTERN)) (EQ (CAR PATTERN) 'QUOTE))
+	 NIL)
+	(T `(SETF ,PATTERN ,OBJECT))))
+
+(DEFUN (LIST SETF) (PATTERN VALUE-FORM &AUX VARIABLE)
+  (COND ((SYMBOLP VALUE-FORM)
+	 (SETQ VARIABLE VALUE-FORM
+	       VALUE-FORM NIL))
+	(T (SETQ VARIABLE (GENSYM))))
+  (DO ((I 0 (1+ I))
+       (ACCUM)
+       (ARGS (CDR PATTERN) (CDR ARGS)))
+      ((NULL ARGS)
+       (COND (VALUE-FORM
+	       `(LET ((,VARIABLE ,VALUE-FORM))
+		  (PROGN . ,(NREVERSE ACCUM))))
+	     (T (CONS 'PROGN (NREVERSE ACCUM)))))
+    (PUSH (SETF-MATCH (CAR ARGS) `(NTH ,I ,VARIABLE)) ACCUM)))
+
+(DEFUN (LIST* SETF) (PATTERN VALUE-FORM &AUX VARIABLE)
+  (COND ((SYMBOLP VALUE-FORM)
+	 (SETQ VARIABLE VALUE-FORM
+	       VALUE-FORM NIL))
+	(T (SETQ VARIABLE (GENSYM))))
+  (DO ((I 0 (1+ I))
+       (ACCUM)
+       (ARGS (CDR PATTERN) (CDR ARGS)))
+      ((NULL ARGS)
+       (COND (VALUE-FORM
+	       `(LET ((,VARIABLE ,VALUE-FORM))
+		  (PROGN . ,(NREVERSE ACCUM))))
+	     (T (CONS 'PROGN (NREVERSE ACCUM)))))
+    (COND ((CDR ARGS)
+	   (PUSH (SETF-MATCH (CAR ARGS) `(NTH ,I ,VARIABLE)) ACCUM))
+	  (T (PUSH (SETF-MATCH (CAR ARGS) `(NTHCDR ,I ,VARIABLE)) ACCUM)))))
+
+(DEFUN (CONS SETF) (PATTERN VALUE-FORM &AUX VARIABLE)
+  (COND ((SYMBOLP VALUE-FORM)
+	 (SETQ VARIABLE VALUE-FORM
+	       VALUE-FORM NIL))
+	(T (SETQ VARIABLE (GENSYM))))
+  (LET ((TEM `(PROGN ,(SETF-MATCH (CADR PATTERN) `(CAR ,VARIABLE))
+		     ,(SETF-MATCH (CADDR PATTERN) `(CDR ,VARIABLE)))))
+    (COND (VALUE-FORM
+	    `(LET ((,VARIABLE ,VALUE-FORM))
+	       ,TEM))
+	  (T TEM))))
+

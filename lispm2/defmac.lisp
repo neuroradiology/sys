@@ -52,12 +52,19 @@
 ;; (such as, FOOP in &OPTIONAL (FOO 69 FOOP)).
 (DECLARE (SPECIAL OPTIONAL-SPECIFIED-FLAGS))
 
+;; This is set to T if the pattern used &body instead of &rest.
+;; This allows us to tell ZWEI about how to indent the form.
+(DECLARE (SPECIAL DEFMACRO-&BODY-FLAG))
+
 ;; X is the cdr of the DEFMACRO form.  TYPE is MACRO or MACRO-DISPLACE.
 (DEFUN DEFMACRO1 (X TYPE)
-  (LET (*VARLIST* *VALLIST* OPTIONAL-SPECIFIED-FLAGS)
+  (LET (*VARLIST* *VALLIST* OPTIONAL-SPECIFIED-FLAGS DEFMACRO-&BODY-FLAG)
     (LET ((PAIR (DEFMACRO-&MUMBLE-CHEVEUX (CADR X) '(CDR *MACROARG*) 0 (CADR X))))
      `(LOCAL-DECLARE ((ARGLIST . ,(CADR X)))
-       (,TYPE ,(CAR X) (*MACROARG*)
+       ,@(AND DEFMACRO-&BODY-FLAG
+	      `((EVAL-WHEN (EVAL COMPILE LOAD)
+		  (DEFMACRO-SET-INDENTATION-FOR-ZWEI ',(CAR X) ',(CAR PAIR)))))
+       (,TYPE ,(STANDARDIZE-FUNCTION-SPEC (CAR X)) (*MACROARG*)
 	,@(COND ((AND DEFMACRO-CHECK-ARGS
 		      (NOT (AND (ZEROP (CAR PAIR))
 				(NULL (CDR PAIR)))))
@@ -74,21 +81,24 @@
 			(ERROR '|-- wrong number of args to a macro.|
 			       `(,',(CADR X) ,*MACROARG*)))))
 		(T NIL))
-	;; Don't use LET here if no optional-specified-flags, since that would
-	;; cause infinite recursion since LET is defined with DEFMACRO
-	,(COND (OPTIONAL-SPECIFIED-FLAGS
-		`(LET ,OPTIONAL-SPECIFIED-FLAGS
-		   ((LAMBDA ,*VARLIST* . ,(CDDR X))
-		    . ,*VALLIST*)))
-	       (`((LAMBDA ,*VARLIST* . ,(CDDR X))
-		    . ,*VALLIST*))))))))
+	,(DEFMACRO2 (NREVERSE *VARLIST*) (NREVERSE *VALLIST*)
+		    OPTIONAL-SPECIFIED-FLAGS (CDDR X)))))))
 
-(DEFMACRO DESTRUCTURING-BIND (VARIABLES DATA . BODY)
-  (LET (*VARLIST* *VALLIST* OPTIONAL-SPECIFIED-FLAGS)
+;; Put together the various bindings and the body.
+;; The VARS are bound sequentially since their initializations may depend
+;; on each other (in left-to-right fashion).
+(DEFUN DEFMACRO2 (VARS VALS FLAGS BODY)
+  (COND (FLAGS `((LAMBDA ,FLAGS ,(DEFMACRO2 VARS VALS NIL BODY))
+		 . ,(MAKE-LIST (LENGTH FLAGS))))
+	(VARS `((LAMBDA (,(CAR VARS)) ,(DEFMACRO2 (CDR VARS) (CDR VALS) NIL BODY))
+		,(CAR VALS)))
+	((CDR BODY) `(PROGN . ,BODY))
+	(T (CAR BODY))))
+
+(DEFMACRO DESTRUCTURING-BIND (VARIABLES DATA &BODY BODY)
+  (LET (*VARLIST* *VALLIST* OPTIONAL-SPECIFIED-FLAGS DEFMACRO-&BODY-FLAG)
     (DEFMACRO-&MUMBLE-CHEVEUX VARIABLES DATA 0 VARIABLES)
-    `(LET ,OPTIONAL-SPECIFIED-FLAGS
-       ((LAMBDA ,*VARLIST* . ,BODY)
-	. ,*VALLIST*))))
+    (DEFMACRO2 (NREVERSE *VARLIST*) (NREVERSE *VALLIST*) OPTIONAL-SPECIFIED-FLAGS BODY)))
 
 ;; STATE is 0 for mandatory args, 1 for optional args, 2 for rest args, 3 for aux vars.
 ;; If it is 4 or more, the 4 bit signifies &LIST-OF and the low two bits
@@ -110,7 +120,9 @@
 	     ((EQ (CAR PATTERN) '&OPTIONAL)
 	      (COND ((> STATE 0) (ERROR '|-- bad pattern to DEFMACRO.| EPAT))
 		    (T (DEFMACRO-&MUMBLE-CHEVEUX (CDR PATTERN) PATH 1 EPAT))))
-	     ((EQ (CAR PATTERN) '&REST)
+	     ((MEMQ (CAR PATTERN) '(&REST &BODY))
+	      (AND (EQ (CAR PATTERN) '&BODY)
+		   (SETQ DEFMACRO-&BODY-FLAG T))
 	      (COND ((> STATE 1) (ERROR '|-- bad pattern to DEFMACRO.| EPAT))
 		    (T (DEFMACRO-&MUMBLE-CHEVEUX (CDR PATTERN) PATH 2 EPAT))))
 	     ((EQ (CAR PATTERN) '&AUX)
@@ -207,4 +219,3 @@
 (DEFUN DEFMACRO-REQUIRED (PAIR)
        (COND ((NULL (CDR PAIR)) (RPLACA PAIR (1+ (CAR PAIR))))
 	     (T (RPLACA (RPLACD PAIR (1+ (CDR PAIR))) (1+ (CAR PAIR))))))
-

@@ -4,8 +4,7 @@
 ;;; This file contains the Lisp-coded support for the Garbage Collector
 ;;; Some GC-related functions that need to be in the cold-load can be found in QRAND.
 
-;*** Needs a facility which continuously maintains a second who-line with gc stats
-;*** Needs a way to sound a warning when you are close to running out of virtual memory
+;*** Needs a facility which continuously maintains a second who-line with gc stats?
 
 
 (DEFVAR GC-REPORT-STREAM T)
@@ -41,78 +40,16 @@
 					;real-time aspect, making it more
 					;like a copying garbage collector.
 
-;;; Fix some things which the cold-load generator sets up wrong.
-(DEFUN GC-ONCE-INIT (&AUX BITS)
-  ;; The cold-load does not set up the %%REGION-SCAVENGE-ENABLE bits, and gets
-  ;; the REGION-GC-POINTER's wrong, at least in LINEAR-PDL-AREA and LINEAR-BIND-PDL-AREA.
-  ;; This then gets propagated through all newly-created regions.
-  (DO REGION SIZE-OF-AREA-ARRAYS (1- REGION) (MINUSP REGION)
-    (STORE (REGION-GC-POINTER REGION) 0) ;assuming no compact-consing regions yet
-    (SETQ BITS (REGION-BITS REGION))
-    (STORE (REGION-BITS REGION)
-	   (%LOGDPB (SELECT (LDB %%REGION-SPACE-TYPE BITS)
-		  ;; These should not be scavenged
-		  ((%REGION-SPACE-FREE %REGION-SPACE-EXITED
-		    %REGION-SPACE-EXTRA-PDL ;Very important!! This does not follow the
-					    ;prescribed protocol for use of header-forward
-					    ;and body-forward.  Also this area gets randomly
-					    ;reset without interfacing with the scavenger.
-		    %REGION-SPACE-WIRED %REGION-SPACE-USER-PAGED) 0)
-		  ;; These usually should be scavenged, except for efficiency certain ones
-		  ;; that only contain fixnums will be bypassed
-		  (%REGION-SPACE-FIXED
-		    (COND ((OR (= REGION MICRO-CODE-SYMBOL-AREA)
-			       (= REGION PAGE-TABLE-AREA)
-			       (= REGION PHYSICAL-PAGE-DATA)
-			       (= REGION REGION-ORIGIN)
-			       (= REGION REGION-LENGTH)
-			       (= REGION REGION-BITS)
-			       (= REGION REGION-SORTED-BY-ORIGIN)
-			       (= REGION REGION-FREE-POINTER)
-			       (= REGION REGION-GC-POINTER)
-			       (= REGION REGION-LIST-THREAD)
-			       (= REGION AREA-REGION-LIST)
-			       (= REGION AREA-REGION-SIZE)
-			       (= REGION AREA-MAXIMUM-SIZE)
-			       (= REGION MICRO-CODE-ENTRY-AREA)
-			       (= REGION MICRO-CODE-ENTRY-MAX-PDL-USAGE))
-			   0)
-			  (T 1)))
-		  ;; Newspace doesn't need scavenging
-		  (%REGION-SPACE-NEW 0)
-		  ;; Other regions should be scavenged
-		  (OTHERWISE 1))
-		%%REGION-SCAVENGE-ENABLE BITS)))
-  ;; Crank up the default region-size for certain areas
-  (DO L '(WORKING-STORAGE-AREA 200000 MACRO-COMPILED-PROGRAM 200000
-	  P-N-STRING 200000 NR-SYM 100000)
-      (CDDR L) (NULL L)
-    (STORE (AREA-REGION-SIZE (SYMEVAL (CAR L))) (CADR L))))
+(DEFVAR GC-SCAVENGER-WS-SIZE)		;Physical pages the scavenger may use.
+					; Don't set this variable directly,
+					; instead call SET-SCAVENGER-WS.
 
-(ADD-INITIALIZATION "GC-ONCE" '(GC-ONCE-INIT) '(ONCE))
-
-;;; Check the size of the free regions in case this is a band
-;;; that was shipped over from a machine with a different size paging partition.
-(DEFUN GC-CHECK-FREE-REGIONS (PAGE-PART-SIZE)
-  ;; Find the size of the paging partition and adjust the free area if necessary.
-  ;; The microcode already knows this, but it isn't left around, so read the label again.
-  (LET ((HIGHEST-PAGE-USED 0) (PAGE-NUMBER-FIELD 1020))
-    (WITHOUT-INTERRUPTS  ;Don't let any allocation happen
-      (DO REGION SIZE-OF-AREA-ARRAYS (1- REGION) (MINUSP REGION)
-	(LET ((REGION-TOP (+ (LDB PAGE-NUMBER-FIELD (REGION-ORIGIN REGION))
-			     (LDB PAGE-NUMBER-FIELD (REGION-LENGTH REGION)))))
-	  (SETQ HIGHEST-PAGE-USED (MAX REGION-TOP HIGHEST-PAGE-USED))))
-      (DO REGION (AREA-REGION-LIST FREE-AREA) (REGION-LIST-THREAD REGION) (MINUSP REGION)
-	(LET ((REGION-TOP (+ (LDB PAGE-NUMBER-FIELD (REGION-ORIGIN REGION))
-			     (LDB PAGE-NUMBER-FIELD (REGION-LENGTH REGION)))))
-	  (COND ((OR (> REGION-TOP PAGE-PART-SIZE) (= REGION-TOP HIGHEST-PAGE-USED))
-		 (STORE (REGION-LENGTH REGION)
-			(%LOGDPB (MAX 0 (- PAGE-PART-SIZE
-					   (LDB PAGE-NUMBER-FIELD (REGION-ORIGIN REGION))))
-				 PAGE-NUMBER-FIELD 0)))))))))
-
-(DEFUN GC-REPORT-STREAM ()
-  (IF (EQ GC-REPORT-STREAM T) (TV:GET-NOTIFICATION-STREAM) GC-REPORT-STREAM))
+;Args like FORMAT, but stream comes from GC-REPORT-STREAM
+(DEFUN GC-REPORT (FORMAT-CONTROL &REST FORMAT-ARGS)
+  (COND ((NULL GC-REPORT-STREAM))
+	((EQ GC-REPORT-STREAM T)
+	 (LEXPR-FUNCALL #'TV:NOTIFY NIL FORMAT-CONTROL FORMAT-ARGS))
+	(T (LEXPR-FUNCALL #'FORMAT GC-REPORT-STREAM FORMAT-CONTROL FORMAT-ARGS))))
 
 ;;; Flipper
 
@@ -145,10 +82,9 @@
   (SETQ %PAGE-CONS-ALARM 0 %REGION-CONS-ALARM 0)  ;avoid overflow in these fixnums
   (MULTIPLE-VALUE-BIND (DYNAMIC-SIZE STATIC-SIZE EXITED-SIZE FREE-SIZE)
 		(GC-GET-SPACE-SIZES)
-    (AND GC-REPORT-STREAM
-	 (FORMAT (GC-REPORT-STREAM) ;separate static from exited when exited exists?
-	     "~&[GC: About to flip.  Dynamic space=~D., Static space=~D., Free space=~D.]~%"
-	     DYNAMIC-SIZE (+ STATIC-SIZE EXITED-SIZE) FREE-SIZE))
+    (GC-REPORT ;separate static from exited when exited exists?
+		"GC: About to flip.  Dynamic space=~D., Static space=~D., Free space=~D."
+		DYNAMIC-SIZE (+ STATIC-SIZE EXITED-SIZE) FREE-SIZE)
     ;; Perform whatever actions other programs need to do on flips
     (MAPC #'EVAL GC-EVERY-FLIP-LIST)
     (MAPC #'EVAL (PROG1 GC-NEXT-FLIP-LIST
@@ -172,22 +108,27 @@
        (DYNAMIC-SIZE 0)
        (STATIC-SIZE 0)
        (EXITED-SIZE 0)
-       (FREE-SIZE 0)
+       (FREE-SIZE (GET-FREE-SPACE-SIZE))
        (OLD-SIZE 0))
       ((MINUSP REGION)
-       (DO REGION (AREA-REGION-LIST FREE-AREA) (REGION-LIST-THREAD REGION) (MINUSP REGION)
-         (SETQ FREE-SIZE (+ (24-BIT-UNSIGNED (REGION-LENGTH REGION)) FREE-SIZE)))
        (RETURN DYNAMIC-SIZE STATIC-SIZE EXITED-SIZE FREE-SIZE OLD-SIZE))
     (SETQ SZ (24-BIT-UNSIGNED (REGION-FREE-POINTER REGION)))
     (SELECT (LDB %%REGION-SPACE-TYPE (REGION-BITS REGION))
-      ((%REGION-SPACE-NEW %REGION-SPACE-COPY)
-	(SETQ DYNAMIC-SIZE (+ SZ DYNAMIC-SIZE)))
+      ((%REGION-SPACE-NEW %REGION-SPACE-COPY %REGION-SPACE-NEW1 %REGION-SPACE-NEW2
+	%REGION-SPACE-NEW3 %REGION-SPACE-NEW4 %REGION-SPACE-NEW5 %REGION-SPACE-NEW6)
+       (SETQ DYNAMIC-SIZE (+ SZ DYNAMIC-SIZE)))
       (%REGION-SPACE-OLD
 	(SETQ OLD-SIZE (+ SZ OLD-SIZE)))
-      ((%REGION-SPACE-STATIC %REGION-SPACE-FIXED %REGION-SPACE-EXIT)
-	(SETQ STATIC-SIZE (+ SZ STATIC-SIZE)))
-      (%REGION-SPACE-EXITED
-        (SETQ EXITED-SIZE (+ SZ EXITED-SIZE))))))
+      ((%REGION-SPACE-STATIC %REGION-SPACE-FIXED)
+	(SETQ STATIC-SIZE (+ SZ STATIC-SIZE))))))
+
+;Returns the number of words of free space
+(DEFUN GET-FREE-SPACE-SIZE ()
+  (* (LOOP FOR I FROM (// (+ (REGION-ORIGIN INIT-LIST-AREA) (REGION-LENGTH INIT-LIST-AREA))
+			  %ADDRESS-SPACE-QUANTUM-SIZE)
+		 BELOW (// VIRTUAL-MEMORY-SIZE %ADDRESS-SPACE-QUANTUM-SIZE)
+	   COUNT (ZEROP (AREF #'ADDRESS-SPACE-MAP I)))
+     %ADDRESS-SPACE-QUANTUM-SIZE))
 
 ;;; If called when %GC-FLIP-READY is true, returns a conservative (over) estimate of
 ;;; the amount of free space which will be used up during the next cycle before
@@ -277,7 +218,7 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 ;;; This function gets rid of oldspace.
 (DEFUN GC-RECLAIM-OLDSPACE ()
   ;; Make sure all regions are clean (no pointers to oldspace)
-  (DO ((%SCAVENGER-WS-ENABLE NIL))  ;Use all of memory as long as using all of processor
+  (DO ((%SCAVENGER-WS-ENABLE 0))  ;Use all of memory as long as using all of processor
       (%GC-FLIP-READY)	;Stop when scavenger says all is clean
     (%GC-SCAVENGE 10000))
   ;; Report oldspace statistics
@@ -286,9 +227,8 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 	      (OLD-TOTAL-SIZE 0)
 	      (OLD-USED-SIZE 0))
 	     ((MINUSP REGION)
-	      (FORMAT (GC-REPORT-STREAM)
-		      "~&[GC: Flushing oldspace.  allocated=~D., used=~D.]~%"
-		      OLD-TOTAL-SIZE OLD-USED-SIZE))
+	      (GC-REPORT "GC: Flushing oldspace.  allocated=~D., used=~D."
+			 OLD-TOTAL-SIZE OLD-USED-SIZE))
 	   (COND ((= (LDB %%REGION-SPACE-TYPE (REGION-BITS REGION)) %REGION-SPACE-OLD)
 		  (SETQ OLD-TOTAL-SIZE (+ (24-BIT-UNSIGNED (REGION-LENGTH REGION))
 					  OLD-TOTAL-SIZE)
@@ -299,7 +239,8 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
     (LET ((AREA-NUMBER (SYMEVAL AREA)))
       (AND (OR (MINUSP AREA-NUMBER) (> AREA-NUMBER SIZE-OF-AREA-ARRAYS))
            (FERROR NIL "Area-symbol ~S clobbered" AREA)) ;don't get grossly faked out
-      (GC-RECLAIM-OLDSPACE-AREA AREA-NUMBER))))
+      (GC-RECLAIM-OLDSPACE-AREA AREA-NUMBER)))
+  (SETQ GC-DAEMON-PAGE-CONS-ALARM -1))	;Wake up daemon process
 
 ;;; GC-RECLAIM-OLDSPACE-AREA - deletes all old-space regions of a specified area,
 ;;; unthreading from the lists, and returning the virtual memory to free.
@@ -363,10 +304,8 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 	       (RETURN (GC-FLIP-NOW))) ;*** slight window for other process to flip first ***
 	      (T		;Wait a while before flipping, then compute frob again
 	       (SETQ %PAGE-CONS-ALARM 0)
-	       (AND GC-REPORT-STREAM
-		    (FORMAT (GC-REPORT-STREAM)
-			    "~&[GC: Allowing ~D. words more consing before flip.]~%"
-			    (- FREE-SPACE COMMITTED-FREE-SPACE)))
+	       (GC-REPORT "GC: Allowing ~D. words more consing before flip."
+			  (- FREE-SPACE COMMITTED-FREE-SPACE))
 	       (SETQ GC-PAGE-CONS-ALARM-MARK
 		     (// (- FREE-SPACE COMMITTED-FREE-SPACE) PAGE-SIZE))
 	       (PROCESS-WAIT "Await flip"
@@ -377,7 +316,7 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 ;;; Function to turn on the garbage collector
 (DEFUN GC-ON ()
   (OR (BOUNDP 'GC-PROCESS)
-      (SETQ GC-PROCESS (PROCESS-CREATE "Garbage Collector")))
+      (SETQ GC-PROCESS (MAKE-PROCESS "Garbage Collector")))
   (PROCESS-PRESET GC-PROCESS #'GC-PROCESS)
   (PROCESS-ENABLE GC-PROCESS)			;Start flipper process
   (SETQ INHIBIT-SCAVENGING-FLAG NIL		;Enable scavenging during cons
@@ -412,10 +351,8 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 			 GC-RECLAIMED-OLDSPACE NIL)
 		   (GC-FLIP-NOW))
 		(T		;Wait a while before flipping, then compute frob again
-		 (AND GC-REPORT-STREAM
-		      (FORMAT (GC-REPORT-STREAM)
-			      "~&[GC: Allowing ~D. words more consing before flip.]~%"
-			      (- FREE-SPACE COMMITTED-FREE-SPACE)))
+		 (GC-REPORT "GC: Allowing ~D. words more consing before flip." 
+			    (- FREE-SPACE COMMITTED-FREE-SPACE))
 		 (SETQ %PAGE-CONS-ALARM 0
 		       GC-PAGE-CONS-ALARM-MARK (// (- FREE-SPACE COMMITTED-FREE-SPACE)
 						   PAGE-SIZE)))))))))
@@ -433,10 +370,11 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
     (DO REGION (AREA-REGION-LIST AREA) (REGION-LIST-THREAD REGION) (MINUSP REGION)
       (LET ((BITS (REGION-BITS REGION)))
 	(SELECT (LDB %%REGION-SPACE-TYPE BITS)
-	  ((%REGION-SPACE-NEW %REGION-SPACE-COPY)
-	     (STORE (REGION-BITS REGION)
-		    (%LOGDPB 1 %%REGION-SCAVENGE-ENABLE
-			     (%LOGDPB %REGION-SPACE-STATIC %%REGION-SPACE-TYPE BITS)))))))))
+	  ((%REGION-SPACE-NEW %REGION-SPACE-COPY %REGION-SPACE-NEW1 %REGION-SPACE-NEW2
+	    %REGION-SPACE-NEW3 %REGION-SPACE-NEW4 %REGION-SPACE-NEW5 %REGION-SPACE-NEW6)
+	   (STORE (REGION-BITS REGION)
+		  (%LOGDPB 1 %%REGION-SCAVENGE-ENABLE
+			   (%LOGDPB %REGION-SPACE-STATIC %%REGION-SPACE-TYPE BITS)))))))))
 
 ;;; Make a static area dynamic.  This can happen right away, although it really
 ;;; only takes effect on the next flip, when the area will acquire its first oldspace.
@@ -465,6 +403,176 @@ Exited space ~D., Free space ~D., Committed guess ~D., leaving ~D.~%"
 	     "the area number of a static area")
   (PUSH `(MAKE-AREA-STATIC-INTERNAL ,AREA) GC-SECOND-NEXT-FLIP-LIST)
   (MAKE-AREA-DYNAMIC AREA))
+
+;Find boundary in physical core for scavenger working set.  Scan up until right number
+; of non-wired pages passed.
+(DEFUN SET-SCAVENGER-WS (WS-SIZE)
+  (DO ((PHYS-ADR 0 (+ PHYS-ADR PAGE-SIZE))
+       (PAGES-FOUND 0))
+      ((>= PAGES-FOUND WS-SIZE)
+       (SETQ GC-SCAVENGER-WS-SIZE WS-SIZE
+	     %SCAVENGER-WS-ENABLE PHYS-ADR))
+    (LET ((PPD-ADR (+ (REGION-ORIGIN PHYSICAL-PAGE-DATA)
+		      (// PHYS-ADR PAGE-SIZE))))
+      (IF (NOT (AND (= (%P-LDB 0020 PPD-ADR) 177777)		;flush if fixed wired
+		    ( (%P-LDB 2020 PPD-ADR) 177777)))
+	  (LET ((PHT-ADR (+ (%P-LDB 0020 PPD-ADR) (REGION-ORIGIN PAGE-TABLE-AREA))))
+	    (IF (NOT
+		  (AND (NOT (ZEROP (%P-LDB %%PHT1-VALID-BIT PHT-ADR)))
+		       (= (%P-LDB %%PHT1-SWAP-STATUS-CODE PHT-ADR) %PHT-SWAP-STATUS-WIRED)))
+		(SETQ PAGES-FOUND (1+ PAGES-FOUND))))))))
+
+(DEFUN SET-SWAP-RECOMMENDATIONS-OF-AREA (AREA SWAP-RECOMMENDATIONS)
+  (CHECK-ARG AREA (AND (NUMBERP AREA) ( AREA 0) ( AREA SIZE-OF-AREA-ARRAYS))
+	     "an area number")
+  (WITHOUT-INTERRUPTS
+    (STORE (AREA-SWAP-RECOMMENDATIONS AREA) SWAP-RECOMMENDATIONS)
+    (DO REGION (AREA-REGION-LIST AREA) (REGION-LIST-THREAD REGION) (MINUSP REGION)
+      (STORE (REGION-BITS REGION)
+	     (%LOGDPB SWAP-RECOMMENDATIONS %%REGION-SWAPIN-QUANTUM (REGION-BITS REGION))))))
+
+(DEFUN CHECK-SWAP-RECOMMENDATIONS-OF-AREA (AREA)
+  (LET ((SWAP-RECOMMENDATIONS (AREA-SWAP-RECOMMENDATIONS AREA)))
+    (DO REGION (AREA-REGION-LIST AREA) (REGION-LIST-THREAD REGION) (MINUSP REGION)
+	(IF (NOT (= (%LOGLDB %%REGION-SWAPIN-QUANTUM (REGION-BITS REGION))
+		    SWAP-RECOMMENDATIONS))
+	    (FORMAT T "~%Swap recomendations of region ~S are ~s but should be ~s."
+		    REGION
+		    (%LOGLDB %%REGION-SWAPIN-QUANTUM (REGION-BITS REGION))
+		    SWAP-RECOMMENDATIONS)))))
+
+(DEFUN SET-ALL-SWAP-RECOMMENDATIONS (N)
+  (DOLIST (NAME-OF-AREA AREA-LIST)
+    (SET-SWAP-RECOMMENDATIONS-OF-AREA (SYMEVAL NAME-OF-AREA) N)))
+
+
+;;; GC-Daemon facility.
+
+;;; A GC-daemon is a set of address-space conditions to wait for, and a
+;;; function to run (in a separate process) when conditions are met.
+
+;;; This simple process implements the queue
+(DEFVAR GC-DAEMON-PROCESS)
+
+;;; Each element on this queue is a list at least four long:
+;;;	(name function region-cons-alarm page-cons-alarm)
+;;; If either alarm is  the value in the queue, the function is called
+;;; in a background process with the queue element as its argument.
+;;; If any oldspace is reclaimed, all entries on the queue go off, since the
+;;; allocation of address space has just changed.  This may need improvement
+;;; in the future, when oldspace reclamation is more frequent.
+(DEFVAR GC-DAEMON-QUEUE NIL)
+
+(DEFVAR GC-DAEMON-PAGE-CONS-ALARM 0)
+(DEFVAR GC-DAEMON-REGION-CONS-ALARM 0)
+
+;;; Add to the queue.  Arguments are how many more regions and pages 
+;;; must be consed before the function goes off.  If you want your
+;;; queue element to be more than four long, pre-create it and pass it in
+(DEFUN GC-DAEMON-QUEUE (NAME FUNCTION N-REGIONS N-PAGES &OPTIONAL ELEM)
+  (OR ELEM (SETQ ELEM (ASSQ NAME GC-DAEMON-QUEUE)) (SETQ ELEM (LIST NAME FUNCTION NIL NIL)))
+  (WITHOUT-INTERRUPTS
+    (SETF (THIRD ELEM) (+ %REGION-CONS-ALARM N-REGIONS))
+    (SETF (FOURTH ELEM) (+ %PAGE-CONS-ALARM N-PAGES))
+    (OR (MEMQ ELEM GC-DAEMON-QUEUE)
+	(PUSH ELEM GC-DAEMON-QUEUE))
+    (SETQ GC-DAEMON-PAGE-CONS-ALARM -1)))	;Wake up daemon process
+
+;;; This is the function that runs in the scheduler
+(DEFUN GC-DAEMON-FUNCTION ()
+  ;; Fire off any interesting queue entries
+  (LOOP FOR ELEM IN GC-DAEMON-QUEUE
+	WHEN (OR ( %REGION-CONS-ALARM (THIRD ELEM))
+		 ( %PAGE-CONS-ALARM (FOURTH ELEM)))
+	  DO (SETQ GC-DAEMON-QUEUE (DELQ ELEM GC-DAEMON-QUEUE))
+	     (PROCESS-RUN-FUNCTION (STRING (FIRST ELEM)) (SECOND ELEM) ELEM))  
+  ;; Cause process to sleep until next interesting time
+  (IF GC-DAEMON-QUEUE
+      (SETQ GC-DAEMON-REGION-CONS-ALARM (LOOP FOR ELEM IN GC-DAEMON-QUEUE
+					      MINIMIZE (THIRD ELEM))
+	    GC-DAEMON-PAGE-CONS-ALARM (LOOP FOR ELEM IN GC-DAEMON-QUEUE
+					    MINIMIZE (FOURTH ELEM)))
+      (SETQ GC-DAEMON-REGION-CONS-ALARM 37777777
+	    GC-DAEMON-PAGE-CONS-ALARM 37777777))      
+  (SET-PROCESS-WAIT CURRENT-PROCESS
+		    #'(LAMBDA ()
+			(OR ( %REGION-CONS-ALARM GC-DAEMON-REGION-CONS-ALARM)
+			    ( %PAGE-CONS-ALARM GC-DAEMON-PAGE-CONS-ALARM)))
+		    NIL)
+  (SETF (PROCESS-WHOSTATE CURRENT-PROCESS) "GC Daemon"))
+
+(DEFUN START-GC-DAEMON ()
+  (OR (BOUNDP 'GC-DAEMON-PROCESS)
+      (SETQ GC-DAEMON-PROCESS (MAKE-PROCESS "GC Daemon"
+				':SIMPLE-P T
+				':WARM-BOOT-ACTION 'GC-DAEMON-RESTART)))
+  (FUNCALL GC-DAEMON-PROCESS ':PRESET 'GC-DAEMON-FUNCTION)
+  (FUNCALL GC-DAEMON-PROCESS ':RUN-REASON 'START-GC-DAEMON))
+
+(DEFUN GC-DAEMON-RESTART (P)
+  ;; %REGION-CONS-ALARM and %PAGE-CONS-ALARM have changed unpredictably
+  ;; so schedule all gc-daemons to go off almost immediately
+  (DOLIST (ELEM GC-DAEMON-QUEUE)
+    (GC-DAEMON-QUEUE (FIRST ELEM) (SECOND ELEM) 1 1 ELEM))
+  (PROCESS-WARM-BOOT-DELAYED-RESTART P))
+
+(START-GC-DAEMON)
+
+;;; GC-daemon which watches for exhaustion of address space
+
+;;; Controlling parameters:
+;;; Amount of free space at which to start complaining, fraction by which to go down
+(DEFCONST ADDRESS-SPACE-WARNING-LOW-WORDS 1000000.)
+(DEFCONST ADDRESS-SPACE-WARNING-LOW-REGIONS 50.)
+(DEFCONST ADDRESS-SPACE-WARNING-WORDS-RATIO 0.75)
+(DEFCONST ADDRESS-SPACE-WARNING-REGIONS-RATIO 0.75)
+;; These two are where it last notified the user
+(DEFVAR ADDRESS-SPACE-WARNING-WORDS NIL)
+(DEFVAR ADDRESS-SPACE-WARNING-REGIONS NIL)
+
+(DEFUN ADDRESS-SPACE-WARNING (ELEM &AUX (COMPLAIN NIL))
+  ;; Is it time to complain?
+  (LET ((FREE-WORDS (GET-FREE-SPACE-SIZE))
+	(FREE-REGIONS
+	  (LOOP FOR REGION = (SYSTEM-COMMUNICATION-AREA %SYS-COM-FREE-REGION#-LIST)
+			   THEN (REGION-LIST-THREAD REGION)
+		UNTIL (MINUSP REGION)
+		COUNT T)))
+    (COND ((AND ( FREE-WORDS ADDRESS-SPACE-WARNING-LOW-WORDS)
+		( FREE-REGIONS ADDRESS-SPACE-WARNING-LOW-REGIONS))
+	   ;; No need to complain at all, reset everything
+	   (SETQ ADDRESS-SPACE-WARNING-WORDS ADDRESS-SPACE-WARNING-LOW-WORDS)
+	   (SETQ ADDRESS-SPACE-WARNING-REGIONS ADDRESS-SPACE-WARNING-LOW-REGIONS))
+	  ((OR (< FREE-WORDS
+		  (* ADDRESS-SPACE-WARNING-LOW-WORDS ADDRESS-SPACE-WARNING-WORDS-RATIO))
+	       (< FREE-REGIONS
+		  (* ADDRESS-SPACE-WARNING-LOW-REGIONS ADDRESS-SPACE-WARNING-REGIONS-RATIO)))
+	   ;; Time to complain again, space significantly lower than last time
+	   (SETQ COMPLAIN '<
+		 ADDRESS-SPACE-WARNING-WORDS FREE-WORDS
+		 ADDRESS-SPACE-WARNING-REGIONS FREE-REGIONS))
+	  ((AND (> FREE-REGIONS
+		   (// ADDRESS-SPACE-WARNING-LOW-REGIONS ADDRESS-SPACE-WARNING-REGIONS-RATIO))
+		(> FREE-WORDS
+		   (// ADDRESS-SPACE-WARNING-LOW-WORDS ADDRESS-SPACE-WARNING-WORDS-RATIO)))
+	   ;; Significantly more space than there was before, let user know
+	   (SETQ COMPLAIN '>
+		 ADDRESS-SPACE-WARNING-WORDS FREE-WORDS
+		 ADDRESS-SPACE-WARNING-REGIONS FREE-REGIONS)))
+    ;; Re-queue self
+    (GC-DAEMON-QUEUE 'ADDRESS-SPACE-WARNING 'ADDRESS-SPACE-WARNING
+		     (FIX (* FREE-REGIONS (- 1 ADDRESS-SPACE-WARNING-REGIONS-RATIO)))
+		     (FIX (* (// FREE-WORDS PAGE-SIZE)
+			     (- 1 ADDRESS-SPACE-WARNING-WORDS-RATIO)))
+		     ELEM)
+    ;; If suppose to complain, do so
+    (AND COMPLAIN
+	 (TV:NOTIFY NIL "~:[Address space low!  ~]You have ~D regions and ~
+				      ~DK words of address space left"
+		    (EQ COMPLAIN '>) FREE-REGIONS (// FREE-WORDS 1024.)))))
+
+;; Start
+(GC-DAEMON-QUEUE 'ADDRESS-SPACE-WARNING 'ADDRESS-SPACE-WARNING 0 0)
 
 ;;; Peek display
 

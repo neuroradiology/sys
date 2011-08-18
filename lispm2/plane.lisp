@@ -32,6 +32,13 @@
 (DEFMACRO PLANE-DEFAULT (PLANE) `(ARRAY-LEADER ,PLANE 1))
 (DEFMACRO PLANE-EXTENSION (PLANE) `(ARRAY-LEADER ,PLANE 2))
 
+(DEFUN PLANE-AREF (PLANE &REST POINT)
+    (PLANE-REF PLANE POINT))
+
+(DEFUN PLANE-ASET (DATUM PLANE &REST POINT)
+    (PLANE-STORE DATUM PLANE POINT))
+
+;Old names
 (DEFUN PLANE-AR-N (PLANE &REST POINT)
     (PLANE-REF PLANE POINT))
 
@@ -93,23 +100,30 @@
 	      (STRUCTURE-FORWARD PLANE NEW-PLANE)))
        PLANE)
 
-;Make a new plane, for the user.  Specify the array type, the number of dimensions,
-;and the default element.
-(DEFUN MAKE-PLANE (TYPE RANK DEFAULT &OPTIONAL (EXTENSION 32.) &AUX SIZE ORIGIN)
-  ;; SIZE gets a list of 1's, as many as there are dimensions.
-  (SETQ SIZE (MAKE-LIST DEFAULT-CONS-AREA RANK))
-  (DO L SIZE (CDR L) (NULL L)
-    (SETF (CAR L) 1))
-  ;; ORIGIN gets a similar list of zeros.
-  (SETQ ORIGIN (MAKE-LIST DEFAULT-CONS-AREA RANK))
-  (DO L ORIGIN (CDR L) (NULL L)
-    (SETF (CAR L) 0))
-  (MAKE-PLANE-INTERNAL TYPE SIZE ORIGIN DEFAULT EXTENSION))
+;Make a new plane, for the user.  Specify the number of dimensions,
+;and optionally the array type, default value, and extension.
+(DEFUN MAKE-PLANE (RANK &REST OPTIONS)
+  (CHECK-ARG RANK FIXP "a fixnum")
+  (LET ((TYPE 'ART-Q)
+	(DEFAULT-VALUE NIL)
+	(EXTENSION 32.))
+    (LOOP FOR (NAME VALUE) ON OPTIONS BY #'CDDR
+	  DO (SELECTQ NAME
+	       (:TYPE (SETQ TYPE VALUE))
+	       (:DEFAULT-VALUE (SETQ DEFAULT-VALUE VALUE))
+	       (:EXTENSION (SETQ EXTENSION VALUE))))
+    (MAKE-PLANE-INTERNAL TYPE
+			 ;; SIZE is a list of 1's, as many as there are dimensions.
+			 (MAKE-LIST RANK ':INITIAL-VALUE 1)
+			 ;; ORIGIN gets a similar list of zeroes.
+			 (MAKE-LIST RANK ':INITIAL-VALUE 0)
+			 DEFAULT-VALUE
+			 EXTENSION)))
 
 ;Create a new plane of specified type (an array type) and default value,
 ;with a specified region in actual existence.
 (DEFUN MAKE-PLANE-INTERNAL (TYPE SIZE ORIGIN DEFAULT EXTENSION &AUX PLANE INDEX)
-       (SETQ PLANE (MAKE-ARRAY NIL TYPE SIZE NIL 3))
+       (SETQ PLANE (MAKE-ARRAY SIZE ':TYPE TYPE ':LEADER-LENGTH 3))
        (SETF (PLANE-DEFAULT PLANE) DEFAULT)
        (SETF (PLANE-ORIGIN PLANE) ORIGIN)
        (SETF (PLANE-EXTENSION PLANE) EXTENSION)

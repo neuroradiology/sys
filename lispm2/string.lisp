@@ -1,4 +1,4 @@
-;-*-LISP-*-
+;-*- Mode:LISP; Package:SI; Base:8 -*-
 
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
@@ -38,9 +38,11 @@
 ;(STRING-DOWNCASE string) returns string copied and converted to all lower case.
 ;(CHAR-UPCASE char) returns the character converted to upper case.
 ;(CHAR-DOWNCASE char) returns the character converted to lower case.
+;(STRING-COMPARE s1 s2 &optional (from1 0) (from2 0) to1 to2)
 ;(STRING-LESSP s1 s2) says whether s1 is less than s2, in dictionary ordering.
 ;(ARRAY-TYPE array) returns the type of an array, as a symbol (eg, ART-STRING).
 ;(SUBSTRING-AFTER-CHAR char string) "" if char not in string.
+;(STRING-PLURALIZE string) returns plural of word in string.
 
 ;SUBSTRING and NSUBSTRING take an optional area argument.
 
@@ -66,6 +68,22 @@
       (DEFPROP STRING (STRING) Q-LAMBDA-LIST)))
 
 
+;; This macro is used by string-searching functions to coerce the string args.
+(DEFMACRO COERCE-STRING-SEARCH-ARG (ARG-NAME)
+  `(OR (FIXNUM-ARRAYP ,ARG-NAME)
+       (SETQ ,ARG-NAME (STRING ,ARG-NAME))))
+
+(DEFUN FIXNUM-ARRAYP (STRING)
+  (AND (ARRAYP STRING)
+       (MEMQ (ARRAY-TYPE STRING)
+	     '(ART-STRING ART-FAT-STRING ART-HALF-FIX
+			  ART-32B ART-16B ART-8B ART-4B ART-2B ART-1B))))
+
+;; This macro to coerce string arguments to other string functions.
+(DEFMACRO COERCE-STRING-ARG (ARG-NAME)
+  `(OR (STRINGP ,ARG-NAME)
+       (SETQ ,ARG-NAME (STRING ,ARG-NAME))))
+
 ; STRING-APPEND concatenates any number of strings.
 ; It will copy a single string.  Numbers and symbols are coerced.
 ; Actually, it will concatenate any type of arrays, making the result the same
@@ -74,15 +92,14 @@
 (DEFUN STRING-APPEND (&REST STRINGS &AUX (LENGTH 0) STRING COERCED (I 0))
     (DOLIST (S STRINGS)
       (SETQ LENGTH (+ LENGTH (STRING-LENGTH S))))
-    (SETQ STRING (MAKE-ARRAY NIL
-			     (IF (ARRAYP (CAR STRINGS)) (ARRAY-TYPE (CAR STRINGS))
-				 'ART-STRING)
-			     LENGTH))
+    (SETQ STRING (MAKE-ARRAY LENGTH
+			     ':TYPE (IF (ARRAYP (CAR STRINGS)) (ARRAY-TYPE (CAR STRINGS))
+					'ART-STRING)))
     (DOLIST (S STRINGS)
       (COND ((NUMBERP S)
 	     (ASET S STRING I)
 	     (SETQ I (1+ I)))
-	    (T (SETQ COERCED (STRING S))
+	    (T (SETQ COERCED (IF (STRINGP S) S (STRING S)))
 	       (COPY-ARRAY-PORTION COERCED 0 (SETQ LENGTH (ARRAY-ACTIVE-LENGTH COERCED))
 				   STRING I (SETQ I (+ I LENGTH))))))
     STRING)
@@ -102,7 +119,7 @@
 	   (ARRAY-PUSH MUNG STR2)
 	   (SETQ LEN (1+ LEN)))
 	  (T
-	   (SETQ STR2 (STRING STR2) S2LEN (ARRAY-ACTIVE-LENGTH STR2))
+	   (SETQ STR2 (IF (STRINGP STR2) STR2 (STRING STR2)) S2LEN (ARRAY-ACTIVE-LENGTH STR2))
 	   (COPY-ARRAY-PORTION STR2 0 S2LEN MUNG LEN (SETQ LEN (+ LEN S2LEN)))
 	   (STORE-ARRAY-LEADER LEN MUNG 0))))
   MUNG)
@@ -117,100 +134,102 @@
 ;  original array.
 
 (DEFUN NSUBSTRING (STRING FROM &OPTIONAL TO (AREA NIL)
-			  &AUX LENGTH ARRAYTYPE)
-       (SETQ STRING (STRING STRING))
-       (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
-       (SETQ LENGTH (- TO FROM))
-       (OR (AND (>= LENGTH 0) (>= FROM 0) (<= TO (ARRAY-ACTIVE-LENGTH STRING)))
-	   (FERROR NIL "Args ~S and ~S out of range for ~S" FROM TO STRING))
-       (SETQ ARRAYTYPE (ARRAY-TYPE STRING))
-       (COND ((NOT (ARRAY-INDEXED-P STRING))
-	      (MAKE-ARRAY AREA ARRAYTYPE
-			  LENGTH			;ARRAY LENGTH
-			  STRING			;DISPLACED
-			  NIL				;NO LEADER
-			  FROM))			;INDEX OFFSET
-	     ;; OTHERWISE, PROBABLY A SUBSTRING OF A SUBSTRING
-	     (T
-	      (MAKE-ARRAY AREA ARRAYTYPE
-			  LENGTH			;ARRAY LENGTH
-			  (%P-CONTENTS-OFFSET STRING 1)	;POINT TO ARRAY POINTED
-							;TO ORIGINALLY
-			  NIL				;NO LEADER
-			  (+ FROM
-			     (%P-CONTENTS-OFFSET STRING 3))))))
+		   &AUX LENGTH ARRAYTYPE)
+  (COERCE-STRING-ARG STRING)
+  (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
+  (SETQ LENGTH (- TO FROM))
+  (OR (AND (>= LENGTH 0) (>= FROM 0) (<= TO (ARRAY-ACTIVE-LENGTH STRING)))
+      (FERROR NIL "Args ~S and ~S out of range for ~S" FROM TO STRING))
+  (SETQ ARRAYTYPE (ARRAY-TYPE STRING))
+  (COND ((NOT (ARRAY-INDEXED-P STRING))
+	 (MAKE-ARRAY LENGTH
+		     ':AREA AREA ':TYPE ARRAYTYPE
+		     ':DISPLACED-TO STRING	;DISPLACED
+		     ':DISPLACED-INDEX-OFFSET FROM))	;INDEX OFFSET
+	;; OTHERWISE, PROBABLY A SUBSTRING OF A SUBSTRING
+	(T
+	 (MAKE-ARRAY LENGTH
+		     ':AREA AREA ':TYPE ARRAYTYPE
+		     ':DISPLACED-TO (%P-CONTENTS-OFFSET STRING 1)
+						;POINT TO ARRAY POINTED TO ORIGINALLY
+		     ':DISPLACED-INDEX-OFFSET
+		     (+ FROM (%P-CONTENTS-OFFSET STRING 3))))))
 
 ;SUBSTRING copies out an arbitrary substring of a given string.
 (DEFUN SUBSTRING (STRING FROM &OPTIONAL TO (AREA NIL))
   ;Nice and modular but conses up the wazoo
   ;(STRING-APPEND (NSUBSTRING STRING FROM TO))
-  (SETQ STRING (STRING STRING))
+  (COERCE-STRING-ARG STRING)
   (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
   (OR (AND (>= TO FROM) (>= FROM 0) (<= TO (ARRAY-ACTIVE-LENGTH STRING)))
       (FERROR NIL "Args ~S and ~S out of range for ~S" FROM TO STRING))
-  (LET ((RES (MAKE-ARRAY AREA (ARRAY-TYPE STRING) (- TO FROM))))
+  (LET ((RES (MAKE-ARRAY (- TO FROM) ':AREA AREA ':TYPE (ARRAY-TYPE STRING))))
     (COPY-ARRAY-PORTION STRING FROM TO
 			RES 0 (ARRAY-LENGTH RES))
     RES))
 
 (DEFUN SUBSTRING-AFTER-CHAR (CHAR STRING &OPTIONAL (AREA NIL))
-       (LET ((IDX (STRING-SEARCH-CHAR CHAR STRING)))
-	 (COND ((NULL IDX) "")
-	       (T (SUBSTRING STRING (1+ IDX) NIL AREA)))))
+  (LET ((IDX (STRING-SEARCH-CHAR CHAR STRING)))
+    (COND ((NULL IDX) "")
+	  (T (SUBSTRING STRING (1+ IDX) NIL AREA)))))
 
 ;STRING-LENGTH returns the length in characters of a given string.
 (DEFUN STRING-LENGTH (STRING)
-       (COND ((ARRAYP STRING) (ARRAY-ACTIVE-LENGTH STRING))
-	     ((NUMBERP STRING) 1)
-	     (T (ARRAY-ACTIVE-LENGTH (GET-PNAME STRING)))))
+  (COND ((ARRAYP STRING) (ARRAY-ACTIVE-LENGTH STRING))
+	((NUMBERP STRING) 1)
+	((SYMBOLP STRING) (ARRAY-ACTIVE-LENGTH (GET-PNAME STRING)))
+	(T (FERROR NIL "Cannot coerce ~S into a string." STRING))))
 
 ;RETURN SYMBOLIC NAME FOR THE TYPE OF A GIVEN ARRAY, TO MAKE MAKE-ARRAY HAPPY
 ;MAKE-ARRAY DOESN'T CARE, BUT USERS MAY WANT TO KNOW THE SYMBOLIC TYPE.
 (DEFUN ARRAY-TYPE (ARRAY)
+  (CHECK-ARG ARRAY ARRAYP "an array")
   (NTH (%P-LDB-OFFSET %%ARRAY-TYPE-FIELD ARRAY 0) ARRAY-TYPES))
 
 ;STRING-SEARCH-CHAR returns the index in STRING of the first occurrence of CHAR past FROM.
 ;Uses microcode assist now
 (DEFUN STRING-SEARCH-CHAR (CHAR STRING &OPTIONAL (FROM 0) TO)
-  (OR (STRINGP STRING) (SETQ STRING (STRING STRING)))
+  (COERCE-STRING-SEARCH-ARG STRING)
   (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
   (%STRING-SEARCH-CHAR CHAR STRING FROM TO))
 
 (DEFUN STRING-REVERSE-SEARCH-CHAR (CHAR STRING &OPTIONAL FROM (TO 0))
-       (SETQ STRING (STRING STRING))
-       (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I (1- FROM) (1- I)))
-	   ((< I TO) NIL)
-	   (AND (CHAR-EQUAL CHAR (AREF STRING I))
-		(RETURN I))))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I (1- FROM) (1- I)))
+      ((< I TO) NIL)
+    (AND (CHAR-EQUAL CHAR (AREF STRING I))
+	 (RETURN I))))
 
 ;STRING-SEARCH-NOT-CHAR returns the index in STRING of the first occurrence of
 ;  a character other than CHAR past FROM.
 (DEFUN STRING-SEARCH-NOT-CHAR (CHAR STRING &OPTIONAL (FROM 0) TO)
-       (SETQ STRING (STRING STRING))
-       (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I FROM (1+ I)))
-	   ((>= I TO) NIL)
-	   (OR (CHAR-EQUAL CHAR (AREF STRING I))
-               (RETURN I))))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I FROM (1+ I)))
+      ((>= I TO) NIL)
+    (OR (CHAR-EQUAL CHAR (AREF STRING I))
+	(RETURN I))))
 
 (DEFUN STRING-REVERSE-SEARCH-NOT-CHAR (CHAR STRING &OPTIONAL FROM (TO 0))
-       (SETQ STRING (STRING STRING))
-       (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I (1- FROM) (1- I)))
-	   ((< I TO) NIL)
-	   (OR (CHAR-EQUAL CHAR (AREF STRING I))
-               (RETURN I))))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I (1- FROM) (1- I)))
+      ((< I TO) NIL)
+    (OR (CHAR-EQUAL CHAR (AREF STRING I))
+	(RETURN I))))
 
 ;(STRING-SEARCH <key> <string> <from>) returns the index in <string> of the
 ;first occurrence of <key> past index <from>, or NIL if there is none.
 ;Uses microcode assist
 (DEFUN STRING-SEARCH (KEY STRING &OPTIONAL (FROM 0) TO &AUX KEY-LEN)
-  (SETQ STRING (STRING STRING) KEY (STRING KEY))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (COERCE-STRING-ARG KEY)			;??
   (SETQ KEY-LEN (ARRAY-ACTIVE-LENGTH KEY))
-  (COND ((ZEROP KEY-LEN) FROM)
+  (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
+  (COND ((ZEROP KEY-LEN)
+	 (AND ( FROM TO) FROM))
 	(T
-	 (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
 	 (SETQ TO (1+ (- TO KEY-LEN)))  ;Last position at which key may start +1
 	 (PROG (CH1)
 	   (COND ((MINUSP TO) (RETURN NIL)))
@@ -227,19 +246,20 @@
 ;last occurrence of <key> ending before index <from>, or NIL if there is none.
 ;Uses microcode assist
 (DEFUN STRING-REVERSE-SEARCH (KEY STRING &OPTIONAL FROM (TO 0) &AUX KEY-LEN)
-       (SETQ STRING (STRING STRING) KEY (STRING KEY))
-       (SETQ KEY-LEN (ARRAY-ACTIVE-LENGTH KEY))
-       (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
-       (SETQ TO (+ TO (1- KEY-LEN)))  ;First position at which last char of key may be
-       (COND ((ZEROP KEY-LEN) FROM)
-	     (T
-	      (DO ((N (1- FROM) (1- N))
-		   (CH1 (AREF KEY (1- KEY-LEN))))
-		  ((< N TO) NIL)
-		  (AND (CHAR-EQUAL (AREF STRING N) CH1)
-		       (%STRING-EQUAL KEY 0 STRING (1+ (- N KEY-LEN)) KEY-LEN)
-		       (RETURN (1+ (- N KEY-LEN)))))
-	      )))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (COERCE-STRING-ARG KEY)		;??
+  (SETQ KEY-LEN (ARRAY-ACTIVE-LENGTH KEY))
+  (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
+  (SETQ TO (+ TO (1- KEY-LEN)))		;First position at which last char of key may be
+  (COND ((ZEROP KEY-LEN) FROM)
+	(T
+	 (DO ((N (1- FROM) (1- N))
+	      (CH1 (AREF KEY (1- KEY-LEN))))
+	     ((< N TO) NIL)
+	   (AND (CHAR-EQUAL (AREF STRING N) CH1)
+		(%STRING-EQUAL KEY 0 STRING (1+ (- N KEY-LEN)) KEY-LEN)
+		(RETURN (1+ (- N KEY-LEN)))))
+	 )))
 
 ;Return a copy of our argument, converted to all upper-case.
 ;Any bits in the characters, above the %%CH-CHAR part are ignored and not changed.
@@ -290,102 +310,152 @@
 ;Reverse the characters in a string, in place.
 (DEFUN STRING-NREVERSE (STRING &AUX LEN)
   (COND ((NUMBERP STRING) STRING)
-	(T (SETQ STRING (STRING STRING))
-	   (SETQ LEN (ARRAY-ACTIVE-LENGTH STRING))
-	   (DO ((I 0 (1+ I))
-		(J (1- LEN) (1- J))
-		(CHAR))
-	       ((< J I))
-	     (SETQ CHAR (AREF STRING I))
-	     (ASET (AREF STRING J) STRING I)
-	     (ASET CHAR STRING J))
-	   STRING)))
+	(T ;; Special treatment to avoid munging symbols
+	 (IF (AND (SYMBOLP STRING)
+		  (CDR (PACKAGE-CELL-LOCATION STRING)))
+	     (FERROR NIL "Illegal to mung the PNAME of an interned symbol.")
+	     (COERCE-STRING-ARG STRING))
+	 (SETQ LEN (ARRAY-ACTIVE-LENGTH STRING))
+	 (DO ((I 0 (1+ I))
+	      (J (1- LEN) (1- J))
+	      (CHAR))
+	     ((< J I))
+	   (SETQ CHAR (AREF STRING I))
+	   (ASET (AREF STRING J) STRING I)
+	   (ASET CHAR STRING J))
+	 STRING)))
 
 ;Make a reversed copy of a string
 (DEFUN STRING-REVERSE (STRING)
-       (STRING-NREVERSE (STRING-APPEND STRING)))
+  (STRING-NREVERSE (STRING-APPEND STRING)))
 
-;STRING-SEARCH-SET returns the index in STRING of the first char which belongs to CHAR-LIST,
+;Internal function.
+(DEFUN ARRAY-MEM (FUNCTION ITEM ARRAY)
+  (DOTIMES (I (ARRAY-ACTIVE-LENGTH ARRAY))
+    (IF (FUNCALL FUNCTION ITEM (AREF ARRAY I))
+	(RETURN T))))
+
+;STRING-SEARCH-SET returns the index in STRING of the first char which belongs to CHAR-SET,
 ;or NIL if there is none.
-(DEFUN STRING-SEARCH-SET (CHAR-LIST STRING &OPTIONAL (FROM 0) TO)
-       (SETQ STRING (STRING STRING))
-       (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I FROM (1+ I)))
-	   ((>= I TO) NIL)
-	   (AND (MEM #'CHAR-EQUAL (AREF STRING I) CHAR-LIST)
-		(RETURN I))))
+(DEFUN STRING-SEARCH-SET (CHAR-SET STRING &OPTIONAL (FROM 0) TO)
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I FROM (1+ I))
+       (STRINGP (STRINGP CHAR-SET)))
+      ((>= I TO) NIL)
+    (AND (FUNCALL (IF STRINGP #'ARRAY-MEM #'MEM) #'CHAR-EQUAL (AREF STRING I) CHAR-SET)
+	 (RETURN I))))
 
 ;STRING-REVERSE-SEARCH-SET returns the index in STRING 
-;of the char AFTER the last char which belongs to CHAR-LIST, or NIL if there is none.
-(DEFUN STRING-REVERSE-SEARCH-SET (CHAR-LIST STRING &OPTIONAL FROM (TO 0))
-       (SETQ STRING (STRING STRING))
-       (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I (1- FROM) (1- I)))
-	   ((< I TO) NIL)
-	   (AND (MEM #'CHAR-EQUAL (AREF STRING I) CHAR-LIST)
-		(RETURN (1+ I)))))
+;of the last char which belongs to CHAR-SET, or NIL if there is none.
+(DEFUN STRING-REVERSE-SEARCH-SET (CHAR-SET STRING &OPTIONAL FROM (TO 0))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I (1- FROM) (1- I))
+       (STRINGP (STRINGP CHAR-SET)))
+      ((< I TO) NIL)
+    (AND (FUNCALL (IF STRINGP #'ARRAY-MEM #'MEM) #'CHAR-EQUAL (AREF STRING I) CHAR-SET)
+	 (RETURN I))))
 
-;STRING-SEARCH-NOT-SET returns the index in STRING of the first char not in CHAR-LIST,
+;STRING-SEARCH-NOT-SET returns the index in STRING of the first char not in CHAR-SET,
 ;or NIL if there is none.
-(DEFUN STRING-SEARCH-NOT-SET (CHAR-LIST STRING &OPTIONAL (FROM 0) TO)
-       (SETQ STRING (STRING STRING))
-       (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I FROM (1+ I)))
-	   ((>= I TO) NIL)
-	   (OR (MEM #'CHAR-EQUAL (AREF STRING I) CHAR-LIST)
-	       (RETURN I))))
+(DEFUN STRING-SEARCH-NOT-SET (CHAR-SET STRING &OPTIONAL (FROM 0) TO)
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR TO (SETQ TO (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I FROM (1+ I))
+       (STRINGP (STRINGP CHAR-SET)))
+      ((>= I TO) NIL)
+    (OR (FUNCALL (IF STRINGP #'ARRAY-MEM #'MEM) #'CHAR-EQUAL (AREF STRING I) CHAR-SET)
+	(RETURN I))))
 
 ;STRING-REVERSE-SEARCH-NOT-SET returns the index in STRING 
-;of the char AFTER the last char not in CHAR-LIST, or NIL if there is none.
-(DEFUN STRING-REVERSE-SEARCH-NOT-SET (CHAR-LIST STRING &OPTIONAL FROM (TO 0))
-       (SETQ STRING (STRING STRING))
-       (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
-       (DO ((I (1- FROM) (1- I)))
-	   ((< I TO) NIL)
-	   (OR (MEM #'CHAR-EQUAL (AREF STRING I) CHAR-LIST)
-	       (RETURN (1+ I)))))
+;of the last char not in CHAR-SET, or NIL if there is none.
+(DEFUN STRING-REVERSE-SEARCH-NOT-SET (CHAR-SET STRING &OPTIONAL FROM (TO 0))
+  (COERCE-STRING-SEARCH-ARG STRING)
+  (OR FROM (SETQ FROM (ARRAY-ACTIVE-LENGTH STRING)))
+  (DO ((I (1- FROM) (1- I))
+       (STRINGP (STRINGP CHAR-SET)))
+      ((< I TO) NIL)
+    (OR (FUNCALL (IF STRINGP #'ARRAY-MEM #'MEM) #'CHAR-EQUAL (AREF STRING I) CHAR-SET)
+	(RETURN I))))
 
-;Strip off the beginning and end of STRING all characters in CHAR-LIST.
-(DEFUN STRING-TRIM (CHAR-LIST STRING &AUX I J)
-       (SETQ I (STRING-SEARCH-NOT-SET CHAR-LIST STRING))
-       (SETQ J (STRING-REVERSE-SEARCH-NOT-SET CHAR-LIST STRING))
-       (COND (I (SUBSTRING STRING I J))
-	     (T "")))
+;Strip off the beginning and end of STRING all characters in CHAR-SET.
+(DEFUN STRING-TRIM (CHAR-SET STRING &AUX I J)
+  (SETQ I (STRING-SEARCH-NOT-SET CHAR-SET STRING))
+  (COND ((NULL I) "")
+	(T (SETQ J (STRING-REVERSE-SEARCH-NOT-SET CHAR-SET STRING))
+	   (SUBSTRING STRING I (1+ J)))))
 
-;Strip off the beginning of STRING all characters in CHAR-LIST.
-(DEFUN STRING-LEFT-TRIM (CHAR-LIST STRING &AUX I)
-    (SETQ I (STRING-SEARCH-NOT-SET CHAR-LIST STRING))
+;Strip off the beginning of STRING all characters in CHAR-SET.
+(DEFUN STRING-LEFT-TRIM (CHAR-SET STRING &AUX I)
+    (SETQ I (STRING-SEARCH-NOT-SET CHAR-SET STRING))
     (COND (I (SUBSTRING STRING I (STRING-LENGTH STRING)))
 	  (T "")))
 
-;Strip off the end of STRING all characters in CHAR-LIST.
-(DEFUN STRING-RIGHT-TRIM (CHAR-LIST STRING &AUX I)
-    (SETQ I (STRING-REVERSE-SEARCH-NOT-SET CHAR-LIST STRING))
-    (COND (I (SUBSTRING STRING 0 I))
+;Strip off the end of STRING all characters in CHAR-SET.
+(DEFUN STRING-RIGHT-TRIM (CHAR-SET STRING &AUX I)
+    (SETQ I (STRING-REVERSE-SEARCH-NOT-SET CHAR-SET STRING))
+    (COND (I (SUBSTRING STRING 0 (1+ I)))
 	  (T "")))
 
 ;Compare two strings using dictionary order.
-(DEFUN STRING-LESSP (S1 S2)
-    (PROG (IDX1 IDX2 LEN1 LEN2 CH1 CH2)
-	  (SETQ S1 (STRING S1)
-		S2 (STRING S2)
-		LEN1 (ARRAY-ACTIVE-LENGTH S1)
-		LEN2 (ARRAY-ACTIVE-LENGTH S2)
-		IDX1 0
-		IDX2 0)
-     LOOP (AND (= IDX1 LEN1)
-	       (RETURN (< IDX2 LEN2)))
-	  (AND (= IDX2 LEN2)
-	       (RETURN NIL))
-	  (SETQ CH1 (AREF S1 IDX1)
-		CH2 (AREF S2 IDX2))
-	  (AND (CHAR-LESSP CH2 CH1)
-	       (RETURN NIL))
-	  (AND (CHAR-LESSP CH1 CH2)
-	       (RETURN T))
-	  (SETQ IDX1 (1+ IDX1)
-		IDX2 (1+ IDX2))
-	  (GO LOOP)))
+;This should be microcoded.
+(DEFUN STRING-COMPARE (STR1 STR2 &OPTIONAL (IDX1 0) (IDX2 0) LIM1 LIM2)
+  "Compares the two substrings in dictionary order.
+   Returns a positive number if STR1>STR2
+   Returns zero if STR1=STR2
+   Returns a negative number if STR1<STR2
+   If the strings are not equal, the absolute value of the number returned is
+   one more than the index (in STR1) at which the difference occured."
+  (COERCE-STRING-ARG STR1)
+  (COERCE-STRING-ARG STR2)
+  (OR LIM1 (SETQ LIM1 (ARRAY-ACTIVE-LENGTH STR1)))
+  (OR LIM2 (SETQ LIM2 (ARRAY-ACTIVE-LENGTH STR2)))
+  (PROG ()
+     L  (AND ( IDX1 LIM1)
+	     (RETURN (IF (< IDX2 LIM2) (MINUS (1+ IDX1)) 0)))
+	(AND ( IDX2 LIM2)
+	     (RETURN 1))
+	(COND ((CHAR-EQUAL (AREF STR1 IDX1) (AREF STR2 IDX2))
+	       (SETQ IDX1 (1+ IDX1) IDX2 (1+ IDX2))
+	       (GO L)))
+	(AND (CHAR-LESSP (AREF STR1 IDX1) (AREF STR2 IDX2))
+	     (RETURN (MINUS (1+ IDX1))))
+	(RETURN (1+ IDX1))))
+
+(DEFUN STRING-LESSP (STR1 STR2)
+  (MINUSP (STRING-COMPARE STR1 STR2)))
+
+;Return the plural of the word supplied as argument.
+;Attempts to preserve the case-pattern of the word.
+(defun string-pluralize (string)
+  (let* (flush add
+	 (last-char-raw (aref string (1- (string-length string))))
+	 (last-char (char-upcase last-char-raw))
+	 (last-char-lc-flag ( last-char last-char-raw))
+	 (penult-char (char-upcase (if (> (string-length string) 1)
+				       (aref string (- (string-length string) 2))
+				       0)))
+	 (last-3 (substring string (max 0 (- (string-length string) 3)))))
+    (cond ((and (char-equal last-char #/Y)
+		(not (memq penult-char '(#/A #/E #/I #/O #/U))))
+	   (setq flush 1 add "ies"))
+	  ((or (string-equal string "ox") (string-equal string "vax"))
+	   (setq add "en"))
+	  ((or (and (= last-char #/H)
+		    (memq penult-char '(#/C #/S)))
+	       (memq last-char '(#/S #/Z #/X)))
+	   (setq add "es"))
+	  ((string-equal last-3 "man")
+	   (setq flush 2 add "en"))
+	  ((string-equal last-3 "ife")
+	   (setq flush 2 add "ves"))
+	  (t (setq add "s")))
+    (and flush (setq string (substring string 0 (- (string-length string) flush))))
+    (cond (add (string-append string
+			      (cond (last-char-lc-flag add)
+				    (t (string-upcase add)))))
+	  (t string))))
 
 ;(WITH-INPUT-FROM-STRING (var string &optional index limit)
 ;   body)
@@ -405,7 +475,7 @@
 ;to use both var's inside the inner one.
 ;Multiple values are returned from body only if there is no index.
 
-(DEFMACRO WITH-INPUT-FROM-STRING ((VAR STRING INDEX LIMIT) . BODY)
+(DEFMACRO WITH-INPUT-FROM-STRING ((VAR STRING INDEX LIMIT) &BODY BODY)
   `(LET ((,VAR #'WITH-INPUT-FROM-STRING-INTERNAL-FUNCTION)
 	 (WITH-INPUT-FROM-STRING-INTERNAL-STRING ,STRING)
 	 (WITH-INPUT-FROM-STRING-INTERNAL-INDEX ,(OR INDEX 0))
@@ -462,11 +532,14 @@
 ;to use both var's inside the inner one.
 ;Multiple values are never returned.
 
-(DEFMACRO WITH-OUTPUT-TO-STRING ((VAR STRING INDEX) . BODY)
-  `(LET ((,VAR #'WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION)
-	 (WITH-OUTPUT-TO-STRING-INTERNAL-STRING
-		,(OR STRING `(MAKE-ARRAY NIL 'ART-STRING 100)))
-	 (WITH-OUTPUT-TO-STRING-INTERNAL-INDEX ,(OR INDEX 0)))
+(DEFMACRO WITH-OUTPUT-TO-STRING ((VAR STRING INDEX) &BODY BODY)
+  `(LET* ((WITH-OUTPUT-TO-STRING-INTERNAL-STRING
+		 ,(OR STRING `(MAKE-ARRAY NIL 'ART-STRING 100)))
+	  (WITH-OUTPUT-TO-STRING-INTERNAL-INDEX
+		 ,(COND (INDEX)
+			(STRING `(ARRAY-LEADER WITH-OUTPUT-TO-STRING-INTERNAL-STRING 0))
+			(T 0)))
+	  (,VAR #'WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION))
      (,(IF STRING 'PROG1 'PROGN) ;PROGN if have to return string as value
 	    (PROGN . ,BODY)
 	    ,(AND INDEX `(SETF ,INDEX WITH-OUTPUT-TO-STRING-INTERNAL-INDEX))
@@ -484,6 +557,8 @@
 
 (DEFUN WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION (OP &OPTIONAL ARG1 &REST REST)
   (SELECTQ OP
+    (:WHICH-OPERATIONS '(:TYO :STRING-OUT :LINE-OUT :FRESH-LINE
+			 :INCREMENT-CURSORPOS :READ-CURSORPOS))
     (:TYO (OR (< WITH-OUTPUT-TO-STRING-INTERNAL-INDEX
 		 (ARRAY-LENGTH WITH-OUTPUT-TO-STRING-INTERNAL-STRING))
 	      (ADJUST-ARRAY-SIZE WITH-OUTPUT-TO-STRING-INTERNAL-STRING
@@ -508,9 +583,19 @@
     (:LINE-OUT (LEXPR-FUNCALL #'WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION
 			      ':STRING-OUT ARG1 REST)
 	       (WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION ':TYO #\CR))
-    (:WHICH-OPERATIONS '(:TYO :STRING-OUT :LINE-OUT))
+    (:FRESH-LINE (AND (PLUSP WITH-OUTPUT-TO-STRING-INTERNAL-INDEX)
+		      ( (AREF WITH-OUTPUT-TO-STRING-INTERNAL-STRING
+			       (1- WITH-OUTPUT-TO-STRING-INTERNAL-INDEX))
+			 #\CR)
+		      (WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION ':TYO #\CR)))
+    ;; These are excessively simple-minded (don't know about tabs) but will do for FORMAT
+    (:READ-CURSORPOS
+      (LOOP AS BEG = 0 THEN (1+ IDX)
+	    AS IDX = (%STRING-SEARCH-CHAR #\CR WITH-OUTPUT-TO-STRING-INTERNAL-STRING
+					  BEG WITH-OUTPUT-TO-STRING-INTERNAL-INDEX)
+	    UNTIL (NULL IDX)
+	    FINALLY (RETURN (- WITH-OUTPUT-TO-STRING-INTERNAL-INDEX BEG) 0)))
+    (:INCREMENT-CURSORPOS
+      (DOTIMES (I ARG1) (WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION ':TYO #\SP)))
     (OTHERWISE (STREAM-DEFAULT-HANDLER
 		  #'WITH-OUTPUT-TO-STRING-INTERNAL-FUNCTION OP ARG1 REST))))
-
-;;; This is used by the filesystem.  Included here since needed before FNUTIL loaded.
-(DEFUN NULL-S (X) (OR (NULL X) (AND (STRINGP X) (STRING-EQUAL X ""))))

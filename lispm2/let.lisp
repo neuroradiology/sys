@@ -18,7 +18,7 @@
 	    (tem))
 	   ((null pairs)
 	    (cond ((not (null vars))
-		   `((lambda ,vars . ,body) . ,let-macro-vals))
+		   `((lambda ,(reverse vars) . ,body) . ,(reverse let-macro-vals)))
 		  ((null (cdr body))
 		   (car body))
 		  (t `(progn . ,body))))

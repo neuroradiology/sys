@@ -1,114 +1,397 @@
-;-*- Mode:LISP; Package:System-Internals; Base:8; Lowercase:T -*-
+;;;   LOOP  -*- Mode:LISP; Package:System-Internals; Base:8; Lowercase:T -*-
+;;;   **********************************************************************
+;;;   ****** Universal ******** LOOP Iteration Macro ***********************
+;;;   **********************************************************************
+;;;   **** (C) COPYRIGHT 1980, 1981 MASSACHUSETTS INSTITUTE OF TECHNOLOGY **
+;;;   ******** THIS IS A READ-ONLY FILE! (ALL WRITES RESERVED) *************
+;;;   **********************************************************************
 
 ;The master copy of this file is on ML:LSB1;LOOP >
 ;The current Lisp machine copy is on AI:LISPM2;LOOP >
 ;The FASL and QFASL should also be accessible from LIBLSP; on all machines.
+;Duplicate source is usually also maintained on MC:LSB1;LOOP >
+
+; **********************************************************************
+; **********************************************************************
+; ********************* NOTE BLOODY GODDAMNED WELL *********************
+; **********************************************************************
+; ******* INCREMENTAL COMPILING OF THIS WILL GENERATE WRONG CODE *******
+; ******* UNLESS YOU FIRST DO THE 'FEATURE' STUFF BELOW STARTING *******
+; ******* WITH EVAL-WHEN.  IF YOU FORGET THIS YOU WILL REGRET IT. *****
+; **********************************************************************
+; **********************************************************************
 
 ; Bugs/complaints/suggestions/solicitations-for-documentation to BUG-LOOP
 ; at any ITS site.
 
 ;;;; LOOP Iteration Macro
 
+; Bootstrap up our basic primitive environment.
+; This includes backquote, sharpsign, defmacro, maybe let.
+
+(eval-when (eval compile)
+  (cond ((status feature Multics)
+	   (setq macros t) ; enable defmacro hackery
+	   (defun include-for-multics macro (x)
+	     (cons '%include (cdr x))))
+	('t (defun include-for-multics macro (x) ()))))
+
+(include-for-multics lisp_prelude)
+(include-for-multics lisp_dcls)
+
+; Now set up the readtime conditionalization environment.
+; This won't work in any compiler that reads the whole file before compiling anything.
+(eval-when (eval compile)
+    ; Set up losing compatibility crock to get around (status feature)
+    ; lossage in NIL.
+    #+NIL (progn
+	     (defmacro loop-featurep (f)
+	       `(featurep ',f target-features))
+	     (defmacro loop-nofeaturep (f)
+	       `(nofeaturep ',f target-features))
+	     (defmacro loop-set-feature (f)
+	       `(set-feature ',f target-features))
+	     (defmacro loop-set-nofeature (f)
+	       `(set-nofeature ',f target-features))
+	     )
+    #-NIL (progn
+	     (defmacro loop-featurep (f)
+	       `(status feature ,f))
+	     (defmacro loop-nofeaturep (f)
+	       ; Multics doesn't have (status nofeature)...
+	       `(not (status feature ,f)))
+	     (defmacro loop-set-feature (f)
+	       `(sstatus feature ,f))
+	     (defmacro loop-set-nofeature (f)
+	       ; Does this work on Multics???  I think not but we don't use.
+	       `(sstatus nofeature ,f))
+	     )
+    (cond ((loop-featurep NALOOP)
+	     ; NALOOP means we are compiling a LOOP which will produce
+	     ; code for real NIL but it won't be running in a real NIL.
+	     ; I guess i sort of assume that this implies we are being
+	     ; compiled in, and will run in, PDP10 Maclisp.
+	     ; Almost all of LOOP conditionalization is oriented towards
+	     ; the code generation.  Thus, if NALOOP, we will pretend
+	     ; we are aiming at a NIL.  This is OK since most of the
+	     ; Maclisp/NIL stuff is compatible anyway.
+	     (loop-set-feature For-NIL)
+	     (loop-set-nofeature For-Maclisp)
+	     (loop-set-nofeature For-PDP10)
+	     (loop-set-nofeature For-PDP-10)
+	     (loop-set-feature Run-in-Maclisp)
+	     (loop-set-feature Run-on-PDP10)
+	     (loop-set-nofeature Run-on-PDP-10))
+	  ((and (loop-featurep Maclisp) (loop-nofeaturep For-NIL))
+	     (loop-set-feature For-Maclisp)
+	     (loop-set-feature Run-In-Maclisp)
+	     (cond ((loop-nofeaturep Multics)
+		      (loop-set-feature For-PDP10)
+		      (loop-set-feature PDP10)
+		      (loop-set-feature Run-on-PDP10))))
+	  ((loop-featurep NIL)
+	     (loop-set-nofeature PDP10)
+	     (loop-set-nofeature PDP-10)
+	     (loop-set-nofeature Run-on-PDP10)
+	     (loop-set-nofeature For-PDP10)
+	     (loop-set-nofeature Run-on-PDP-10)
+	     (loop-set-nofeature For-PDP-10)))
+    (cond ((or (loop-featurep Lispm) (loop-featurep For-PDP10))
+	     (loop-set-feature Hairy-Collection))
+	  ('t (loop-set-nofeature Hairy-Collection)))
+    (cond ((or (loop-featurep For-NIL) (loop-featurep For-PDP10))
+	     (loop-set-feature System-Destructuring))
+	  ('t (loop-set-nofeature System-Destructuring)))
+    (cond ((loop-nofeaturep For-Maclisp)
+	     (loop-set-feature Named-PROGs))
+	  ('t (loop-set-nofeature Named-PROGs)))
+    ())
+
+; Following isn't needed on Lispm, as loop is installed there (ie, these
+; symbols are already in GLOBAL).
+#-(or Lispm Run-in-Maclisp)
+(globalize "LOOP"				; Major macro
+	   "LOOP-FINISH"			; Handy macro
+	   "DEFINE-LOOP-MACRO"
+	   "DEFINE-LOOP-PATH"			; for users to define paths
+	   "DEFINE-LOOP-SEQUENCE-PATH"		; this too
+	   )
+
+#-(or Lispm Multics)
+(herald LOOP /716)
+
+
 ; Set up some LISPM compatibility macros etc.
 ;     We use sharpsign to conditionalize code;  this means that the
-; conditionalized code must at least be able to READ in both Maclisp
-; and on the Lisp Machine. 
-;    For Maclisp, we also define a double-quote readmacro character;
-; this will turn into a QUOTED symbol, so don't use it inside constant
-; list structure!
-;    This code assumes the presence of FERROR and hence FORMAT.
+; conditionalized code must at least be able to READ in all implementations.
+; That means that you cannot use such things as 1.0s0 (small-flonum).
+;    We also assume the presence of a DEFMACRO.  Assumptions as to how
+; it decides whether the definition should appear in the fasl file are
+; carefully circumvented by judicious use of EVAL-WHEN, and with the
+; use of the following:
 
+#-Run-In-Maclisp
+(defmacro loop-macro-progn (&rest forms)
+    `(progn 'compile ,@forms))
+#+Run-In-Maclisp
+(eval-when (eval compile)
+    (defmacro loop-macro-progn (&rest forms)
+	`(eval-when (eval compile) ,@forms)))
 
-; Piece of Shit
-(declare
-    (cond ((status feature Multics)
-	     (load ">udd>Mathlab>Lisp>environment.lisp"))
-	  ((status feature Maclisp)
-	   (cond ((status macro /#)
-		    (princ '|/
-; No more need to load /"#/" into the compiler.|
-			   msgfiles))
-		 (t (load '((lisp) sharpm)))))))
 
 ; Hack up the stuff for data-types.  DATA-TYPE? will always be a macro
 ; so that it will not require the data-type package at run time if
 ; all uses of the other routines are conditionalized upon that value.
-(declare
-    (or #M (get 'data-type? 'macro) #Q (fboundp 'data-type?)
-	(defmacro data-type? (x) `(get ,x ':data-type)))
+(eval-when (eval compile)
+    ; Crock for DATA-TYPE? derives from DTDCL.  We just copy it rather
+    ; than load it in, which requires knowing where it comes from (sigh).
+    #+Run-In-Maclisp
+      (or (get 'data-type? 'macro)
+	  (defmacro data-type? (x) `(get ,x ':data-type)))
+    #-Run-In-Maclisp
+      (or (fboundp 'data-type?)
+	  (defmacro data-type? (frob)
+	     (let ((foo (gensym)) (bar (gensym)))
+		`((lambda (,foo)
+		    (or (get ,foo ':data-type)
+			(multiple-value-bind (,foo ,bar)
+					     (intern-soft (get-pname ,foo) "")
+			  (and ,bar (get ,foo ':data-type)))))
+		  ,frob))))
     (*lexpr variable-declarations)
-    (*expr initial-value form-wrapper))
+    ; Multics defaults to free-functional-variable since it is declared
+    ; special & used as function before it is defined:
+    (*expr loop-when-it-variable)
+    (*expr initial-value primitive-type)
+  #-Lispm
+    (muzzled t)	; I know what i'm doing
+    )
+
+#+Run-on-PDP10
+(declare (mapex ())
+	 (genprefix loop/|-)
+	 (special squid)
+       #+(and Run-in-Maclisp For-NIL) ; patch it up
+         (*expr stringp vectorp vref vector-length)
+         )
+
+#-Run-on-PDP10
+(declare
+  #+Lispm (setq open-code-map-switch t)
+  #-Lispm (mapex t)
+  #-Lispm (genprefix loop-iteration/|-))
+
+#+Run-on-PDP10
+(mapc '(lambda (x)
+	   (or (getl x '(subr lsubr fsubr macro fexpr expr autoload))
+	       ; This dtdcl will sort of work for NIL code generation,
+	       ; if declarations will ignored.
+	       (putprop x '((lisp) dtdcl fasl) 'autoload)))
+      '(data-type? variable-declarations initial-value primitive-type))
 
 
-;Loop macro
-#Q (globalize 'loop 'loop-finish 'loop-add-path 'loop-tequal)
+; String hacks.
+#+Run-on-PDP10
+(eval-when (compile)
+    ; Note this hack used when compiled only.
+    (setsyntax #/" 'macro
+	       '(lambda ()
+		   (do ((ch (tyi) (tyi)) (l () (cons ch l)))
+		       ((= ch #/")
+			(list squid (list 'quote (implode (nreverse l)))))
+		     (and (= ch #//) (setq ch (tyi)))))))
 
-;Another Piece of Shit
-#M (progn 'compile
-      (declare (*lexpr ferror))
-      (or (getl 'ferror '(macro lsubr autoload))
-	  (not (get 'format 'autoload))
-	  (putprop 'ferror (get 'format 'autoload) 'autoload))
-      ; LEXPR-FUNCALL is now in pdp-10 Maclisp.  However we must
-      ; keep this around for a while until most if not all old lisps
-      ; dissappear.  Eventually, make it #+Multics.
-      (eval-when (eval compile)
-	  (defun lexpr-funcall macro (x)
-	       `(apply ,(cadr x) (list* . ,(cddr x)))))
-      (mapc '(lambda (x)
-	        (or (getl x '(macro subr lsubr autoload))
-		    (putprop x #+Multics
-			          ">udd>Mathlab>LSB>data-type_declarations"
-			       #-Multics '((dsk lsb) dtdcl)
-			     'autoload)))
-	    '(data-type? variable-declarations initial-value)))
+
+; LEXPR-FUNCALL
+#+Multics
+(loop-macro-progn
+    (defun lexpr-funcall macro (x)
+	   (list 'apply (cadr x) (cons 'list* (cddr x)))))
+
+(loop-macro-progn
+ (defmacro loop-copylist* (l)
+    #+Lispm `(copylist* ,l)
+    #-Lispm `(append ,l ())))
 
+
+;;;; Random Macros
+
+; Error macro.  Note that in the PDP10 version we call LOOP-DIE rather
+; than ERROR -- there are so many occurences of it in this source that
+; it is worth breaking off that function, since calling the lsubr ERROR
+; takes more inline code.
+(loop-macro-progn
+ (defmacro loop-simple-error (unquoted-message &optional (datum () datump))
+    #+(and Run-In-Maclisp (not Multics))
+      (progn (cond ((symbolp unquoted-message))
+		   ((and (not (atom unquoted-message))
+			 compiler-state
+			 (eq (car unquoted-message) squid)
+			 (not (atom (setq unquoted-message
+					  (cadr unquoted-message))))
+			 (eq (car unquoted-message) 'quote)
+			 (symbolp (cadr unquoted-message)))
+		      (setq unquoted-message (cadr unquoted-message)))
+		   ('t (error '|Uloze -- LOOP-SIMPLE-ERROR|
+			      (list 'loop-simple-error
+				    unquoted-message datum))))
+	     (cond (datump `(loop-die ',unquoted-message ,datum))
+		   ('t `(error ',unquoted-message))))
+    #+Multics
+      (progn (or (memq (typep unquoted-message) '(string symbol))
+		 (error '|Uloze -- | (list 'loop-simple-error
+					   unquoted-message datum)))
+	     `(error ,(catenate "lisp:  " unquoted-message
+				(if datump " -- " ""))
+		     . ,(and datump (list datum))))
+    #-Run-In-Maclisp
+      `(ferror () ,(if datump (string-append "~S " unquoted-message)
+		       unquoted-message)
+	       . ,(and datump (list datum)))))
+
+
+#+(and Run-in-Maclisp (not Multics))
+(defun loop-die (arg1 arg2)
+    (error arg1 arg2))
+
+
+; This is a KLUDGE.  But it apparently saves an average of two inline
+; instructions per call in the PDP10 version...  The ACS prop is
+; fairly gratuitous.
+
+#+Run-on-PDP10
+(progn 'compile
+   (lap-a-list 
+     '((lap loop-pop-source subr)
+       (args loop-pop-source (() . 0))
+	   (hlrz a @ (special loop-source-code))
+	   (hrrz b @ (special loop-source-code))
+	   (movem b (special loop-source-code))
+	   (popj p)
+       nil))
+   (eval-when (compile)
+       (defprop loop-pop-source 2 acs)
+       ))
+
+#-Run-on-PDP10
+(loop-macro-progn
+ (defmacro loop-pop-source () '(pop loop-source-code)))
+
+
+;;;; Variable defining macros
+
+; Note:  multics lcp has some misfeature whereby DECLARE and
+; (EVAL-WHEN (COMPILE) ...) don't get hacked properly inside of
+; more than one level of (PROGN 'COMPILE ...).  Thus we hack around
+; DEFVAR and DEFIVAR to bypass this lossage.
 
 #+Multics
-  (progn 'compile
-     (defun loop-displace (x y)
-	((lambda (val) (rplaca x (car val)) (rplacd x (cdr val)) x)
-	 (cond ((atom y) (list 'progn y)) (t y))))
-     (or (getl 'displace '(expr fexpr macro autoload subr lsubr fsubr))
-	 ((lambda (pl) (putprop 'displace (cadr pl) (car pl)))
-	  (getl 'loop-displace '(subr expr)))))
+(loop-macro-progn
+ (defmacro defvar (name &optional (init nil initp) documentation
+		   &aux (dclform `(and (status feature compiler)
+				       (special ,name))))
+    ; For some obscure reason, (DECLARE ...) doesn't take effect
+    ; within 2 (PROGN 'COMPILE ...)s.  But (EVAL-WHEN (COMPILE) ...) does.
+    (apply 'special (list name))
+    (cond ((not initp) dclform)
+	  (t `(progn 'compile
+		     ,dclform
+		     (or (boundp ',name) (setq ,name ,init)))))))
 
+(loop-macro-progn
+ ; A DEFVAR alternative - "DEFine Internal VARiable".
+ (defmacro defivar (name &optional (init () initp))
+    #-Run-in-Maclisp `(defvar ,name ,@(and initp `(,init)))
+    #+Run-in-Maclisp (progn
+		        (apply 'special (list name))
+			(cond (initp `(or (boundp ',name)
+					  (setq ,name ,init)))
+			      ('t '(progn 'compile))))))
 
-(defmacro loop-finish () 
-    '(go end-loop))
-
-#M
-(defun neq macro (x) `(not (eq . ,(cdr x))))
-
-
-(defun loop-make-psetq (frobs)
-    (loop-make-setq
-       (car frobs)
-       (cond ((null (cddr frobs)) (cadr frobs))
-	     (t `(prog1 ,(cadr frobs) ,(loop-make-psetq (cddr frobs)))))))
-
-(defmacro loop-psetq (&rest frobs)
-    (loop-make-psetq frobs))
-
-#M
-(or (get 'psetq 'macro)
-    (putprop 'psetq (get 'loop-psetq 'macro) 'macro))
-
-#+(and Maclisp (not Multics))
-  (eval-when (eval compile)
-       ; Define a default doublequote macro.  Note it uppercasifies
-       ; and quotes the symbol.  DON'T USE IT INSIDE CONSTANT STRUCTURE!
-       (setsyntax '/" 'macro
-	  '(lambda ()
-	      (do ((ch (tyi) (tyi)) (l nil (cons ch l)))
-		  ((= ch #/") (list 'quote (implode (nreverse l))))
-		(cond ((and (> ch 96.) (< ch 123.)) (setq ch (- ch 32.)))
-		      ((= ch #//) (setq ch (tyi))))))))
+#-Lispm
+(loop-macro-progn
+  (defmacro defconst (name init &optional documentation)
+     (and (status feature #+Multics Compiler #-Multics complr)
+	  (apply 'special (list name)))
+     `(setq ,name ,init)))
 
 
-(defvar loop-keyword-alist			;clause introducers
-     '( (initially loop-do-initially)
+
+;;;; Setq Hackery
+
+; Note:  LOOP-MAKE-PSETQ is NOT flushable depending on the existence
+; of PSETQ, unless PSETQ handles destructuring.  Even then it is
+; preferable for the code LOOP produces to not contain intermediate
+; macros, especially in the PDP10 version.
+
+(defun loop-make-psetq (frobs)
+    (and frobs
+	 (loop-make-setq
+	    (list (car frobs)
+		  (if (null (cddr frobs)) (cadr frobs)
+		      `(prog1 ,(cadr frobs)
+			      ,(loop-make-psetq (cddr frobs))))))))
+
+#-System-Destructuring
+(progn 'compile
+
+(defvar si:loop-use-system-destructuring?
+    ())
+
+(defivar loop-desetq-temporary)
+
+; Do we want this???  It is, admittedly, useful...
+;(defmacro loop-desetq (&rest x)
+;  (let ((loop-desetq-temporary ()))
+;     (let ((setq-form (loop-make-desetq x)))
+;	(if loop-desetq-temporary
+;	    `((lambda (,loop-desetq-temporary) ,setq-form) ())
+;	    setq-form))))
+
+
+(defun loop-make-desetq (x)
+   (if si:loop-use-system-destructuring?
+       (cons (do ((l x (cddr l))) ((null l) 'setq)
+	       (or (atom (car l)) (return 'desetq)))
+	     x)
+       (do ((x x (cddr x)) (r ()) (var) (val))
+	   ((null x) (and r (cons 'setq r)))
+	 (setq var (car x) val (cadr x))
+	 (cond ((and (not (atom var))
+		     (not (atom val))
+		     (not (and (memq (car val)
+				     '(car cdr cadr cddr caar cdar))
+			       (atom (cadr val)))))
+		  (setq x (list* (or loop-desetq-temporary
+				     (setq loop-desetq-temporary (gensym)))
+				 val var loop-desetq-temporary (cddr x)))))
+	 (setq r (nconc r (loop-desetq-internal (car x) (cadr x)))))))
+
+(defun loop-desetq-internal (var val)
+  (cond ((null var) ())
+	((atom var) (list var val))
+	('t (nconc (loop-desetq-internal (car var) `(car ,val))
+		   (loop-desetq-internal (cdr var) `(cdr ,val))))))
+); End desetq hackery for #-System-Destructuring
+
+
+(defun loop-make-setq (pairs)
+    (and pairs
+	 #-System-Destructuring
+	   (loop-make-desetq pairs)
+	 #+System-Destructuring
+	   (cons (do ((l pairs (cddr l))) ((null l) 'setq)
+		   (or (and (car l) (atom (car l))) (return 'desetq)))
+		 pairs)))
+
+
+(defconst loop-keyword-alist			;clause introducers
+     '(
+      #+Named-PROGs
+	(named loop-do-named)
+	(initially loop-do-initially)
 	(finally loop-do-finally)
+	(nodeclare loop-nodeclare)
 	(do loop-do-do)
 	(doing loop-do-do)
 	(return loop-do-return)
@@ -124,242 +407,545 @@
 	(summing loop-do-collect sum)
 	(maximize loop-do-collect max)
 	(minimize loop-do-collect min)
-	(always loop-do-always t)
-	(never loop-do-always nil)
+	(always loop-do-always or)
+	(never loop-do-always and)
 	(thereis loop-do-thereis)
-	(while loop-do-while or)
-	(until loop-do-while and)
-	(when loop-do-when nil)
+	(while loop-do-while or while)
+	(until loop-do-while and until)
+	(when loop-do-when ())
+	(if loop-do-when ())
  	(unless loop-do-when t)
-	(with loop-do-with)
-	(for loop-do-for)
-	(as loop-do-for)))
+	(with loop-do-with)))
 
-(defvar loop-for-keyword-alist			;Types of FOR
+
+(defconst loop-iteration-keyword-alist
+    `((for loop-do-for)
+      (as loop-do-for)
+      (repeat loop-do-repeat)))
+
+
+(defconst loop-for-keyword-alist			;Types of FOR
      '( (= loop-for-equals)
-	(in loop-for-in)
-	(on loop-for-on)
-	(from loop-for-arithmetic nil)
-	(downfrom loop-for-arithmetic down)
-	(upfrom loop-for-arithmetic up)
+        (first loop-for-first)
+	(in loop-list-stepper car)
+	(on loop-list-stepper ())
+	(from loop-for-arithmetic from)
+	(downfrom loop-for-arithmetic downfrom)
+	(upfrom loop-for-arithmetic upfrom)
+	(below loop-for-arithmetic below)
+	(to loop-for-arithmetic to)
 	(being loop-for-being)))
 
-(defvar loop-path-keyword-alist nil)		; PATH functions
-(defvar loop-variables)				;Variables local to the loop
-(defvar loop-declarations)			; Local dcls for above
-(defvar loop-variable-stack)
-(defvar loop-declaration-stack)
-(defvar loop-prologue)				;List of forms in reverse order
-(defvar loop-body)				;..
-(defvar loop-after-body)			;.. for FOR steppers
-(defvar loop-epilogue)				;..
-(defvar loop-after-epilogue)			;So COLLECT's RETURN comes after FINALLY
-(defvar loop-conditionals)			;If non-NIL, condition for next form in body
+#+Named-PROGs
+(defivar loop-prog-names)
+
+(defvar loop-path-keyword-alist ())		; PATH functions
+(defivar loop-named-variables)			; see SI:LOOP-NAMED-VARIABLE
+(defivar loop-collection-crocks)		; see LOOP-DO-COLLECT etc
+(defivar loop-variables)			;Variables local to the loop
+(defivar loop-declarations)			; Local dcls for above
+(defivar loop-nodeclare)			; but don't declare these
+(defivar loop-variable-stack)
+(defivar loop-declaration-stack)
+#-System-Destructuring
+(defivar loop-desetq-crocks)			; see loop-make-variable
+#-System-Destructuring
+(defivar loop-desetq-stack)			; and loop-translate-1
+(defivar loop-prologue)				;List of forms in reverse order
+(defivar loop-before-loop)
+(defivar loop-body)				;..
+(defivar loop-after-body)			;.. for FOR steppers
+(defivar loop-epilogue)				;..
+(defivar loop-after-epilogue)			;So COLLECT's RETURN comes after FINALLY
+(defivar loop-conditionals)			;If non-NIL, condition for next form in body
   ;The above is actually a list of entries of the form
-  ;(condition forms...)
+  ;(cond (condition forms...))
   ;When it is output, each successive condition will get
   ;nested inside the previous one, but it is not built up
   ;that way because you wouldn't be able to tell a WHEN-generated
   ;COND from a user-generated COND.
+  ;When ELSE is used, each cond can get a second clause
 
-(defvar loop-when-it-variable)			;See LOOP-DO-WHEN
-(defvar loop-collect-cruft)			; for multiple COLLECTs (etc)
-(defvar loop-source-code)
-(defvar loop-attachment-transformer		; see attachment definition
-	(cond ((status feature lms) 'progn) (t nil)))
+(defivar loop-when-it-variable)			;See LOOP-DO-WHEN
+(defivar loop-never-stepped-variable)		; see LOOP-FOR-FIRST
+(defivar loop-emitted-body?)			; see LOOP-EMIT-BODY,
+						; and LOOP-DO-FOR
+(defivar loop-iteration-variables)		; LOOP-MAKE-ITERATION-VARIABLE
+(defivar loop-iteration-variablep)		; ditto
+(defivar loop-collect-cruft)			; for multiple COLLECTs (etc)
+(defivar loop-source-code)
+(defvar loop-duplicate-code ())  ; see LOOP-OPTIMIZE-DUPLICATED-CODE-ETC
 
-#-Multics
-(defun loop-lookup-keyword macro (x)
 
-    #Q `(ass #'string-equal . ,(cdr x))
-    #M `(assq . ,(cdr x)))
+;;;; Token Hackery
+
+;Compare two "tokens".  The first is the frob out of LOOP-SOURCE-CODE,
+;the second a symbol to check against.
+
+; Consider having case-independent comparison on Multics.
 #+Multics
-(defun loop-lookup-keyword (kwd alist)
-    (and (symbolp kwd)
-	 (do ((l alist (cdr l))) ((null l) nil)
-	     (and (samepnamep kwd (caar l)) (return (car l))))))
+(progn 'compile
+    (defmacro si:loop-tequal (x1 x2)
+	`(eq ,x1 ,x2))
+    (defmacro si:loop-tmember (x l)
+	`(memq ,x ,l))
+    (defmacro si:loop-tassoc (x l)
+	`(assq ,x ,l)))
 
 
-(defun loop-add-keyword (cruft alist-name)
-    (let ((val (symeval alist-name)) (known?))
-      (and (setq known? (loop-lookup-keyword (car cruft) val))
-	   (set alist-name (delq known? val)))
-      (set alist-name (cons cruft val))))
+#+Lispm
+(progn 'compile
+   (defun si:loop-tequal (x1 x2)
+	(and (symbolp x1) (string-equal x1 x2)))
+   (defun si:loop-tassoc (kwd alist)
+	(and (symbolp kwd) (ass #'string-equal kwd alist)))
+   (defun si:loop-tmember (kwd list)
+	(and (symbolp kwd) (mem #'string-equal kwd list))))
 
+
+#+Run-on-PDP10
+(progn 'compile
+   #+For-NIL
+     (defun si:loop-tequal (x1 x2)
+	 (eq x1 x2))
+   #-For-NIL
+     (progn 'compile
+	(eval-when (load compile)
+	   (cond ((status feature complr)
+		    ; Gross me out!
+		    (setq macrolist
+			  (cons '(si:loop-tequal
+				    . (lambda (x) (cons 'eq (cdr x))))
+				(delq (assq 'si:loop-tequal macrolist)
+				      macrolist)))
+		    (*expr si:loop-tmember si:loop-tassoc))))
+	(defun si:loop-tequal (x1 x2)
+	   (eq x1 x2)))
+     (defun si:loop-tmember (kwd list)
+	 (memq kwd list))
+     (defun si:loop-tassoc (kwd alist)
+	 (assq kwd alist))
+     )
+
+#+(and For-NIL (not Run-in-Maclisp))
+(progn 'compile
+  ; STRING-EQUAL only accepts strings.  GET-PNAME can be open-coded
+  ; however.
+  (defun si:loop-tequal (kwd1 kwd2)
+      (and (symbolp kwd1) (string-equal (get-pname kwd1) (get-pname kwd2))))
+  (defun si:loop-tassoc (kwd alist)
+    (cond ((symbolp kwd)
+	     (setq kwd (get-pname kwd))
+	     (do ((l alist (cdr l))) ((null l) ())
+	       (and (string-equal kwd (get-pname (caar l)))
+		    (return (car l)))))))
+  (defun si:loop-tmember (token list)
+     (cond ((symbolp token)
+	      (setq token (get-pname token))
+	      (do ((l list (cdr l))) ((null l))
+		(and (string-equal token (get-pname (car l)))
+		     (return l)))))))
+
+
+#+(or For-PDP10 For-NIL)
+(eval-when (eval compile) (setq defmacro-displace-call ()))
 
 (defmacro define-loop-macro (keyword)
     (or (eq keyword 'loop)
-	(loop-lookup-keyword keyword loop-keyword-alist)
-	#-Multics (ferror nil "~s not a loop keyword" keyword)
-	#+Multics (error "lisp: Not a loop keyword -- " keyword))
-    `(eval-when (compile load eval)
-	 #Q (fset-carefully ',keyword '(macro . loop-translate))
-	 #+(and Maclisp (not Multics)) (|forget-macromemos/|| ',keyword)
-	 #M (putprop ',keyword 'loop-translate 'macro)))
+	(si:loop-tassoc keyword loop-keyword-alist)
+	(loop-simple-error "not a loop keyword - define-loop-macro" keyword))
+    (subst keyword 'keyword
+	   '(eval-when (compile load eval)
+	      #+(or For-NIL Run-on-PDP10)
+	        (progn (|forget-macromemos/|| 'keyword)
+		       (|forget-macromemos/|| 'loop))
+	      #-Run-in-Maclisp
+	        (fset-carefully 'keyword '(macro . loop-translate))
+	      #+Run-in-Maclisp
+	        (progn (defprop keyword loop-translate macro))
+	      )))
+
+#+(or For-PDP10 For-NIL)
+(eval-when (eval compile) (setq defmacro-displace-call 't))
 
 (define-loop-macro loop)
 
+#+Run-in-Maclisp
+(defun (loop-finish macro) (form)
+    (and (cdr form) (loop-simple-error "Wrong number of args" form))
+    '(go end-loop))
+
+#-Run-in-Maclisp
+(defmacro loop-finish () 
+    '(go end-loop))
+
+
 (defun loop-translate (x)
     #+(or Lispm Multics) (displace x (loop-translate-1 x))
-    #+(and Maclisp (not Multics))
-      (or (macrofetch x) (macromemo x (loop-translate-1 x) (car x))))
+    #-(or Lispm Multics)
+      (or (macrofetch x) (macromemo x (loop-translate-1 x) 'loop)))
+
+
+(defun loop-end-testify (list-of-forms)
+    (if (null list-of-forms) ()
+	`(and ,(if (null (cdr (setq list-of-forms (nreverse list-of-forms))))
+		   (car list-of-forms)
+		   (cons 'or list-of-forms))
+	      (go end-loop))))
+
+(defun loop-optimize-duplicated-code-etc (&aux before after groupa groupb a b
+					       lastdiff)
+    (do ((l1 (nreverse loop-before-loop) (cdr l1))
+	 (l2 (nreverse loop-after-body) (cdr l2)))
+	((equal l1 l2)
+	   (setq loop-body (nconc (delq '() l1) (nreverse loop-body))))
+      (push (car l1) before) (push (car l2) after))
+    (cond ((not (null loop-duplicate-code))
+	     (setq loop-before-loop (nreverse (delq () before))
+		   loop-after-body (nreverse (delq () after))))
+	  ('t (setq loop-before-loop () loop-after-body ()
+		    before (nreverse before) after (nreverse after))
+	      (do ((bb before (cdr bb)) (aa after (cdr aa)))
+		  ((null aa))
+		(cond ((not (equal (car aa) (car bb))) (setq lastdiff aa))
+		      ((not (si:loop-simplep (car aa)))	;Mustn't duplicate
+		       (return ()))))
+	      (cond (lastdiff  ;Down through lastdiff should be duplicated
+		     (do () (())
+		       (and (car before) (push (car before) loop-before-loop))
+		       (and (car after) (push (car after) loop-after-body))
+		       (setq before (cdr before) after (cdr after))
+		       (and (eq after (cdr lastdiff)) (return ())))
+		     (setq loop-before-loop (nreverse loop-before-loop)
+			   loop-after-body (nreverse loop-after-body))))
+	      (do ((bb (nreverse before) (cdr bb))
+		   (aa (nreverse after) (cdr aa)))
+		  ((null aa))
+		(setq a (car aa) b (car bb))
+		(cond ((and (null a) (null b)))
+		      ((equal a b)
+		         (loop-output-group groupb groupa)
+			 (push a loop-body)
+			 (setq groupb () groupa ()))
+		      ('t (and a (push a groupa)) (and b (push b groupb)))))
+	      (loop-output-group groupb groupa)))
+    (and loop-never-stepped-variable
+	 (push `(setq ,loop-never-stepped-variable ()) loop-after-body))
+    ())
+
+
+(defun loop-output-group (before after)
+    (and (or after before)
+	 (let ((v (or loop-never-stepped-variable
+		      (setq loop-never-stepped-variable
+			    (loop-make-variable (gensym) ''t ())))))
+	    (push (cond ((not before) `(or ,v (progn . ,after)))
+			((not after) `(and ,v (progn . ,before)))
+			('t `(cond (,v . ,before) ('t . ,after))))
+		  loop-body))))
 
 
 (defun loop-translate-1 (loop-source-code)
   (and (eq (car loop-source-code) 'loop)
        (setq loop-source-code (cdr loop-source-code)))
-  (do ((loop-variables nil)
-       (loop-declarations nil)
-       (loop-variable-stack nil)
-       (loop-declaration-stack nil)
-       (loop-prologue nil)
-       (loop-body nil)
-       (loop-after-body nil)
-       (loop-epilogue nil)
-       (loop-after-epilogue nil)
-       (loop-conditionals nil)
-       (loop-when-it-variable nil)
-       (loop-collect-cruft nil)
+  (do ((loop-iteration-variables ())
+       (loop-iteration-variablep ())
+       (loop-variables ())
+       (loop-nodeclare ())
+       (loop-named-variables ())
+       (loop-declarations ())
+     #-System-Destructuring
+       (loop-desetq-crocks ())
+       (loop-variable-stack ())
+       (loop-declaration-stack ())
+     #-System-destructuring
+       (loop-desetq-stack ())
+       (loop-prologue ())
+       (loop-before-loop ())
+       (loop-body ())
+       (loop-emitted-body? ())
+       (loop-after-body ())
+       (loop-epilogue ())
+       (loop-after-epilogue ())
+       (loop-conditionals ())
+       (loop-when-it-variable ())
+       (loop-never-stepped-variable ())
+     #-System-Destructuring
+       (loop-desetq-temporary ())
+     #+Named-PROGs
+       (loop-prog-names ())
+       (loop-collect-cruft ())
+       (loop-collection-crocks ())
        (keyword)
-       (tem))
+       (tem)
+       (progvars))
       ((null loop-source-code)
        (and loop-conditionals
-	    #-Multics (ferror nil "~S Hanging conditional in LOOP macro"
-			      (caar loop-conditionals))
-	    #+Multics (error "lisp:  hanging conditional in loop macro -- "
-			     (caar loop-conditionals)))
-       (cond (loop-variables
-	        (push loop-variables loop-variable-stack)
-		(push loop-declarations loop-declaration-stack)))
-       (setq tem `(prog ()
-		      ,@(nreverse loop-prologue)
+	    (loop-simple-error "Hanging conditional in loop macro"
+			       (caadar loop-conditionals)))
+       (loop-optimize-duplicated-code-etc)
+       (loop-bind-block)
+       (setq progvars loop-collection-crocks)
+     #-System-Destructuring
+       (and loop-desetq-temporary (push loop-desetq-temporary progvars))
+       (setq tem `(prog #+Named-PROGs ,.loop-prog-names
+			,progvars
+		      #+Hairy-Collection
+		        ,.(do ((l loop-collection-crocks (cddr l))
+			       (v () (cons `(loop-collect-init
+					        ,(cadr l) ,(car l))
+					    v)))
+			      ((null l) v))
+		      ,.(nreverse loop-prologue)
+		      ,.loop-before-loop
 		   next-loop
-		      ,@(nreverse loop-body)
-		      ,@(nreverse loop-after-body)
+		      ,.loop-body
+		      ,.loop-after-body
 		      (go next-loop)
+		      ; Multics complr notices when end-loop is not gone
+		      ; to.  So we put in a dummy go.  This does not generate
+		      ; extra code, at least in the simple example i tried,
+		      ; but it does keep it from complaining about unused
+		      ; go tag.
+	    #+Multics (go end-loop)
 		   end-loop
-		      ,@(nreverse loop-epilogue)
-		      ,@(nreverse loop-after-epilogue)))
-       (do ((vars) (dcls)) ((null loop-variable-stack))
-	 (setq vars (pop loop-variable-stack)
-	       dcls (pop loop-declaration-stack))
-	 (and dcls (setq dcls `((declare . ,(nreverse dcls)))))
-	 #+Maclisp
-	   (setq tem `(,@dcls ,tem))
-	 #+Maclisp
-	   (cond ((do ((l vars (cdr l))) ((null l) nil)
-		    (and (not (atom (car l)))
-			 (not (atom (caar l)))
-			 (return t)))
-		    (setq tem `(let ,(nreverse vars) ,.tem)))
-		 (t (let ((lambda-vars nil) (lambda-vals nil))
-		       (do ((l vars (cdr l)) (v)) ((null l))
-			 (cond ((atom (setq v (car l)))
-				  (push v lambda-vars)
-				  (push nil lambda-vals))
-			       (t (push (car v) lambda-vars)
-				  (push (cadr v) lambda-vals))))
-		       (setq tem `((lambda ,(nreverse lambda-vars) ,.tem)
-				   ,.(nreverse lambda-vals))))))
-	 #-Maclisp (setq tem `(let ,(nreverse vars) ,@dcls ,tem)))
+		      ,.(nreverse loop-epilogue)
+		      ,.(nreverse loop-after-epilogue)))
+       (do ((vars) (dcls) #-System-Destructuring (crocks))
+	   ((null loop-variable-stack))
+	 (setq vars (car loop-variable-stack)
+	       loop-variable-stack (cdr loop-variable-stack)
+	       dcls (car loop-declaration-stack)
+	       loop-declaration-stack (cdr loop-declaration-stack)
+	       tem (ncons tem))
+	 #-System-Destructuring
+	   (and (setq crocks (pop loop-desetq-stack))
+		(push (loop-make-desetq crocks) tem))
+	 (and dcls (push (cons 'declare dcls) tem))
+	 (cond ((do ((l vars (cdr l))) ((null l) ())
+		  (and (not (atom (car l)))
+		       (not (atom (caar l)))
+		       (return 't)))
+		  (setq tem `(let ,(nreverse vars) ,.tem)))
+	       ('t (let ((lambda-vars ()) (lambda-vals ()))
+		     (do ((l vars (cdr l)) (v)) ((null l))
+		       (cond ((atom (setq v (car l)))
+				(push v lambda-vars)
+				(push () lambda-vals))
+			     ('t (push (car v) lambda-vars)
+				 (push (cadr v) lambda-vals))))
+		     (setq tem `((lambda ,lambda-vars ,.tem)
+				 ,.lambda-vals))))))
        tem)
-    (if (symbolp (setq keyword (pop loop-source-code)))
-	(if (setq tem (loop-lookup-keyword keyword loop-keyword-alist))
+    (if (symbolp (setq keyword (loop-pop-source)))
+	(if (setq tem (si:loop-tassoc keyword loop-keyword-alist))
 	    (apply (cadr tem) (cddr tem))
-	    #-Multics (ferror nil "~S unknown keyword" keyword)
-	    #+Multics (error "lisp:  unknown keyword in loop macro -- "
-			     keyword))
-	#-Multics (ferror nil "~S where keyword expected" keyword)
-	#+Multics (error "lisp:  loop found object where keyword expected -- "
-			 keyword))))
+	    (if (setq tem (si:loop-tassoc
+			     keyword loop-iteration-keyword-alist))
+		(loop-hack-iteration tem)
+		(if (si:loop-tmember keyword '(and else))
+		    ; Alternative is to ignore it, ie let it go around to the
+		    ; next keyword...
+		    (loop-simple-error
+		       "secondary clause misplaced at top level in LOOP macro"
+		       (list keyword (car loop-source-code)
+			     (cadr loop-source-code)))
+		    (loop-simple-error
+		       "unknown keyword in LOOP macro" keyword))))
+	(loop-simple-error
+	   "found where keyword expected in LOOP macro" keyword))))
 
 
 (defun loop-bind-block ()
    (cond ((not (null loop-variables))
 	    (push loop-variables loop-variable-stack)
 	    (push loop-declarations loop-declaration-stack)
-	    (setq loop-variables nil loop-declarations nil))
-	 (loop-declarations (break barf))))
+	    (setq loop-variables () loop-declarations ())
+	    #-System-Destructuring
+	      (progn (push loop-desetq-crocks loop-desetq-stack)
+		     (setq loop-desetq-crocks ())))))
 
 
 ;Get FORM argument to a keyword.  Read up to atom.  PROGNify if necessary.
 (defun loop-get-form ()
-  (do ((forms (list (pop loop-source-code)) (cons (pop loop-source-code) forms))
+  (do ((forms (ncons (loop-pop-source)) (cons (loop-pop-source) forms))
        (nextform (car loop-source-code) (car loop-source-code)))
       ((atom nextform)
        (if (null (cdr forms)) (car forms)
 	   (cons 'progn (nreverse forms))))))
 
 
-(defun loop-make-setq (var-or-pattern value)
+(defun loop-typed-arith (substitutable-expression data-type)
+  #-Lispm
+    (if (setq data-type (car (si:loop-tmember (if (data-type? data-type)
+						  (primitive-type data-type)
+						  data-type)
+					      '(fixnum flonum))))
+	(sublis (if (eq data-type 'fixnum) '((plus . +) (add1 . 1+)
+					     (difference . -) (sub1 . 1-)
+					     (greaterp . >) (lessp . <))
+		    '((plus . +$) (difference . -$) (add1 . 1+$) (sub1 . 1-$)
+		      . #+For-NIL ((greaterp . >$) (lessp . <$))
+		        #-For-NIL ((greaterp . >) (lessp . <))))
+		substitutable-expression)
+	substitutable-expression)
+  #+Lispm
+    (progn data-type substitutable-expression)
+  )
 
-    (list (if (atom var-or-pattern) 'setq 'desetq) var-or-pattern value))
 
-
-(defun loop-imply-type (expression type
-			&aux (frob (and (data-type? type)
-					(form-wrapper type expression))))
-    (cond ((not (null frob)) frob)
-      #+(and Maclisp (not Multics))
-	  ((setq frob (assq type '((fixnum . fixnum-identity)
-				   (flonum . flonum-identity))))
-	     (list (cdr frob) expression))
-	  (t expression)))
+(defun loop-typed-init (data-type)
+    (cond ((data-type? data-type) (initial-value data-type))
+	  ((setq data-type (car (si:loop-tmember
+				   data-type '(fixnum flonum integer number
+					       #+Lispm small-flonum))))
+	     (cond ((eq data-type 'flonum) 0.0)
+		 #+Lispm
+		   ((eq data-type 'small-flonum)
+		      #.(and (loop-featurep Lispm) (small-float 0)))
+		   ('t 0)))))
+
 
 (defun loop-make-variable (name initialization dtype)
   (cond ((null name)
-	   (and initialization
-		(push (list #+(or Lispm Multics) 'ignore
-			    #+(and Maclisp (not Multics)) nil
-			    initialization)
-		      loop-variables)))
-	((atom name)
-	   (cond ((data-type? dtype)
-		    (setq loop-declarations
-			  (append (variable-declarations dtype name)
-				  loop-declarations))
-		    (or initialization
-			(setq initialization (initial-value dtype))))
-		 ((memq dtype '(fixnum flonum number))
-		    #M (or (eq dtype 'number)
-			   (push `(,dtype ,name) loop-declarations))
-		    (or initialization
-			(setq initialization (if (eq dtype 'flonum) 0.0 0)))))
-	   (push #-Multics (if initialization (list name initialization) name)
-		 ; Multics LET is very sensitive at present...
-		 #+Multics (list name initialization)
+	   (cond ((not (null initialization))
+		    (push (list #+Lispm 'ignore
+				#+Multics (setq name (gensym))
+				#-(or Lispm Multics) ()
+				initialization)
+			  loop-variables)
+		    #+Multics (push `(progn ,name) loop-prologue))))
+	(#-For-NIL (atom name)
+	 #+For-NIL (symbolp name)
+	   (cond (loop-iteration-variablep
+		    (if (memq name loop-iteration-variables)
+			(loop-simple-error
+			   "Duplicated iteration variable somewhere in LOOP"
+			   name)
+			(push name loop-iteration-variables)))
+		 ((assq name loop-variables)
+		    (loop-simple-error
+		       "Duplicated var in LOOP bind block" name)))
+	 #-For-NIL
+	   (or (symbolp name)
+	       (loop-simple-error "Bad variable somewhere in LOOP" name))
+	   (loop-declare-variable name dtype)
+	   ; We use ASSQ on this list to check for duplications (above),
+	   ; so don't optimize out this list:
+	   (push (list name (or initialization (loop-typed-init dtype)))
 		 loop-variables))
 	(initialization
-	   (push (list name initialization) loop-variables)
-	   (loop-declare-variable name dtype))
-	(t (let ((tcar) (tcdr))
-	      (cond ((atom dtype) (setq tcar (setq tcdr dtype)))
-		    (t (setq tcar (car dtype) tcdr (cdr dtype))))
-	      (loop-make-variable (car name) nil tcar)
-	      (loop-make-variable (cdr name) nil tcdr))))
+	   #+System-Destructuring
+	     (progn (loop-declare-variable name dtype)
+		    (push (list name initialization) loop-variables))
+	   #-System-Destructuring
+	     (cond (si:loop-use-system-destructuring?
+		      (loop-declare-variable name dtype)
+		      (push (list name initialization) loop-variables))
+		   ('t (let ((newvar (gensym)))
+			  (push (list newvar initialization) loop-variables)
+			  ; LOOP-DESETQ-CROCKS gathered in reverse order.
+			  (setq loop-desetq-crocks
+				(list* name newvar loop-desetq-crocks))
+			  (loop-make-variable name () dtype)))))
+	('t
+	  #-For-NIL
+	    (let ((tcar) (tcdr))
+	      (if (atom dtype) (setq tcar (setq tcdr dtype))
+		  (setq tcar (car dtype) tcdr (cdr dtype)))
+	      (loop-make-variable (car name) () tcar)
+	      (loop-make-variable (cdr name) () tcdr))
+	  #+For-NIL
+	    (cond ((pairp name)
+		     (let ((tcar) (tcdr))
+			(if (pairp dtype)
+			    (setq tcar (car dtype) tcdr (cdr dtype))
+			    (setq tcar (setq tcdr dtype)))
+			(loop-make-variable (car name) () tcar)
+			(loop-make-variable (cdr name) () tcdr)))
+		  ((vectorp name)
+		     (do ((i 0 (1+ i))
+			  (n (vector-length name))
+			  (dti 0 (1+ dti))
+			  (dtn (and (vectorp dtype) (vector-length dtype))))
+			 ((= i n))
+		       #+Run-in-Maclisp (declare (fixnum i n dti))
+		       (loop-make-variable
+			  (vref name i) ()
+			  (if (null dtn) dtype
+			      (and (< dti dtn) (vref dtype dti))))))
+		  ('t (ferror () "~S bad variable somewhere in LOOP"
+			      name)))
+	  ))
   name)
 
+
+(defun loop-make-iteration-variable (name initialization dtype)
+    (let ((loop-iteration-variablep 't))
+       (loop-make-variable name initialization dtype)))
+
+
 (defun loop-declare-variable (name dtype)
-    (cond ((or (null name) (null dtype)) nil)
-	  ((atom name)
-	     (cond ((data-type? dtype)
+    (cond ((or (null name) (null dtype)) ())
+	  ((symbolp name)
+	     (cond ((memq name loop-nodeclare))
+		 #+Multics
+		   ; local type dcls of specials lose.  This doesn't work
+		   ; for locally-declared specials.
+		   ((get name 'special))
+		   ((data-type? dtype)
 		      (setq loop-declarations
 			    (append (variable-declarations dtype name)
 				    loop-declarations)))
-		#M ((memq dtype '(fixnum flonum))
+		#-Lispm
+		   ((si:loop-tmember dtype '(fixnum flonum))
 		      (push `(,dtype ,name) loop-declarations))))
-	  ((atom dtype)
-	     (loop-declare-variable (car name) dtype)
-	     (loop-declare-variable (cdr name) dtype))
-	  (t (loop-declare-variable (car name) (car dtype))
-	     (loop-declare-variable (cdr name) (cdr dtype)))))
+	  ((eq (typep name) 'list)
+	      (cond ((eq (typep dtype) 'list)
+		       (loop-declare-variable (car name) (car dtype))
+		       (loop-declare-variable (cdr name) (cdr dtype)))
+		    ('t (loop-declare-variable (car name) dtype)
+			(loop-declare-variable (cdr name) dtype))))
+	#+For-NIL
+	  ((vectorp name)
+	     (do ((i 0 (1+ i))
+		  (n (vector-length name))
+		  (dtn (and (vectorp dtype) (vector-length dtype)))
+		  (dti 0 (1+ dti)))
+		 ((= i n))
+	       #+Run-in-Maclisp (declare (fixnum i n dti))
+	       (loop-declare-variable
+		  (vref name i)
+		  (if (null dtn) dtype (and (< dti dtn) (vref dtype dti))))))
+	  ('t (loop-simple-error "can't hack this"
+				 (list 'loop-declare-variable name dtype)))))
 
 
+#+For-PDP10
+(declare (special squid))
+
+(defun loop-constantp (form)
+    (or (numberp form)
+	#+For-NIL (or (null form) (vectorp form))
+	#-For-NIL (memq form '(t ()))
+	#-For-PDP10 (stringp form)
+	(and (not (atom form))
+	     #-Run-on-PDP10 (eq (car form) 'quote)
+	     #+Run-on-PDP10 (or (eq (car form) 'quote)
+				; SQUID implies quoting.
+				(and compiler-state (eq (car form) squid))))
+	))
+
 (defun loop-maybe-bind-form (form data-type?)
-    (cond ((or (numberp form) (memq form '(t nil))
-	       (and (not (atom form)) (eq (car form) 'quote)))
-	     form)
-	  (t (loop-make-variable (gensym) form data-type?))))
+    ; Consider implementations which will not keep EQ quoted constants
+    ; EQ after compilation & loading.
+    ; Note FUNCTION is not hacked, multiple occurences might cause the
+    ; compiler to break the function off multiple times!
+    ; Hacking it probably isn't too important here anyway.  The ones that
+    ; matter are the ones that use it as a stepper (or whatever), which
+    ; handle it specially.
+    (if (loop-constantp form) form
+	(loop-make-variable (gensym) form data-type?)))
 
 
 (defun loop-optional-type ()
@@ -367,41 +953,71 @@
 	(and (not (null token))
 	     (or (not (atom token))
 		 (data-type? token)
-		 (memq token '(fixnum flonum number)))
-	     (pop loop-source-code))))
+		 (si:loop-tmember token '(fixnum flonum integer number notype
+					  #+Lispm small-flonum)))
+	     (loop-pop-source))))
 
-
-;Compare two "tokens".  The first is the frob out of LOOP-SOURCE-CODE,
-;the second a string (lispm) or symbol (maclisp) to check against.
-#+(or Lispm Multics)
-(defun loop-tequal (x1 x2)
-      (and (symbolp x1)
-	   #+Multics (samepnamep x1 x2)
-	   #+Lispm (string-equal x1 x2)))
-#+(and Maclisp (not Multics))
-(defmacro loop-tequal (x1 x2) `(eq ,x1 ,x2))
 
 ;Incorporates conditional if necessary
+(defun loop-make-conditionalization (form)
+    (cond ((not (null loop-conditionals))
+	     (rplacd (last (car (last (car (last loop-conditionals))))) (ncons form))
+	     (cond ((si:loop-tequal (car loop-source-code) 'and)
+		      (loop-pop-source)
+		      ())
+		   ((si:loop-tequal (car loop-source-code) 'else)
+		      (loop-pop-source)
+		      ;; If we are already inside an else clause, close it off
+		      ;; and nest it inside the containing when clause
+		      (let ((innermost (car (last loop-conditionals))))
+			(cond ((null (cddr innermost)))	;Now in a WHEN clause, OK
+			      ((null (cdr loop-conditionals))
+			       (loop-simple-error "More ELSEs than WHENs"
+						  (list 'else (car loop-source-code)
+							(cadr loop-source-code))))
+			      ('t (setq loop-conditionals (cdr (nreverse loop-conditionals)))
+			          (rplacd (last (car (last (car loop-conditionals))))
+					  (ncons innermost))
+				  (setq loop-conditionals (nreverse loop-conditionals)))))
+		      ;; Start a new else clause
+		      (rplacd (last (car (last loop-conditionals)))
+			      (ncons (ncons ''t)))
+		      ())
+		   ('t ;Nest up the conditionals and output them
+		       (do ((prev (car loop-conditionals) (car l))
+			    (l (cdr loop-conditionals) (cdr l)))
+			   ((null l))
+			 (rplacd (last (car (last prev))) (ncons (car l))))
+		       (prog1 (car loop-conditionals)
+			      (setq loop-conditionals ())))))
+	  ('t form)))
+
+(defun loop-pseudo-body (form &aux (z (loop-make-conditionalization form)))
+   (cond ((not (null z))
+	    (cond (loop-emitted-body? (push z loop-body))
+		  ('t (push z loop-before-loop) (push z loop-after-body))))))
+
 (defun loop-emit-body (form)
-  (cond (loop-conditionals
-	   (rplacd (last (car (last loop-conditionals)))
-		   (cond ((and (not (atom form))  ;Make into list of forms
-			       (eq (car form) 'progn))
-			  (append (cdr form) nil))
-			 (t (list form))))
-	   (cond ((loop-tequal (car loop-source-code) "and")
-		    (pop loop-source-code))
-		 (t ;Nest up the conditionals and output them
-		    (do ((prev (car loop-conditionals) (car l))
-			 (l (cdr loop-conditionals) (cdr l)))
-			((null l))
-		      (rplacd (last prev) `((cond ,(car l)))))
-		    (push `(cond ,(car loop-conditionals)) loop-body)
-		    (setq loop-conditionals nil))))
-	(t (push form loop-body))))
+  (setq loop-emitted-body? 't)
+  (loop-pseudo-body form))
+
+
+#+Named-PROGs
+(defun loop-do-named ()
+    (let ((name (loop-pop-source)))
+       (or (and name (symbolp name))
+	   (loop-simple-error "Bad name for your loop construct" name))
+       (and (cdr (setq loop-prog-names (cons name loop-prog-names)))
+	    (loop-simple-error "Too many names for your loop construct"
+			       loop-prog-names))))
 
 (defun loop-do-initially ()
   (push (loop-get-form) loop-prologue))
+
+(defun loop-nodeclare (&aux (varlist (loop-pop-source)))
+    (or (and varlist (eq (typep varlist) 'list))
+	(loop-simple-error "Bad varlist to nodeclare loop clause" varlist))
+    (setq loop-nodeclare (append varlist loop-nodeclare)))
 
 (defun loop-do-finally ()
   (push (loop-get-form) loop-epilogue))
@@ -410,7 +1026,56 @@
   (loop-emit-body (loop-get-form)))
 
 (defun loop-do-return ()
-  (loop-emit-body `(return ,(loop-get-form))))
+   (loop-pseudo-body `(return ,(loop-get-form))))
+
+; The way we collect (list-collect) things is to bind two variables.
+; One is the final result, and is accessible for value during the
+; loop compuation.  The second is the "tail".  In implementations where
+; we can do so, the tail var is initialized to a locative of the first,
+; such that it can be updated with RPLACD.  In other implementations,
+; the update must be conditionalized (on whether or not the tail is NIL).
+
+; For PDP10 Maclisp:
+; The "value cell" of a special variable is a (pseudo) list cell, the CDR
+; of which is the value.  Hence the abovementioned tail variable gets
+; initialized to this.  (It happens to be the CDAR of the symbol.)
+; For local variables in compiled code, the Maclisp compiler implements
+; a (undocumented private) form of the
+; "(setq tail (value-cell-location 'var))" construct;  specifically, it
+; is of the form  (#.gofoo var tail).  This construct must appear in
+; the binding environment those variables are bound in, currently.
+; Note that this hack only currently works for local variables, so loop
+; has to check to see if the variable is special.  It is anticipated,
+; however, that the compiler will be able to do this all by itself
+; at some point.
+
+#+For-PDP10
+  (progn 'compile
+     (cond ((status feature complr)
+	      (setq loop-specvar-hack ((lambda (obarray)
+					   (implode '(s p e c v a r s)))
+				       sobarray))
+	      (defun loop-collect-init-compiler (form)
+		(cond ((memq compiler-state '(toplevel maklap))
+		         ; We are being "toplevel" macro expanded.
+			 ; We MUST expand into something which can be
+			 ; evaluated without loop, in the interpreter.
+			 `(setq ,(caddr form) (munkam (value-cell-location
+						         ',(cadr form)))))
+		      ((or specials
+			   (get (cadr form) 'special)
+			   (assq (cadr form) (symeval loop-specvar-hack)))
+		         `(setq ,(caddr form) (cdar ',(cadr form))))
+		      (t (cons gofoo (cdr form)))))
+	      (push '(loop-collect-init . loop-collect-init-compiler)
+		    macrolist)))
+     (defun loop-collect-init fexpr (x)
+	(set (cadr x) (cdar (car x)))))
+
+#+(and Hairy-Collection (not For-PDP10))
+(defmacro loop-collect-init (var1 var2)
+   #+Lispm `(setq ,var2 (value-cell-location ',var1))
+   #-Lispm `(setq ,var2 (munkam (value-cell-location ',var1))))
 
 
 (defun loop-do-collect (type)
@@ -418,33 +1083,26 @@
 	(ctype (cond ((memq type '(max min)) 'maxmin)
 		     ((memq type '(nconc list append)) 'list)
 		     ((memq type '(count sum)) 'sum)
-		     (t #-Multics (ferror nil "~A unrecognized LOOP collector"
-					  type)
-			#+Multics
-			  (error
-			     "lisp:  unrecognized loop collecting keyword -- "
-			     type)))))
+		     ('t (loop-simple-error
+			    "unrecognized LOOP collecting keyword" type)))))
     (setq form (loop-get-form) dtype (loop-optional-type))
-    (cond ((loop-tequal (car loop-source-code) "into")
-	     (pop loop-source-code)
-	     (setq rvar (setq var (pop loop-source-code)))))
+    (cond ((si:loop-tequal (car loop-source-code) 'into)
+	     (loop-pop-source)
+	     (setq rvar (setq var (loop-pop-source)))))
     ; CRUFT will be (varname ctype dtype var tail (optional tem))
     (cond ((setq cruft (assq var loop-collect-cruft))
 	     (cond ((not (eq ctype (car (setq cruft (cdr cruft)))))
-		      #-Multics
-		        (ferror nil "~A collection is incompatible with ~A"
-				ctype (car cruft))
-		      #+Multics
-		        (error "lisp:  incompatible loop collections -- "
-			       (list ctype (car cruft))))
+		      (loop-simple-error
+		         "incompatible LOOP collection types"
+			 (list ctype (car cruft))))
 		   ((and dtype (not (eq dtype (cadr cruft))))
-		      #-Multics
-		        (ferror nil "~A and ~A Unequal data types in ~A"
-				dtype (cadr cruft) type)
-		      #+Multics
-		        (error
-			   "lisp:  loop found unequal types in collector -- "
-			   (list type (list dtype (cadr cruft))))))
+		      #+Run-in-Maclisp
+		        (loop-simple-error
+			   "Unequal data types in multiple collections"
+			   (list dtype (cadr cruft) (car cruft)))
+		      #-Run-in-Maclisp
+		        (ferror () "~A and ~A Unequal data types into ~A"
+				dtype (cadr cruft) (car cruft))))
 	     (setq dtype (car (setq cruft (cdr cruft)))
 		   var (car (setq cruft (cdr cruft)))
 		   tail (car (setq cruft (cdr cruft)))
@@ -452,662 +1110,942 @@
 	     (and (eq ctype 'maxmin)
 		  (not (atom form)) (null tem)
 		  (rplaca (cdr cruft) (setq tem (loop-make-variable
-						   (gensym) nil dtype)))))
-	  (t (and (null dtype)
-		  (setq dtype (cond ((eq type 'count) 'fixnum)
-				    ((memq type '(min max sum)) 'number))))
+						   (gensym) () dtype)))))
+	  ('t (and (null dtype)
+		   (setq dtype (cond ((eq type 'count) 'fixnum)
+				     ((memq type '(min max sum)) 'number))))
 	     (or var (push `(return ,(setq var (gensym)))
 			   loop-after-epilogue))
-	     (loop-make-variable var nil dtype)
+	     (or (eq ctype 'list) (loop-make-iteration-variable var () dtype))
 	     (setq tail 
 		   (cond ((eq ctype 'list)
-			    (setq tem (loop-make-variable (gensym) nil nil))
-			    #Q (push `(setq ,tem (value-cell-location ',var))
-				     loop-prologue)
-			    #Q tem
-			    #M (loop-make-variable (gensym) nil nil))
+			    #-Hairy-Collection
+			      (setq tem (loop-make-variable (gensym) () ()))
+			    (car (setq loop-collection-crocks
+				       (list* (gensym) var
+					      loop-collection-crocks))))
 			 ((eq ctype 'maxmin)
 			    (or (atom form)
 				(setq tem (loop-make-variable
-					     (gensym) nil dtype)))
-			    (loop-make-variable (gensym) nil nil))))
+					     (gensym) () dtype)))
+			    (loop-make-variable (gensym) ''t ()))))
 	     (push (list rvar ctype dtype var tail tem)
 		   loop-collect-cruft)))
     (loop-emit-body
 	(selectq type
-	  (count (setq tem `(setq ,var (1+ ,var)))
-		 (cond ((eq form t) tem) (t `(and ,form ,tem))))
-	  (sum `(setq ,var (plus ,(loop-imply-type form dtype) ,var)))
+	  (count (setq tem `(setq ,var (,(loop-typed-arith 'add1 dtype)
+					,var)))
+		 (if (member form '(t 't)) tem `(and ,form ,tem)))
+	  (sum `(setq ,var (,(loop-typed-arith 'plus dtype) ,form ,var)))
 	  ((max min)
-	     `(setq ,@(and tem (prog1 `(,tem ,form) (setq form tem)))
-		    ,var (cond (,tail (,type ,(loop-imply-type form dtype)
-					     ,var))
-			       (t (setq ,tail t) ,form))))
-	  (list #M `(setq ,tem (ncons ,form)
-			  ,tail (cond (,tail (cdr (rplacd ,tail ,tem)))
-				      ((setq ,var ,tem))))
-		#Q `(rplacd ,tail (setq ,tail (ncons ,form))))
-	  (nconc #Q `(progn (rplacd ,tail ,form)
-			    (and (cdr ,tail) (setq ,tail (last (cdr ,tail)))))
-		 #M `(setq ,tem ,form
-			   ,tail (last (cond (,tail (rplacd ,tail ,tem))
-					     ((setq ,var ,tem))))))
-	  (append #Q `(progn (rplacd ,tail (copylist ,form))  ;copylist* if that ever exists
-			     (and (cdr ,tail) (setq ,tail (last (cdr ,tail)))))
-		  #M `(setq ,tem (append ,form nil)
-			    ,tail (last (cond (,tail (rplacd ,tail ,tem))
-					      ((setq ,var ,tem))))))))))
+	     (let ((forms ()) (arglist ()))
+		; TEM is temporary, properly typed.
+		(and tem (setq forms `((setq ,tem ,form)) form tem))
+		(setq arglist (list var form))
+		(push (if (si:loop-tmember dtype '(fixnum flonum
+						   #+Lispm small-flonum))
+			  ; no contagious arithmetic
+			  `(and (or ,tail
+				    (,(loop-typed-arith
+				         (if (eq type 'max) 'lessp 'greaterp)
+					 dtype)
+				     . ,arglist))
+				(setq ,tail () . ,arglist))
+			  ; potentially contagious arithmetic -- must use
+			  ; MAX or MIN so that var will be contaminated
+			  `(setq ,var (cond (,tail (setq ,tail ()) ,form)
+					    ((,type . ,arglist)))))
+		      forms)
+		(if (cdr forms) (cons 'progn (nreverse forms)) (car forms))))
+	  (t (selectq type
+		(list (setq form (list 'list form)))
+		(append (or (and (not (atom form)) (eq (car form) 'list))
+			    (setq form #+Lispm `(copylist* ,form)
+				       #-Lispm `(append ,form ())))))
+	   #+Hairy-Collection
+	     (let ((q `(rplacd ,tail ,form)))
+		(cond ((and (not (atom form)) (eq (car form) 'list)
+			    (not (null (cdr form))))
+		         ; RPLACD of cdr-coded list:
+			 #+Lispm
+			   (rplaca (cddr q)
+				   (if (cddr form) `(list* ,@(cdr form) ())
+				       `(ncons ,(cadr form))))
+			 `(setq ,tail ,(loop-cdrify (cdr form) q)))
+		      ('t `(and (cdr ,q)
+				(setq ,tail (last (cdr ,tail)))))))
+	   #-Hairy-Collection
+	     (let ((q `(cond (,tail (cdr (rplacd ,tail ,tem)))
+			     ((setq ,var ,tem)))))
+		(if (and (not (atom form)) (eq (car form) 'list) (cdr form))
+		    `(setq ,tem ,form ,tail ,(loop-cdrify (cddr form) q))
+		    `(and (setq ,tem ,form) (setq ,tail (last ,q))))))))))
+
+
+(defun loop-cdrify (arglist form)
+    (do ((size (length arglist) (- size 4)))
+	((< size 4)
+	 (if (zerop size) form
+	     (list (cond ((= size 1) 'cdr) ((= size 2) 'cddr) ('t 'cdddr))
+		   form)))
+      #+Run-in-Maclisp (declare (fixnum size))
+      (setq form (list 'cddddr form))))
 
 
-(defun loop-do-while (cond)
-  (loop-emit-body `(,cond ,(loop-get-form) (go end-loop))))
+(defun loop-do-while (cond kwd &aux (form (loop-get-form)))
+    (and loop-conditionals (loop-simple-error
+			      "not allowed inside LOOP conditional"
+			      (list kwd form)))
+    (loop-pseudo-body `(,cond ,form (go end-loop))))
+
 
 (defun loop-do-when (negate?)
   (let ((form (loop-get-form)) (cond))
-    (cond ((loop-tequal (cadr loop-source-code) "it")
-	   ;WHEN foo RETURN IT and the like
-	   (or loop-when-it-variable
-	       (setq loop-when-it-variable
-		     (loop-make-variable (gensym) nil nil)))
-	   (setq cond `(setq ,loop-when-it-variable ,form))
-	   (setq loop-source-code		;Plug in variable for IT
-		 (list* (car loop-source-code)
-			loop-when-it-variable
-			(cddr loop-source-code))))
-	  (t (setq cond form)))
+    (cond ((si:loop-tequal (cadr loop-source-code) 'it)
+	     ;WHEN foo RETURN IT and the like
+	     (setq cond `(setq ,(loop-when-it-variable) ,form))
+	     (setq loop-source-code		;Plug in variable for IT
+		   (list* (car loop-source-code)
+			  loop-when-it-variable
+			  (cddr loop-source-code))))
+	  ('t (setq cond form)))
     (and negate? (setq cond `(not ,cond)))
-    (setq loop-conditionals (nconc loop-conditionals (ncons (list cond))))))
-
+    (setq loop-conditionals (nconc loop-conditionals `((cond (,cond)))))))
 
 (defun loop-do-with ()
-  (do ((var) (equals) (val) (dtype)) (nil)
-    (setq var (pop loop-source-code) equals (car loop-source-code))
-    (cond ((loop-tequal equals "=")
-	     (pop loop-source-code)
-	     (setq val (pop loop-source-code) dtype nil))
-	  ((or (loop-tequal equals "and")
-	       (loop-lookup-keyword equals loop-keyword-alist))
-	     (setq val nil dtype nil))
-	  (t (setq dtype (pop loop-source-code)
-		   equals (car loop-source-code))
-	     (cond ((loop-tequal equals "=")
-		      (pop loop-source-code)
-		      (setq val (pop loop-source-code)))
-		   ((and (not (null loop-source-code))
-			 (not (loop-lookup-keyword equals loop-keyword-alist))
-			 (not (loop-tequal equals "and")))
-		      #-Multics (ferror nil "~S where = expected" equals)
-		      #+Multics (error
-				   "lisp:  loop was expecting = but found "
-				   equals))
-		   (t (setq val nil)))))
+  (do ((var) (equals) (val) (dtype)) (())
+    (setq var (loop-pop-source) equals (car loop-source-code))
+    (cond ((si:loop-tequal equals '=)
+	     (loop-pop-source)
+	     (setq val (loop-get-form) dtype ()))
+	  ((or (si:loop-tequal equals 'and)
+	       (si:loop-tassoc equals loop-keyword-alist)
+	       (si:loop-tassoc equals loop-iteration-keyword-alist))
+	     (setq val () dtype ()))
+	  ('t (setq dtype (loop-pop-source) equals (car loop-source-code))
+	      (cond ((si:loop-tequal equals '=)
+		       (loop-pop-source)
+		       (setq val (loop-get-form)))
+		    ((and (not (null loop-source-code))
+			  (not (si:loop-tassoc equals loop-keyword-alist))
+			  (not (si:loop-tassoc
+				  equals loop-iteration-keyword-alist))
+			  (not (si:loop-tequal equals 'and)))
+		       (loop-simple-error "Garbage where = expected" equals))
+		    ('t (setq val ())))))
     (loop-make-variable var val dtype)
-    (cond ((not (loop-tequal (car loop-source-code) "and")) (return nil))
-	  ((pop loop-source-code))))
+    (if (not (si:loop-tequal (car loop-source-code) 'and)) (return ())
+	(loop-pop-source)))
   (loop-bind-block))
 
-(defun loop-do-always (true)
+(defun loop-do-always (pred)
   (let ((form (loop-get-form)))
-    (or true (setq form `(not ,form)))
-    (loop-emit-body `(or ,form (return nil)))
-    (push '(return t) loop-after-epilogue)))
+    (loop-emit-body `(,pred ,form (return ())))
+    (push '(return 't) loop-after-epilogue)))
 
 ;THEREIS expression
 ;If expression evaluates non-nil, return that value.
 (defun loop-do-thereis ()
-   (let ((var (loop-make-variable (gensym) nil nil))
-	 (expr (loop-get-form)))
-      (loop-emit-body `(and (setq ,var ,expr) (return ,var)))))
+   (loop-emit-body `(and (setq ,(loop-when-it-variable) ,(loop-get-form))
+			 (return ,loop-when-it-variable))))
 
-;FOR variable keyword ..args.. {AND more-clauses}
-;For now AND only allowed with the = keyword
-(defun loop-do-for ()
-  (and loop-conditionals
-       #-Multics (ferror nil "FOR//AS starting inside of conditional")
-       #+Multics
-         (error "lisp:  loop for or as starting inside of conditional"))
-  (do ((var) (data-type?) (keyword) (first-arg)
-       (tem) (pretests) (posttests) (inits) (steps))
-      (nil)
-    (setq var (pop loop-source-code) data-type? (loop-optional-type)
-	  keyword (pop loop-source-code) first-arg (pop loop-source-code))
-    (and (or (not (symbolp keyword))
-	     (null (setq tem (loop-lookup-keyword
-			        keyword
-				loop-for-keyword-alist))))
-	 #-Multics (ferror nil "~S unknown keyword in FOR//AS clause" keyword)
-	 #+Multics (error
-		      "lisp:  unknown keyword in for or as loop clause -- "
-		      keyword))
-    (setq tem (lexpr-funcall (cadr tem) var first-arg data-type? (cddr tem)))
-    (and (car tem) (push (car tem) pretests))
-    (setq inits (nconc inits (append (car (setq tem (cdr tem))) nil)))
-    (and (car (setq tem (cdr tem))) (push (car tem) posttests))
-    (setq steps (nconc steps (append (car (setq tem (cdr tem))) nil)))
-    (cond ((not (loop-tequal (car loop-source-code) "and"))
-	     (cond ((cdr (setq pretests (nreverse pretests)))
-		      (push 'or pretests))
-		   (t (setq pretests (car pretests))))
-	     (cond ((cdr (setq posttests (nreverse posttests)))
-		      (push 'or posttests))
-		   (t (setq posttests (car posttests))))
-	     (and pretests (push `(and ,pretests (go end-loop)) loop-body))
-	     (and inits (push (loop-make-psetq inits) loop-body))
-	     (and posttests (push `(and ,posttests (go end-loop))
-				  loop-after-body))
-	     (and steps (push (loop-make-psetq steps) loop-after-body))
+
+; Hacks
+
+#+Run-in-Maclisp
+  (declare (fixnum (loop-simplep-1 notype)))
+
+(defun si:loop-simplep (expr)
+    (if (null expr) 0
+	(*catch 'si:loop-simplep
+	    (let ((ans (si:loop-simplep-1 expr)))
+	       #+Run-in-Maclisp (declare (fixnum ans))
+	       (and (< ans 20.) ans)))))
+
+(defun si:loop-simplep-1 (x)
+  (let ((z 0))
+    #+Run-in-Maclisp (declare (fixnum z))
+    (cond ((loop-constantp x) 0)
+	  ((atom x) 1)
+	  ((eq (car x) 'cond)
+	     (do ((cl (cdr x) (cdr cl))) ((null cl))
+	       (do ((f (car cl) (cdr f))) ((null f))
+		 (setq z (+ (si:loop-simplep-1 (car f)) z 1))))
+	     z)
+	  ((symbolp (car x))
+	     (let ((fn (car x)) (tem ()))
+	       (cond ((setq tem (get fn 'si:loop-simplep))
+		        (if (fixp tem) (setq z tem)
+			    (setq z (funcall tem x) x ())))
+		     ((memq fn '(null not eq go return progn)))
+		     (#+Run-on-PDP10
+		        (or (not (minusp (+internal-carcdrp fn)))
+				      (eq fn 'cxr))
+		      #-Run-on-PDP10 (memq fn '(car cdr))
+		        (setq z 1))
+		   #-Run-on-PDP10
+		     ((memq fn '(caar cadr cdar cddr)) (setq z 2))
+		   #-Run-on-PDP10
+		     ((memq fn '(caaar caadr cadar caddr
+				 cdaar cdadr cddar cdddr))
+		        (setq z 3))
+		   #-Run-on-PDP10
+		     ((memq fn '(caaaar caaadr caadar caaddr
+				 cadaar cadadr caddar cadddr
+				 cdaaar cdaadr cdadar cdaddr
+				 cddaar cddadr cdddar cddddr))
+		        (setq z 4))
+		     ((memq fn '(> < greaterp lessp plusp minusp typep zerop
+				 plus difference + - add1 sub1 1+ 1-
+				 +$ -$ 1+$ 1-$ boole rot ash ldb equal atom
+				 setq prog1 prog2 and or =
+				 . #+Lispm (aref ar-1 ar-2 ar-3 / / /)
+				   #+For-NIL (vref vector-length)
+				   #-(or Lispm For-NIL) ()
+				   )
+			    )
+		        (setq z 2))
+		     (#+(or Lispm For-PDP-10)
+		        (not (eq (setq tem (macroexpand-1 x)) x))
+		      #+Multics
+		        (setq tem (get (car x) 'macro))
+		      #+For-NIL
+		        (let ((exp? ()))
+			  (multiple-value (tem exp?) (macroexpand-1*m x))
+			  exp?)
+		      #+Multics (setq tem (funcall tem x))
+		      (setq z (si:loop-simplep-1 tem) x ()))
+		     ('t (*throw 'si:loop-simplep ())))
+	       (do ((l (cdr x) (cdr l))) ((null l))
+		 (setq z (+ (si:loop-simplep-1 (car l)) 1 z)))
+	       z))
+	  ('t (*throw 'si:loop-simplep ())))))
+
+
+; The iteration driver
+(defun loop-hack-iteration (entry)
+  (do ((last-entry entry)
+       (source loop-source-code loop-source-code)
+       (pre-step-tests ())
+       (steps ())
+       (post-step-tests ())
+       (pseudo-steps ())
+       (pre-loop-pre-step-tests ())
+       (pre-loop-steps ())
+       (pre-loop-post-step-tests ())
+       (pre-loop-pseudo-steps ())
+       (tem) (data) (foo) (bar))
+      (())
+    ; Note we collect endtests in reverse order, but steps in correct
+    ; order.  LOOP-END-TESTIFY does the nreverse for us.
+    (setq tem (setq data (apply (cadr entry) (cddr entry))))
+    (and (car tem) (push (car tem) pre-step-tests))
+    (setq steps (nconc steps (loop-copylist* (car (setq tem (cdr tem))))))
+    (and (car (setq tem (cdr tem))) (push (car tem) post-step-tests))
+    (setq pseudo-steps
+	  (nconc pseudo-steps (loop-copylist* (car (setq tem (cdr tem))))))
+    (setq tem (cdr tem))
+    (and (or loop-conditionals loop-emitted-body?)
+	 (or tem pre-step-tests post-step-tests pseudo-steps)
+	 (let ((cruft (list (car entry) (car source)
+			    (cadr source) (caddr source))))
+	    (if loop-emitted-body?
+		(loop-simple-error
+		   "Iteration is not allowed to follow body code" cruft)
+		(loop-simple-error
+		   "Iteration starting inside of conditional in LOOP"
+		   cruft))))
+    (or tem (setq tem data))
+    (and (car tem) (push (car tem) pre-loop-pre-step-tests))
+    (setq pre-loop-steps
+	  (nconc pre-loop-steps (loop-copylist* (car (setq tem (cdr tem))))))
+    (and (car (setq tem (cdr tem))) (push (car tem) pre-loop-post-step-tests))
+    (setq pre-loop-pseudo-steps
+	  (nconc pre-loop-pseudo-steps (loop-copylist* (cadr tem))))
+    (cond ((or (not (si:loop-tequal (car loop-source-code) 'and))
+	       (and loop-conditionals
+		    (not (si:loop-tassoc (cadr loop-source-code)
+					 loop-iteration-keyword-alist))))
+	     (setq foo (list (loop-end-testify pre-loop-pre-step-tests)
+			     (loop-make-psetq pre-loop-steps)
+			     (loop-end-testify pre-loop-post-step-tests)
+			     (loop-make-setq pre-loop-pseudo-steps))
+		   bar (list (loop-end-testify pre-step-tests)
+			     (loop-make-psetq steps)
+			     (loop-end-testify post-step-tests)
+			     (loop-make-setq pseudo-steps)))
+	     (cond ((not loop-conditionals)
+		      (setq loop-before-loop (nreconc foo loop-before-loop)
+			    loop-after-body (nreconc bar loop-after-body)))
+		   ('t ((lambda (loop-conditionals)
+			   (push (loop-make-conditionalization
+				    (cons 'progn (delq () foo)))
+				 loop-before-loop))
+			(mapcar '(lambda (x)	;Copy parts that will get rplacd'ed
+				   (cons (car x)
+					 (mapcar '(lambda (x) (loop-copylist* x)) (cdr x))))
+				loop-conditionals))
+		       (push (loop-make-conditionalization
+			        (cons 'progn (delq () bar)))
+			     loop-after-body)))
 	     (loop-bind-block)
-	     (return nil))
-	  (t (pop loop-source-code)))))
+	     (return ())))
+    (loop-pop-source) ; flush the "AND"
+    (setq entry (cond ((setq tem (si:loop-tassoc
+				    (car loop-source-code)
+				    loop-iteration-keyword-alist))
+		         (loop-pop-source)
+			 (setq last-entry tem))
+		      ('t last-entry)))))
+
+
+;FOR variable keyword ..args..
+(defun loop-do-for ()
+  (let ((var (loop-pop-source))
+	(data-type? (loop-optional-type))
+	(keyword (loop-pop-source))
+	(first-arg (loop-get-form))
+	(tem ()))
+    (or (setq tem (si:loop-tassoc keyword loop-for-keyword-alist))
+	(loop-simple-error
+	   "Unknown keyword in FOR//AS clause in LOOP"
+	   (list 'for var keyword)))
+    (lexpr-funcall (cadr tem) var first-arg data-type? (cddr tem))))
+
+
+(defun loop-do-repeat ()
+    (let ((var (loop-make-variable (gensym) (loop-get-form) 'fixnum)))
+       `((not (> ,var 0)) () () (,var (1- ,var)))))
+
+
+; Kludge the First
+(defun loop-when-it-variable ()
+    (or loop-when-it-variable
+	(setq loop-when-it-variable
+	      (loop-make-variable (gensym) () ()))))
+
+
 
 (defun loop-for-equals (var val data-type?)
-  (cond ((loop-tequal (car loop-source-code) "then")
+  (cond ((si:loop-tequal (car loop-source-code) 'then)
 	   ;FOR var = first THEN next
-	   (pop loop-source-code)
-	   (loop-make-variable var val data-type?)
-	   (list nil nil nil `(,var ,(loop-get-form))))
-	(t (loop-make-variable var nil data-type?)
-	   (list nil `(,var ,val) nil nil))))
+	   (loop-pop-source)
+	   (loop-make-iteration-variable var val data-type?)
+	   `(() (,var ,(loop-get-form)) () ()
+	     () () () ()))
+	('t (loop-make-iteration-variable var () data-type?)
+	    (let ((varval (list var val)))
+	      (cond (loop-emitted-body?
+		     (loop-emit-body (loop-make-setq varval))
+		     '(() () () ()))
+		    (`(() ,varval () ())))))))
+
+(defun loop-for-first (var val data-type?)
+    (or (si:loop-tequal (car loop-source-code) 'then)
+	(loop-simple-error "found where THEN expected in FOR ... FIRST"
+			   (car loop-source-code)))
+    (loop-pop-source)
+    (loop-make-iteration-variable var () data-type?)
+    `(() (,var ,(loop-get-form)) () () () (,var ,val) () ()))
 
 
-(defun loop-for-on (var val data-type?)
-  data-type? ;Prevent unused argument error
-  (let ((step (if (loop-tequal (car loop-source-code) "by")
-		  (progn (pop loop-source-code) (pop loop-source-code))
-		  '(function cdr)))
-	(var1 (cond ((not (atom var))
-		       ; Destructuring?  Then we can't use VAR as the
-		       ; iteration variable.
-		       (loop-make-variable var nil nil)
-		       (loop-make-variable (gensym) val nil))
-		    (t (loop-make-variable var val nil)
-		       var))))
-    (setq step (cond ((or (atom step)
-			  (not (memq (car step) '(quote function))))
-		        `(funcall ,(loop-make-variable (gensym) step nil)
-				  ,var1))
-		     (t (list (cadr step) var1))))
-    (list `(null ,var1) (and (not (eq var var1)) `(,var ,var1))
-	  nil `(,var1 ,step))))
+(defun loop-list-stepper (var val data-type? fn)
+    (let ((stepper (cond ((si:loop-tequal (car loop-source-code) 'by)
+			    (loop-pop-source) (loop-get-form))
+			 ('t '(function cdr))))
+	  (var1 ()) (stepvar ()) (step ()) (et ()) (pseudo ()))
+       (setq step (if (or (atom stepper)
+			  (not (memq (car stepper) '(quote function))))
+		      `(funcall ,(setq stepvar (gensym)))
+		      (list (cadr stepper))))
+       (cond ((and (atom var)
+		   ;; (eq (car step) 'cdr)
+		   (not fn))
+	        (setq var1 (loop-make-iteration-variable var val data-type?)))
+	     ('t (loop-make-iteration-variable var () data-type?)
+		 (setq var1 (loop-make-variable (gensym) val ()))
+		 (setq pseudo (list var (if fn (list fn var1) var1)))))
+       (rplacd (last step) (list var1))
+       (and stepvar (loop-make-variable stepvar stepper ()))
+       (setq stepper (list var1 step) et `(null ,var1))
+       (if (not pseudo) `(() ,stepper ,et () () () ,et ())
+	   (if (eq (car step) 'cdr) `(,et ,pseudo () ,stepper)
+	       `((null (setq . ,stepper)) () () ,pseudo ,et () () ,pseudo)))))
 
 
-(defun loop-for-in (var val data-type?)
-  (let ((var1 (gensym))			;VAR1 is list, VAR is element
-	(step (if (loop-tequal (car loop-source-code) "by")
-		    (progn (pop loop-source-code) (pop loop-source-code))
-		    '(function cdr))))
-      (loop-make-variable var1 val nil)
-      (loop-make-variable var nil data-type?)
-      (setq step (cond ((or (atom step)
-			    (not (memq (car step) '(quote function))))
-			  `(funcall (loop-make-variable (gensym) step nil)
-				    var1))
-		       (t (list (cadr step) var1))))
-      (list `(null ,var1) `(,var (car ,var1)) nil `(,var1 ,step))))
+(defun loop-for-arithmetic (var val data-type? kwd)
+  ; Args to loop-sequencer:
+  ; indexv indexv-type variable? vtype? sequencev? sequence-type
+  ; stephack? default-top? crap prep-phrases
+  (si:loop-sequencer
+     var (or data-type? 'fixnum) () () () () () () `(for ,var ,kwd ,val)
+     (cons (list kwd val)
+	   (loop-gather-preps
+	      '(from upfrom downfrom to upto downto above below by)
+	      ()))))
 
 
-(defun loop-for-arithmetic (var val data-type? forced-direction)
-  (let ((limit) (step 1) (test) (direction) (eval-to-first t) (inclusive)) 
-     (do () (nil)
-       (cond ((not (symbolp (car loop-source-code))) (return nil))
-	     ((loop-tequal (car loop-source-code) "by")
-	      (pop loop-source-code)
-	      (setq step (loop-get-form) eval-to-first t))
-	     ((loop-tequal (car loop-source-code) "to")
-	      (pop loop-source-code)
-	      (setq limit (loop-get-form) inclusive t eval-to-first nil))
-	     ((loop-tequal (car loop-source-code) "downto")
-	      (pop loop-source-code)
-	      (setq limit (loop-get-form) inclusive t
-		    eval-to-first nil direction 'down))
-	     ((loop-tequal (car loop-source-code) "below")
-	      (pop loop-source-code)
-	      (setq limit (loop-get-form) direction 'up eval-to-first nil))
-	     ((loop-tequal (car loop-source-code) "above")
-	      (pop loop-source-code)
-	      (setq limit (loop-get-form) direction 'down eval-to-first nil))
-	     (t (return nil))))
-     (cond ((null direction) (setq direction (or forced-direction 'up)))
-	   ((and forced-direction (not (eq forced-direction direction)))
-	      #-Multics
-	        (ferror nil "I can't step ~S in both directions at once!" var)
-	      #+Multics
-	        (error "lisp:  loop variable stepping lossage with " var)))
-     (or data-type? (setq data-type? 'fixnum))
-     (and (eq data-type? 'flonum) (fixp step) (setq step (float step)))
-     (loop-make-variable var val data-type?)
-     (cond ((and limit eval-to-first)
-	      (setq limit (loop-maybe-bind-form limit data-type?))))
-     (setq step (loop-maybe-bind-form step data-type?))
-     (cond ((and limit (not eval-to-first))
-	      (setq limit (loop-maybe-bind-form limit data-type?))))
-     (cond ((not (null limit))
-	      (let ((z (list var limit)))
-		 (setq test (cond ((eq direction 'up)
-				     (cond (inclusive `(greaterp . ,z))
-					   (t `(not (lessp . ,z)))))
-				  (t (cond (inclusive `(lessp . ,z))
-					   (t `(not (greaterp . ,z))))))))))
-     (setq step (cond ((eq direction 'up)
-			 (cond ((equal step 1) `(add1 ,var))
-			       (t `(plus ,var ,step))))
-		      ((equal step 1) `(sub1 ,var))
-		      (t `(difference ,var ,step))))
-     ;; The object of the following crock is to get the INTERPRETER to
-     ;; do error checking.  This is only correct for data-type of FIXNUM,
-     ;; since floating-point arithmetic is contagious.
-     #M (and (eq data-type? 'fixnum)
-	     (rplaca step (cdr (assq (car step) '((sub1 . 1-) (add1 . 1+)
-						  (plus . +)
-						  (difference . -))))))
-     (list test nil nil `(,var ,step))))
-
+(defun si:loop-named-variable (name)
+    (let ((tem (si:loop-tassoc name loop-named-variables)))
+       (cond ((null tem) (gensym))
+	     ('t (setq loop-named-variables (delq tem loop-named-variables))
+		 (cdr tem)))))
 
+; Note:  path functions are allowed to use loop-make-variable, hack
+; the prologue, etc.
 (defun loop-for-being (var val data-type?)
    ; FOR var BEING something ... - var = VAR, something = VAL.
    ; If what passes syntactically for a pathname isn't, then
-   ; we trap to the ATTACHMENTS path;  the expression which looked like
-   ; a path is given as an argument to the IN preposition.  If
-   ; LOOP-ATTACHMENT-TRANSFORMER is not NIL, then we call that on the
-   ; "form" to get the actual form;  otherwise, we quote it.  Thus,
+   ; we trap to the DEFAULT-LOOP-PATH path;  the expression which looked like
+   ; a path is given as an argument to the IN preposition.  Thus,
    ; by default, FOR var BEING EACH expr OF expr-2
-   ; ==> FOR var BEING ATTACHMENTS IN 'expr OF expr-2.
+   ; ==> FOR var BEING DEFAULT-LOOP-PATH IN expr OF expr-2.
    (let ((tem) (inclusive?) (ipps) (each?) (attachment))
-     (cond ((loop-tequal val "each")
-	      (setq each? t val (car loop-source-code)))
-	   (t (push val loop-source-code)))
-     (cond ((and (setq tem (loop-lookup-keyword val loop-path-keyword-alist))
-		 (or each? (not (loop-tequal (cadr loop-source-code) "and"))))
+     (if (or (si:loop-tequal val 'each) (si:loop-tequal val 'the))
+	 (setq each? 't val (car loop-source-code))
+	 (push val loop-source-code))
+     (cond ((and (setq tem (si:loop-tassoc val loop-path-keyword-alist))
+		 (or each? (not (si:loop-tequal (cadr loop-source-code)
+						'and))))
 	      ;; FOR var BEING {each} path {prep expr}..., but NOT
 	      ;; FOR var BEING var-which-looks-like-path AND {ITS} ...
-	      (pop loop-source-code))
-	   (t (setq val (loop-get-form))
-	      (cond ((loop-tequal (car loop-source-code) "and")
-		       ;; FOR var BEING value AND ITS path-or-ar
-		       (or (null each?)
-			   #-Multics
-			     (ferror nil
-			       "Malformed clause, FOR ~S BEING EACH ..." var)
-			   #+Multics
-			     (error
-			      "lisp:  malformed being clause in loop of var "
-			      var))
-		       (setq ipps `((of ,val)) inclusive? t)
-		       (pop loop-source-code)
-		       (or (loop-tequal (setq tem (pop loop-source-code))
-					"its")
-			   (loop-tequal tem "his")
-			   (loop-tequal tem "her")
-			   (loop-tequal tem "their")
-			   (loop-tequal tem "each")
-			   #-Multics
-			     (ferror nil "~S found where ITS or EACH expected"
-				     tem)
-			   #+Multics
-			     (error
-			      "lisp:  loop expected its or each but found "
-			      tem))
-		       (cond ((setq tem (loop-lookup-keyword
-					   (car loop-source-code)
-					   loop-path-keyword-alist))
-				(pop loop-source-code))
-			     (t (push (setq attachment `(in ,(loop-get-form)))
-				      ipps))))
-		    ((not (setq tem (loop-lookup-keyword
-				       (car loop-source-code)
-				       loop-path-keyword-alist)))
-		       ; FOR var BEING {each} a-r ...
-		       (setq ipps (list (setq attachment (list 'in val)))))
-		    (t ; FOR var BEING {each} pathname ...
-		       ; Here, VAL should be just PATHNAME.
-		       (pop loop-source-code)))))
+	      (loop-pop-source))
+	   ('t (setq val (loop-get-form))
+	       (cond ((si:loop-tequal (car loop-source-code) 'and)
+			;; FOR var BEING value AND ITS path-or-ar
+			(or (null each?)
+			    (loop-simple-error
+			       "Malformed BEING EACH clause in LOOP" var))
+			(setq ipps `((of ,val)) inclusive? 't)
+			(loop-pop-source)
+			(or (si:loop-tmember (setq tem (loop-pop-source))
+					     '(its his her their each))
+			    (loop-simple-error
+			       "found where ITS or EACH expected in LOOP path"
+			       tem))
+			(if (setq tem (si:loop-tassoc
+					 (car loop-source-code)
+					 loop-path-keyword-alist))
+			    (loop-pop-source)
+			    (push (setq attachment `(in ,(loop-get-form)))
+				  ipps)))
+		     ((not (setq tem (si:loop-tassoc
+					(car loop-source-code)
+					loop-path-keyword-alist)))
+			; FOR var BEING {each} a-r ...
+			(setq ipps (list (setq attachment (list 'in val)))))
+		     ('t ; FOR var BEING {each} pathname ...
+			 ; Here, VAL should be just PATHNAME.
+			 (loop-pop-source)))))
      (cond ((not (null tem)))
-	   ((not (setq tem (loop-lookup-keyword 'attachments
-						loop-path-keyword-alist)))
-	      #-Multics
-	        (ferror nil "ATTACHMENTS not defined as a path - you lose")
-	      #+Multics
-	        (error "lisp:  loop trapped to attachments path illegally"))
-	   (t (or attachment (break barf))
-	      (rplaca (cdr attachment)
-		      (cond (loop-attachment-transformer
-			       (funcall loop-attachment-transformer
-					(cadr attachment)))
-			    (t (list 'quote (cadr attachment)))))))
+	   ((not (setq tem (si:loop-tassoc 'default-loop-path
+					   loop-path-keyword-alist)))
+	      (loop-simple-error "Undefined LOOP iteration path"
+				 (cadr attachment))))
      (setq tem (funcall (cadr tem) (car tem) var data-type?
-			(nreconc ipps (loop-gather-preps (caddr tem)))
+			(nreconc ipps (loop-gather-preps (caddr tem) 't))
 			inclusive? (caddr tem) (cdddr tem)))
-     ;; TEM is now (bindings prologue-forms endtest setups steps)
-     (mapc '(lambda (x)
-	       (let (var val dtype)
-		  (cond ((atom x) (setq var x))
-			(t (setq var (car x) val (cadr x) dtype (caddr x))))
-		  (loop-make-variable var val dtype)))
-	   (car tem))
+     (and loop-named-variables
+	  (loop-simple-error "unused USING variables" loop-named-variables))
+     ; For error continuability (if there is any):
+     (setq loop-named-variables ())
+     ;; TEM is now (bindings prologue-forms . stuff-to-pass-back)
+     (do ((l (car tem) (cdr l)) (x)) ((null l))
+       (if (atom (setq x (car l)))
+	   (loop-make-iteration-variable x () ())
+	   (loop-make-iteration-variable (car x) (cadr x) (caddr x))))
      (setq loop-prologue (nconc (reverse (cadr tem)) loop-prologue))
      (cddr tem)))
 
 
-(defun loop-gather-preps (preps-allowed)
-   (do ((list nil (cons (list (pop loop-source-code) (loop-get-form)) list))
-	(token (car loop-source-code) (car loop-source-code)))
-       ((not #M (memq token preps-allowed)
-	     #Q (and (symbolp token)
-		     (mem #'string-equal token preps-allowed)))
-	(nreverse list))))
-
+(defun loop-gather-preps (preps-allowed crockp)
+   (do ((token (car loop-source-code) (car loop-source-code)) (preps ()))
+       (())
+     (cond ((si:loop-tmember token preps-allowed)
+	      (push (list (loop-pop-source) (loop-get-form)) preps))
+	   ((si:loop-tequal token 'using)
+	      (loop-pop-source)
+	      (or crockp (loop-simple-error
+			    "USING used in illegal context"
+			    (list 'using (car loop-source-code))))
+	      (do ((z (car loop-source-code) (car loop-source-code)) (tem))
+		  ((atom z))
+		(and (or (atom (cdr z))
+			 (not (null (cddr z)))
+			 (not (symbolp (car z)))
+			 (and (cadr z) (not (symbolp (cadr z)))))
+		     (loop-simple-error
+		        "bad variable pair in path USING phrase" z))
+		(cond ((not (null (cadr z)))
+		         (and (setq tem (si:loop-tassoc
+					   (car z) loop-named-variables))
+			      (loop-simple-error
+			         "Duplicated var substitition in USING phrase"
+				 (list tem z)))
+			 (push (cons (car z) (cadr z)) loop-named-variables)))
+		(loop-pop-source)))
+	   ('t (return (nreverse preps))))))
 
 (defun loop-add-path (name data)
-    (loop-add-keyword (cons name data) 'loop-path-keyword-alist))
+    (setq loop-path-keyword-alist
+	  (cons (cons name data)
+		; Don't change this to use DELASSQ in PDP10, the lsubr
+		; calling sequence makes that lose.
+		(delq (si:loop-tassoc name loop-path-keyword-alist)
+		      loop-path-keyword-alist)))
+    ())
 
+#-(or Lispm Multics)
+(declare ; Suck my obarray...
+	 (own-symbol define-loop-path define-loop-sequence-path))
 
-(defmacro define-loop-path (names &rest cruft
-			    &aux forms)
-   (setq forms (mapcar
-		 #'(lambda (name)
-		     `(loop-add-path
-			',name ',cruft))
-		 (cond ((atom names) (list names))
-		       (t names))))
-   #-Multics `(eval-when (eval load compile) ,@forms)
-   #+Multics `(progn 'compile (declare ,@forms) ,@forms))
+(defmacro define-loop-path (names &rest cruft)
+  (setq names (if (atom names) (list names) names))
+  #-For-Maclisp
+    (let ((forms (mapcar #'(lambda (name) `(loop-add-path ',name ',cruft))
+			 names)))
+       `(eval-when (eval load compile)
+	    #-Lispm (|forget-macromemos/|| 'loop)
+	    ,@forms))
+  #+For-Maclisp
+    (subst (do ((l)) ((null names) l)
+	     (setq l (cons `(setq loop-path-keyword-alist
+				  (cons '(,(car names) . ,cruft)
+					(delq (assq ',(car names)
+						    loop-path-keyword-alist)
+					      loop-path-keyword-alist)))
+			   l)
+		   names (cdr names)))
+	   'progn
+	   '(eval-when (eval load compile)
+	     #+Multics (or (boundp 'loop-path-keyword-alist)
+			   (setq loop-path-keyword-alist ()))
+	     #-Multics (and (or (boundp 'loop-path-keyword-alist)
+				(setq loop-path-keyword-alist ()))
+			    (|forget-macromemos/|| 'loop))
+	       . progn)))
 
 
-(defun loop-path-carcdr (name var dtype pps inclusive? preps data)
-    preps dtype ;Prevent unused arguments error
-    (let ((vars) (step) (endtest `(,(cadr data) ,var)) (tem))
-       (or (setq tem (loop-lookup-keyword 'of pps))
-	   #-Multics (ferror nil "No initialization given for ~S path" name)
-	   #+Multics
-	     (error "lisp:  loop path has no initialization -- " name))
-       (setq vars `((,var ,(cond (inclusive? (cadr tem))
-				 (t `(,(car data) ,(cadr tem))))
-			  ,dtype)))
-       (setq step `(,var (,(car data) ,var)))
-       (list vars nil nil nil endtest step)))
+(defun si:loop-sequencer (indexv indexv-type
+			  variable? vtype?
+			  sequencev? sequence-type?
+			  stephack? default-top?
+			  crap prep-phrases)
+   (let ((endform) (sequencep) (test)
+	 (step ; Gross me out!
+	       (add1 (or (loop-typed-init indexv-type) 0)))
+	 (dir) (inclusive-iteration?) (start-given?) (limit-given?))
+     (and variable? (loop-make-iteration-variable variable? () vtype?))
+     (do ((l prep-phrases (cdr l)) (prep) (form) (odir)) ((null l))
+       (setq prep (caar l) form (cadar l))
+       (cond ((si:loop-tmember prep '(of in))
+		(and sequencep (loop-simple-error
+				  "Sequence duplicated in LOOP path"
+				  (list variable? (car l))))
+		(setq sequencep 't)
+		(loop-make-variable sequencev? form sequence-type?))
+	     ((si:loop-tmember prep '(from downfrom upfrom))
+	        (and start-given?
+		     (loop-simple-error
+		        "Iteration start redundantly specified in LOOP sequencing"
+			(append crap l)))
+		(setq start-given? 't)
+		(cond ((si:loop-tequal prep 'downfrom) (setq dir 'down))
+		      ((si:loop-tequal prep 'upfrom) (setq dir 'up)))
+		(loop-make-iteration-variable indexv form indexv-type))
+	     ((cond ((si:loop-tequal prep 'to)
+		       (setq inclusive-iteration? (setq dir 'up)))
+		    ((si:loop-tequal prep 'downto)
+		       (setq inclusive-iteration? (setq dir 'down)))
+		    ((si:loop-tequal prep 'above) (setq dir 'down))
+		    ((si:loop-tequal prep 'below) (setq dir 'up)))
+		(and limit-given?
+		     (loop-simple-error
+		       "Endtest redundantly specified in LOOP sequencing path"
+		       (append crap l)))
+		(setq limit-given? 't)
+		(setq endform (loop-maybe-bind-form form indexv-type)))
+	     ((si:loop-tequal prep 'by)
+		(setq step (if (loop-constantp form) form
+			       (loop-make-variable (gensym) form 'fixnum))))
+	     ('t ; This is a fatal internal error...
+		 (loop-simple-error "Illegal prep in sequence path"
+				    (append crap l))))
+       (and odir dir (not (eq dir odir))
+	    (loop-simple-error
+	       "Conflicting stepping directions in LOOP sequencing path"
+	       (append crap l)))
+       (setq odir dir))
+     (and sequencev? (not sequencep)
+	  (loop-simple-error "Missing OF phrase in sequence path" crap))
+     ; Now fill in the defaults.
+     (setq step (list indexv step))
+     (cond ((memq dir '(() up))
+	      (or start-given?
+		  (loop-make-iteration-variable indexv 0 indexv-type))
+	      (and (or limit-given?
+		       (cond (default-top?
+			        (loop-make-variable
+				   (setq endform (gensym)) () indexv-type)
+				(push `(setq ,endform ,default-top?)
+				      loop-prologue))))
+		   (setq test (if inclusive-iteration? '(greaterp . args)
+				  '(not (lessp . args)))))
+	      (push 'plus step))
+	   ('t (cond ((not start-given?)
+		        (or default-top?
+			    (loop-simple-error
+			       "Don't know where to start stepping"
+			       (append crap prep-phrases)))
+			(loop-make-iteration-variable indexv 0 indexv-type)
+			(push `(setq ,indexv
+				     (,(loop-typed-arith 'sub1 indexv-type)
+				      ,default-top?))
+			      loop-prologue)))
+	       (cond ((and default-top? (not endform))
+		        (setq endform (loop-typed-init indexv-type)
+			      inclusive-iteration? 't)))
+	       (and (not (null endform))
+		    (setq test (if inclusive-iteration? '(lessp . args)
+				   '(not (greaterp . args)))))
+	       (push 'difference step)))
+     (and (member (caddr step) '(1 1.0
+				 . #.(and (loop-featurep Lispm)
+					  (list (small-float 1)))
+				   ))
+	  (rplacd (cdr (rplaca step (if (eq (car step) 'plus) 'add1 'sub1)))
+		  ()))
+     (rplaca step (loop-typed-arith (car step) indexv-type))
+     (setq step (list indexv step))
+     (setq test (loop-typed-arith test indexv-type))
+     (setq test (subst (list indexv endform) 'args test))
+     (and stephack? (setq stephack? `(,variable? ,stephack?)))
+     `(() ,step ,test ,stephack?
+       () () ,test ,stephack?)))
 
 
+; Although this function is no longer documented, the "SI:" is needed
+; because compiled files may reference it that way (via
+; DEFINE-LOOP-SEQUENCE-PATH).
+(defun si:loop-sequence-elements-path (path variable data-type
+				       prep-phrases inclusive?
+				       allowed-preps data)
+    allowed-preps ; unused
+    (let ((indexv (si:loop-named-variable 'index))
+	  (sequencev (si:loop-named-variable 'sequence))
+	  (fetchfun ()) (sizefun ()) (type ()) (default-var-type ())
+	  (crap `(for ,variable being the ,path)))
+       (cond ((not (null inclusive?))
+	        (rplacd (cddr crap) `(,(cadar prep-phrases) and its ,path))
+		(loop-simple-error "Can't step sequence inclusively" crap)))
+       (setq fetchfun (car data)
+	     sizefun (car (setq data (cdr data)))
+	     type (car (setq data (cdr data)))
+	     default-var-type (cadr data))
+       (list* () () ; dummy bindings and prologue
+	      (si:loop-sequencer
+	         indexv 'fixnum
+		 variable (or data-type default-var-type)
+		 sequencev type
+		 `(,fetchfun ,sequencev ,indexv) `(,sizefun ,sequencev)
+		 crap prep-phrases))))
+
+
+#+Run-on-PDP10
+(defun (define-loop-sequence-path macro) (x)
+    `(define-loop-path ,(cadr x) si:loop-sequence-elements-path
+	(of in from downfrom to downto below above by)
+	. ,(cddr x)))
+
+#-Run-on-PDP10
+(defmacro define-loop-sequence-path (path-name-or-names fetchfun sizefun
+				     &optional sequence-type element-type)
+    `(define-loop-path ,path-name-or-names
+	si:loop-sequence-elements-path
+	(of in from downfrom to downto below above by)
+	,fetchfun ,sizefun ,sequence-type ,element-type))
+
+
+;;;; NIL interned-symbols path
+
+#+For-NIL
+(progn 'compile
 (defun loop-interned-symbols-path (path variable data-type prep-phrases
-				   inclusive? allowed-preps data)
-   path data-type allowed-preps #m data		; unused vars
-   ; data-type should maybe be error-checked..... 
-   (let ((bindings) (presteps) (pretest) (poststeps) (posttest)
-	 (prologue) (indexv) #M (listv) (ob) #Q (localp (car data))
-	 (test) (step))
-     (push variable bindings)
-     (and (not (null prep-phrases))
-	  (or (cdr prep-phrases)
-	      (and (not (loop-tequal (caar prep-phrases) 'in))
-		   (not (loop-tequal (caar prep-phrases) 'of))))
-	  #M (error
-	      #+Multics "Illegal prep phrase(s) in interned-symbols path --"
-	      #-Multics '|Illegal prep phrase(s) in INTERNED-SYMBOLS path|
-	      (list* variable 'being path prep-phrases))
-	  #Q (ferror nil
-		  "Illegal prep phrase(s) in ~A path of ~A - ~A"
-		  path variable prep-phrases))
-     (push (list (setq ob (gensym))
-		 (cond ((null prep-phrases) #M 'obarray #Q 'package)
-		       (t #M (cadar prep-phrases)
-			  #Q `(pkg-find-package ,(cadar prep-phrases)))))
-	   bindings)
-     ; Multics lisp does not store single-char-obs in the obarray buckets.
-     ; Thus, we need to iterate over the portion of the obarray
-     ; containing them also.  (511. = (ascii 0))
-     (push `(,(setq indexv (gensym))
-	     #+Multics 639. #+(and Maclisp (not Multics)) 511. #Q 0
-	     fixnum)
-	      bindings)
-     #M (push `(,(setq listv (gensym)) nil) bindings)
-     #Q (push `(setq ,indexv (array-dimension-n 2 ,ob)) prologue)
-     (setq test
-	   #M `(and #-Multics (null ,listv)
-		    #+Multics (or (> ,indexv 510.) (null ,listv))
-		 (prog ()
-		  lp (cond ((< (setq ,indexv (1- ,indexv)) 0) (return t))
-			   ((setq ,listv (arraycall #+Multics obarray
-						    #-Multics t ,ob ,indexv))
-			      (return nil))
-			   (t (go lp)))))
-	   #Q `(prog ()
-	       lp (cond ((< (setq ,indexv (1- ,indexv)) 0)
-			 ,(cond (localp '(return t))
-				(t `(cond ((setq ,ob (pkg-super-package ,ob))
-					     (setq ,indexv
-						   (array-dimension-n 2 ,ob))
-					     (go lp))
-					  (t (return t))))))
-			((numberp (ar-2 ,ob 0 ,indexv)) (return nil))
-			(t (go lp)))))
-     (setq step
-	   `(,variable
-	       #+Multics (cond ((> ,indexv 510.) ,listv)
-			       (t (prog2 nil (car ,listv)
-					 (setq ,listv (cdr ,listv)))))
-	       #+(and Maclisp (not Multics)) (car ,listv)
-	       #+Lispm (ar-2 ,ob 1 ,indexv)))
-     (cond (inclusive? (setq posttest test poststeps step
-			     prologue `((setq ,variable ,ob))))
-	   (t (setq pretest test presteps step)))
-     #+(and Maclisp (not Multics))
-       (setq poststeps `(,@poststeps ,listv (cdr ,listv)))
-     (list bindings prologue pretest presteps posttest poststeps)))
+				   inclusive? allowed-preps data
+				   &aux statev1 statev2 statev3
+					(localp (car data)))
+   allowed-preps	; unused
+   (and inclusive? (loop-simple-error
+		      "INTERNED-SYMBOLS path doesn't work inclusively"
+		      variable))
+   (and (not (null prep-phrases))
+	(or (cdr prep-phrases)
+	    (not (si:loop-tmember (caar prep-phrases) '(in of))))
+	(ferror () "Illegal prep phrase(s) in ~A path of ~A - ~A"
+		path variable prep-phrases))
+   (loop-make-variable variable () data-type)
+   (loop-make-variable
+      (setq statev1 (gensym))
+      `(loop-find-package
+	  ,@(and prep-phrases `(,(cadar prep-phrases))))
+      ())
+   (loop-make-variable (setq statev2 (gensym)) () ())
+   (loop-make-variable (setq statev3 (gensym)) () ())
+   (push `(multiple-value (,statev1 ,statev2 ,statev3)
+	       (loop-initialize-mapatoms-state ,statev1 ',localp))
+	 loop-prologue)
+   `(() () (multiple-value (() ,statev1 ,statev2 ,statev3)
+	      (,(if localp 'loop-test-and-step-mapatoms-local
+		    'loop-test-and-step-mapatoms)
+	       ,statev1 ,statev2 ,statev3))
+     (,variable (loop-get-mapatoms-symbol ,statev1 ,statev2 ,statev3)) () ()))
 
+(defun loop-find-package (&optional (pkg () pkgp))
+  #+Run-in-Maclisp
+    (if pkgp pkg obarray)
+  #-Run-in-Maclisp
+    (if pkgp (pkg-find-package pkg) package))
 
+(defun loop-find-package-translate (form)
+  ; Note that we can only be compiling for nil-nil, so we only need
+  ; to consider that.  The run-in-maclisp conditionals in the functions
+  ; are for the benefit of running interpreted code.
+  (values (if (null (cdr form)) 'package `(pkg-find-package ,(cadr form))) 't))
+
+(putprop 'loop-find-package
+	 '(loop-find-package-translate)
+	 'source-trans)
+
+#-Run-in-Maclisp
+(defun loop-initialize-mapatoms-state (pkg localp)
+    (let* ((symtab (si:package-symbol-table pkg))
+	   (len (vector-length symtab)))
+       (values pkg len (if localp symtab (cons (ncons pkg) ())))))
+
+#+Run-in-Maclisp
+(defun loop-initialize-mapatoms-state (ob ())
+    (values ob (ncons nil) 511.))
+
+#-Run-in-Maclisp
+(defun loop-test-and-step-mapatoms (pkg index location &aux val)
+    (prog (symtab)
+	 (setq symtab (si:package-symbol-table pkg))
+      lp (cond ((minusp (setq index (1- index)))
+		  (do ((l (si:package-super-packages pkg) (cdr l)))
+		      ((null l) (cdr location))
+		    (or (memq (car l) (car location))
+			(memq (car l) (cdr location))
+			(rplacd location (cons (car l) (cdr location)))))
+		  (or (cdr location) (return (setq val 't)))
+		  (rplacd location
+			  (prog1 (cddr location)
+				 (rplaca location
+					 (rplacd (cdr location)
+						 (car location)))))
+		  (setq pkg (caar location))
+		  (setq symtab (si:package-symbol-table pkg))
+		  (setq index (vector-length symtab))
+		  (go lp))
+	       ((symbolp (vref symtab index)) (return ()))
+	       ('t (go lp))))
+    (values val pkg index location))
+
+#+Run-in-Maclisp
+(defun loop-test-and-step-mapatoms (ob list index)
+    (loop-test-and-step-mapatoms-local ob list index))
+
+#-Run-in-Maclisp
+(defun loop-test-and-step-mapatoms-local (pkg index symtab &aux val)
+    (prog ()
+      lp (cond ((minusp (setq index (1- index))) (return (setq val 't)))
+	       ((symbolp (vref symtab index)) (return ()))
+	       ('t (go lp))))
+    (values val pkg index symtab))
+
+#+Run-in-Maclisp
+(defun loop-test-and-step-mapatoms-local (ob list index &aux val)
+    (declare (fixnum index))
+    (prog () 
+     lp (cond ((not (null (cdr list)))
+	         (rplaca list (cadr list))
+		 (rplacd list (cddr list))
+		 (return ()))
+	      ((minusp (setq index (1- index))) (return (setq val 't)))
+	      ('t ; If this is going to run in multics maclisp also the
+		  ; arraycall should be hacked to have type `obarray'.
+		  (rplacd list (arraycall t ob index))
+		  (go lp))))
+    (values val ob list index))
+
+#-Run-in-Maclisp
+(defun loop-get-mapatoms-symbol (pkg index something-or-other)
+    (declare (ignore something-or-other))
+    (vref (si:package-symbol-table pkg) index))
+
+#+Run-in-Maclisp
+(defun loop-get-mapatoms-symbol (ob list index)
+    (declare (ignore ob index))
+    (car list))
+
+(and #+Run-in-Maclisp (status feature complr)
+     (*expr loop-get-mapatoms-symbol
+	    loop-initialize-mapatoms-state
+	    loop-test-and-step-mapatoms
+	    loop-test-and-step-mapatoms-local))
+)
+
+
+;;;; Maclisp interned-symbols path
+
+#+For-Maclisp
+(defun loop-interned-symbols-path (path variable data-type prep-phrases
+				   inclusive? allowed-preps data
+				   &aux indexv listv ob)
+   allowed-preps data	; unused vars
+   (and inclusive? (loop-simple-error
+		      "INTERNED-SYMBOLS path doesn't work inclusively"
+		      variable))
+   (and (not (null prep-phrases))
+	(or (cdr prep-phrases)
+	    (not (si:loop-tmember (caar prep-phrases) '(in of))))
+	(loop-simple-error
+	   "Illegal prep phrase(s) in INTERNED-SYMBOLS LOOP path"
+	   (list* variable 'being path prep-phrases)))
+   (loop-make-variable variable () data-type)
+   (loop-make-variable
+      (setq ob (gensym)) (if prep-phrases (cadar prep-phrases) 'obarray) ())
+   ; Multics lisp does not store single-char-obs in the obarray buckets.
+   ; Thus, we need to iterate over the portion of the obarray
+   ; containing them also.  (511. = (ascii 0))
+   (loop-make-variable
+      (setq indexv (gensym)) #+Multics 639. #-Multics 511. 'fixnum)
+   (loop-make-variable (setq listv (gensym)) () ())
+   `(() ()
+     (and #-Multics (null ,listv)
+	  #+Multics (or (> ,indexv 510.) (null ,listv))
+	  (prog ()
+	   lp (cond ((minusp (setq ,indexv (1- ,indexv))) (return t))
+		    ((setq ,listv (arraycall ; The following is the kind of
+					     ; gratuity that pisses me off:
+					     #+Multics obarray #-Multics t
+					     ,ob ,indexv))
+		       (return ()))
+		    ((go lp)))))
+     (,variable
+       #+Multics (cond ((> ,indexv 510.) ,listv)
+		       (t (prog2 () (car ,listv) (setq ,listv (cdr ,listv)))))
+       #-Multics (car ,listv))
+      ()
+     #+Multics () #-Multics (,listv (cdr ,listv))))
+
+
+;;;; Lispm interned-symbols path
+
+#+Lispm
+(progn 'compile
+
+ (defun loop-interned-symbols-path (path variable data-type prep-phrases
+				    inclusive? allowed-preps data
+				    &aux statev1 statev2 statev3
+					 (localp (car data)))
+    path data-type allowed-preps			; unused vars
+    (and inclusive? (loop-simple-error
+		       "INTERNED-SYMBOLS path doesn't work inclusively"
+		       variable))
+    (and (not (null prep-phrases))
+	 (or (cdr prep-phrases)
+	     (not (si:loop-tmember (caar prep-phrases) '(in of))))
+	   (ferror () "Illegal prep phrase(s) in ~A path of ~A - ~A"
+		   path variable prep-phrases))
+    (loop-make-variable variable () data-type)
+    (loop-make-variable
+       (setq statev1 (gensym))
+       (if prep-phrases `(pkg-find-package ,(cadar prep-phrases)) 'package)
+       ())
+    (loop-make-variable (setq statev2 (gensym)) () ())
+    (loop-make-variable (setq statev3 (gensym)) () ())
+    (push `(multiple-value (,statev1 ,statev2 ,statev3)
+		  (loop-initialize-mapatoms-state ,statev1 ,localp))
+	    loop-prologue)
+    `(() () (multiple-value (nil ,statev1 ,statev2 ,statev3)
+	       (,(if localp 'loop-test-and-step-mapatoms-local
+		     'loop-test-and-step-mapatoms)
+		,statev1 ,statev2 ,statev3)) 
+      (,variable (loop-get-mapatoms-symbol ,statev1 ,statev2 ,statev3))
+      () ()))
+
+ (defun loop-initialize-mapatoms-state (pkg localp)
+    ; Return the initial values of the three state variables.
+    ; This scheme uses them to be:
+    ; (1)  Index into the package (decremented as we go)
+    ; (2)  Temporary (to hold the symbol)
+    ; (3)  the package
+    localp ; ignored
+    (prog ()
+       (return (array-dimension-n 2 pkg) () pkg)))
+
+ (defun loop-test-and-step-mapatoms (index temp pkg)
+    temp ; ignored
+    (prog ()
+     lp (cond ((< (setq index (1- index)) 0)
+	         (cond ((setq pkg (pkg-super-package pkg))
+			  (setq index (array-dimension-n 2 pkg))
+			  (go lp))
+		       (t (return t))))
+	      ((numberp (ar-2 pkg 0 index))
+	         (return nil index (ar-2 pkg 1 index) pkg))
+	      (t (go lp)))))
+
+ (defun loop-test-and-step-mapatoms-local (index temp pkg)
+    temp ; ignored
+    (prog ()
+     lp (cond ((minusp (setq index (1- index))) (return t))
+	      ((numberp (ar-2 pkg 0 index))
+	         (return () index (ar-2 pkg 1 index) pkg))
+	      (t (go lp)))))
+
+ (defun loop-get-mapatoms-symbol (index temp pkg)
+    index pkg ; ignored
+    temp)
+ )
+
 ; We don't want these defined in the compilation environment because
 ; the appropriate environment hasn't been set up.  So, we just bootstrap
 ; them up.
 (mapc '(lambda (x)
-	  (mapc '(lambda (y) (loop-add-path y (cdr x))) (car x)))
-      '(((car cars) loop-path-carcdr (of) car atom)
-	((cdr cdrs) loop-path-carcdr (of) cdr atom)
-	((cddr cddrs) loop-path-carcdr (of) cddr null)
-	((interned-symbols interned-symbol)
+	  (mapc '(lambda (y)
+		    (setq loop-path-keyword-alist
+			  (cons (cons y (cdr x))
+				(delq (si:loop-tassoc
+				         y loop-path-keyword-alist)
+				      loop-path-keyword-alist))))
+		(car x)))
+      '(((interned-symbols interned-symbol)
 	   loop-interned-symbols-path (in))
-     #Q ((local-interned-symbols local-interned-symbol)
+      #-For-Maclisp
+	((local-interned-symbols local-interned-symbol)
 	   loop-interned-symbols-path (in) t)
 	))
 
-(or (status feature loop) (sstatus feature loop))
-
-;Loop macro blathering.
-;
-;  This doc is totally wrong.  Complete documentation (nice looking
-; hardcopy) is available from GSB, or from ML:LSBDOC;LPDOC (which
-; needs to be run through BOLIO). 
-;
-;This is intended to be a cleaned-up version of PSZ's FOR package
-;which is a cleaned-up version of the Interlisp CLisp FOR package.
-;Note that unlike those crocks, the order of evaluation is the
-;same as the textual order of the code, always.
-;
-;The form is introduced by the word LOOP followed by a series of clauses,
-;each of which is introduced by a keyword which however need not be
-;in any particular package.  Certain keywords may be made "major"
-;which means they are global and macros themselves, so you could put
-;them at the front of the form and omit the initial "LOOP".
-;
-;Each clause can generate:
-;
-;	Variables local to the loop.
-;
-;	Prologue Code.
-;
-;	Main Code.
-;
-;	Epilogue Code.
-;
-;Within each of the three code sections, code is always executed strictly
-;in the order that the clauses were written by the user.  For parallel assignments
-;and such there are special syntaxes within a clause.  The prologue is executed
-;once to set up.  The main code is executed several times as the loop.  The epilogue
-;is executed once after the loop terminates.
-;
-;The term expression means any Lisp form.  The term expression(s) means any number
-;of Lisp forms, where only the first may be atomic.  It stops at the first atom
-;after the first form.
-;
-;The following clauses exist:
-;
-;Prologue:
-;	INITIALLY expression(s)
-;		This explicitly inserts code into the prologue.  More commonly
-;		code comes from variable initializations.
-;
-;Epilogue:
-;	FINALLY expression(s)
-;		This is the only way to explicitly insert code into the epilogue.
-;
-;Side effects:
-;	DO expression(s)
-;		The expressions are evaluated.  This is how you make a "body".
-;		DOING is synonymous with DO.
-;
-;Return values:
-;	RETURN expression(s)
-;		The last expression is returned immediately as the value of the form.
-;		This is equivalent to DO (RETURN expression) which you will
-;		need to use if you want to return multiple values.
-;	COLLECT expression(s)
-;		The return value of the form will be a list (unless over-ridden
-;		with a RETURN).  The list is formed out of the values of the
-;		last expression.
-;		COLLECTING is synonymous with COLLECT.
-;		APPEND (or APPENDING) and NCONC (or NCONCING) can be used
-;		in place of COLLECT, forming the list in the appropriate ways.
-;	COUNT expression(s)
-;		The return value of the form will be the number of times the
-;		value of the last expression was non-NIL.
-;	SUM expression(s)
-;		The return value of the form will be the arithmetic sum of
-;		the values of the last expression.
-;     The following are a bit wierd syntactically, but Interlisp has them
-;     so they must be good.
-;	ALWAYS expression(s)
-;		The return value will be T if the last expression is true on
-;		every iteration, NIL otherwise.
-;	NEVER expressions(s)
-;		The return value will be T if the last expression is false on
-;		every iteration, NIL otherwise.
-;	THEREIS expression(s)
-;		This is wierd, I'm not sure what it really does.
+#-Multics ; none defined yet
+(mapc '(lambda (x)
+	 (mapc '(lambda (y)
+		  (setq loop-path-keyword-alist
+			(cons `(,y si:loop-sequence-elements-path
+				(of in from downfrom to downto below above by)
+				. ,(cdr x))
+			      (delq (si:loop-tassoc
+				      y loop-path-keyword-alist)
+				    loop-path-keyword-alist))))
+	       (car x)))
+      '(#+Lispm
+        ((array-element array-elements)
+	   aref array-active-length)
+	))
 
-
-;		You probably want WHEN (NUMBERP X) RETURN X
-;		or maybe WHEN expression RETURN IT
-;
-;Conditionals:  (these all affect only the main code)
-;
-;	WHILE expression
-;		The loop terminates at this point if expression is false.
-;	UNTIL expression
-;		The loop terminates at this point if expression is true.
-;	WHEN expression clause
-;		Clause is performed only if expression is true.
-;		This affects only the main-code portion of a clause
-;		such as COLLECT.  Use with FOR is a little unclear.
-;		IF is synonymous with WHEN.
-;	WHEN expression RETURN IT (also COLLECT IT, COUNT IT, SUM IT)
-;		This is a special case, the value of expression is returned if non-NIL.
-;		This works by generating a temporary variable to hold
-;		the value of the expression.
-;	UNLESS expression clause
-;		Clause is performed only if expression is false.
-;
-;Variables and iterations: (this is the hairy part)
-;
-;	WITH variable = expression {AND variable = expression}...
-;		The variable is set to the expression in the prologue.
-;		If several variables are chained together with AND
-;		the setq's happen in parallel.  Note that all variables
-;		are bound before any expressions are evaluated (unlike DO).
-;
-;	FOR variable = expression {AND variable = expression}...
-;		At this point in the main code the variable is set to the expression.
-;		Equivalent to DO (PSETQ variable expression variable expression...)
-;		except that the variables are bound local to the loop.
-;
-;	FOR variable FROM expression TO expression {BY expression}
-;		Numeric iteration.  BY defaults to 1.
-;		BY and TO may be in either order.
-;		If you say DOWNTO instead of TO, BY defaults to -1 and
-;		the end-test is reversed.
-;		If you say BELOW instead of TO or ABOVE instead of DOWNTO
-;		the iteration stops before the end-value instead of after.
-;		The expressions are evaluated in the prologue then the
-;		variable takes on its next value at this point in the loop;
-;		hair is required to win the first time around if this FOR is
-;		not the first thing in the main code.
-;	FOR variable IN expression
-;		Iteration down members of a list.
-;	FOR variable ON expression
-;		Iteration down tails of a list.
-;	FOR variable IN/ON expression BY expression
-;		This is an Interlisp crock which looks useful.
-;		FOR var ON list BY expression[var]
-;			is the same as FOR var = list THEN expression[var]
-;		FOR var IN list BY expression[var]
-;			is similar except that var gets tails of the list
-;			and, kludgiferously, the internal tail-variable
-;			is substituted for var in expression.
-;	FOR variable = expression THEN expression	
-;		General DO-type iteration.
-;	Note that all the different types of FOR clauses can be tied together
-;	with AND to achieve parallel assignment.  Is this worthwhile?
-;	[It's only implemented for = mode.]
-;	AS is synonymous with FOR.
-;	
-;	FOR variable BEING expression(s) AND ITS pathname
-;	FOR variable BEING expression(s) AND ITS a-r
-;	FOR variable BEING {EACH} pathname {OF expression(s)} 
-;	FOR variable BEING {EACH} a-r {OF expression(s)}
-;		Programmable iteration facility.  Each pathname has a
-;	function associated with it, on LOOP-PATH-KEYWORD-ALIST;  the
-;	alist has entries of the form (pathname function prep-list).
-;	prep-list is a list of allowed prepositions;  after either of
-;	the above formats is parsed, then pairs of (preposition expression)
-;	are collected, while preposition is in prep-list.  The expression
-;	may be a progn if there are multiple prepositions before the next
-;	keyword.  The function is then called with arguments of:
-;	    pathnname variable prep-phrases inclusive? prep-list
-;	Prep-phrases is the list of pairs collected, in order.  Inclusive?
-;	is T for the first format, NIL otherwise;  it says that the init
-;	value of the form takes on expression.  For the first format, the
-;	list (OF expression) is pushed onto the fromt of the prep-phrases.
-;	In the above examples, a-r is a form to be evaluated to get an
-;	attachment-relationship.  In this case, the pathname is taken as
-;	being ATTACHMENTS, and a-r is passed in by being treated as if it
-;	had been used with the preposition IN.  The function should return
-;	a list of the form (bindings init-form step-form end-test);  bindings
-;	are stuffed onto loop-variables, init-form is initialization code,
-;	step-form is step-code, and end-test tells whether or not to exit.
-;
-;Declarations?  Not needed by Lisp machine.  For Maclisp these will be done
-;by a reserved word in front of the variable name as in PSZ's macro.
-;
-;The implementation is as a PROG.  No initial values are given for the
-;PROG-variables.  PROG1 is used for parallel assignment.
-;
-;The iterating forms of FOR present a special problem.  The problem is that
-;you must do everything in the order that it was written by the user, but the
-;FOR-variable gets its value in a different way in the first iteration than
-;in the subsequent iterations.  Note that the end-tests created by FOR have
-;to be done in the appropriate order, since otherwise the next clause might get
-;an error.
-;
-;The most general way is to introduce a flag, !FIRST-TIME, and compile the
-;clause "FOR var = first TO last" as "INITIALLY (SETQ var first)
-;WHEN (NOT !FIRST-TIME) DO (SETQ var (1+ var)) WHILE (<= var last)".
-;However we try to optimize this by recognizing a special case:
-;The special case is recognized where all FOR clauses are at the front of
-;the main code; in this case if there is only one its stepping and
-;endtest are moved to the end, and a jump to the endtest put at the
-;front.  If there are more than one their stepping and endtests are moved
-;to the end, with duplicate endtests at the front except for the last
-;which doesn't need a duplicate endtest.  If FORs are embedded in the
-;main code it can only be implemented by either a first-time flag or
-;starting the iteration variable at a special value (initial minus step
-;in the numeric iteration case).  This could probably just be regarded as
-;an error.  The important thing is that it never does anything out of
-;order. 
-
+; Sigh. (c.f. loop-featurep, note macro-expansion lossage.)
+; Note that we end up doing both in the PDP10 NIL version.
+#+(or Run-in-Maclisp Lispm)
+  (or (status feature loop) (sstatus feature loop))
+#+For-NIL
+  (set-feature 'loop 'local)

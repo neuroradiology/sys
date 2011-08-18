@@ -12,6 +12,7 @@
 (DEFVAR ALL-PROCESSES NIL)		;A list of all processes that have not been "killed"
 (DEFVAR PROCESS-ACTIVE-LENGTH 30.)	;Initial length of ACTIVE-PROCESSES
 (DEFVAR WARM-BOOTED-PROCESS NIL)	;When you warm boot
+(DEFVAR DELAYED-RESTART-PROCESSES NIL)	;Processes to be restarted after initialization
 
 ;;; Scheduling
 
@@ -47,9 +48,12 @@
 				; the more this process wants to run.  It will never be
 				; run for more than its quantum, though.
   (WARM-BOOT-ACTION		;Thing to do to this process if it is active when the
-   'PROCESS-WARM-BOOT-RESTART)	; machine is warm-booted.  NIL means the default action
+   'PROCESS-WARM-BOOT-DELAYED-RESTART)	; machine is warm-booted.
+				;  NIL means the default action
 				; (flush it).  If non-NIL, gets funcalled with the process
 				; as its argument.
+	;The default is to reset it after initializations have been completed
+	;[I'm not sure why it's this rather than to leave it alone.]
   (SIMPLE-P NIL)		;T if the process is simple (has no stack group)
   )
   ()

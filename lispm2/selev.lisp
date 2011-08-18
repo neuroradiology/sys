@@ -2,7 +2,7 @@
 
 ;;; Macros to do things similar to BLISS' SELECT.
 
-(DEFMACRO-DISPLACE COND-EVERY (&REST CLAUSES)
+(DEFMACRO-DISPLACE COND-EVERY (&BODY CLAUSES)
   "COND-EVERY has a COND-like syntax.  Unlike COND, though, it executes all the
 clauses whose tests succede.  It also recognizes two special keywords (instead of
 a test):  :ALWAYS executes in all cases, and :OTHERWISE executes if no previous
@@ -36,7 +36,7 @@ or NIL if no clauses executed,  and the macro will not return multiple-values."
 	    FORMS))
        ,VALUE)))
 
-(DEFMACRO-DISPLACE SELECTQ-EVERY (OBJ . CLAUSES)
+(DEFMACRO-DISPLACE SELECTQ-EVERY (OBJ &BODY CLAUSES)
   "Just like COND-EVERY but with SELECTQ-like syntax."
   (IF (ATOM OBJ)
       (SELECTQ-EVERY-GENERATE-CODE OBJ CLAUSES)

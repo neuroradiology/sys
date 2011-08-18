@@ -1,4 +1,5 @@
- ;;; Ultra-simple stepper for lisp-machine.   -*-LISP-*-
+;;; -*- Mode:LISP; Package:System-Internals; Lowercase:T -*-
+ ;;; Ultra-simple stepper for lisp-machine.
  ;;; Wins with multiple values
  ;;; Does not attempt to win with editor top level
  ;;; Compile with QC-FILE.
@@ -36,7 +37,7 @@
 (defun step (form)
   (setq step-level -1 step-max 0)
   (or (boundp 'step-array)
-      (setq step-array (make-array nil 'art-q 200)))
+      (setq step-array (make-array 200)))
   (step-eval form))
 
 ;This is for TRACE, mainly.  The idea is to do an apply,
@@ -81,34 +82,34 @@
     (setq ch (char-upcase ch1))
     (cond ((= ch #\CALL) (break call t))
           ((= ch #\SP) (setq step-max step-level) (return 'eval))
-          ((= ch 525) (setq step-max (max 0 (1- step-level))) (return 'eval))
-          ((= ch 516) (setq step-max (1+ step-level)) (return 'evalhook))
-          ((= ch 530) (setq step-max -1) (return 'eval))
-          ((= ch 502)
+          ((= ch #\c-U) (setq step-max (max 0 (1- step-level))) (return 'eval))
+          ((= ch #\c-N) (setq step-max (1+ step-level)) (return 'evalhook))
+          ((= ch #\c-X) (setq step-max -1) (return 'eval))
+          ((= ch #\c-B)
            (break step t)
            (setq ch 0)
            (as-1 step-form step-array step-level)
            (go redis1))
-          ((= ch 505)
+          ((= ch #\c-E)
            (ed)
            (setq ch 10.)
            (go redisplay))
-          ((or (= ch 214) (= ch 514))
+          ((or (= ch #\Clear-Screen) (= ch #\c-L))
            (setq ch 10.)
            (go redisplay))
-	  ((= ch 1114)
+	  ((= ch #\m-L)
 	   (setq ch 10.)
 	   (go redis1))
-          ((= ch 1514)
+          ((= ch #\c-m-L)
            (setq ch step-level)
            (go redisplay))
-          ((or (= ch 507) (= ch 524))
-           (setq ch (cond ((= ch 507) (function grind-top-level)) ((function print))))
+          ((or (= ch #\c-G) (= ch #\c-T))
+           (setq ch (cond ((= ch #\c-G) (function grind-top-level)) ((function print))))
            (cond ((null values) (funcall ch form))
                  ((do l values (cdr l) (null l)
                     (funcall ch (car l)))))
            (go rd))
-	  ((memq (logand ch 377) '(#/? #\HELP))
+	  ((memq (ldb %%ch-char ch) '(#/? #\HELP))
 	   (terpri)
 	   (princ
 	     (cond ((null step-values) "You are about to evaluate the above form.")
@@ -134,7 +135,8 @@
 	  ((< ch 200)
 	   (funcall standard-input ':untyi ch1)
 	   (princ " Eval: ")
-	   (print (eval (read-for-top-level)))
+	   (*catch 'sys:command-level
+	     (print (eval (read-for-top-level))))
 	   (terpri)
 	   (setq ch 0)
 	   (go redis1))

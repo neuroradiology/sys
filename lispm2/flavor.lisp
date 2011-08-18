@@ -1,4 +1,4 @@
-; Tasteful Flavors			-*- Mode: Lisp; Package: SI -*-
+; Tasteful Flavors			-*- Mode: Lisp; Package: SI; Base:8 -*-
 
 ; A flavor-name is a symbol which names a type of objects defined
 ; by the combination of several flavors.  The SI:FLAVOR
@@ -20,6 +20,7 @@
 ; DEFMETHOD - macro for defining a method
 ; DEFWRAPPER - macro for defining a flavor-wrapper
 ; INSTANTIATE-FLAVOR - create an object of a specified flavor
+; MAKE-INSTANCE - easier to call version of INSTANTIATE-FLAVOR
 ; COMPILE-FLAVOR-METHODS - macro which does the right thing in the compiler
 ; RECOMPILE-FLAVOR - function to recompile a flavor and maybe any flavors
 ;		that depend on it.  Usually this happens automatically.
@@ -32,9 +33,13 @@
 ;		isn't a flavor instance.
 ; LEXPR-FUNCALL-SELF - LEXPR-FUNCALL version of above
 ; *ALL-FLAVOR-NAMES* - list of all symbols which have been used as the name of a flavor
+; *ALL-FLAVOR-NAMES-AARRAY* - completion aarray of flavor names to flavors.
+;		Each flavor is included twice, once with and once without its package prefix.
 ; *FLAVOR-COMPILATIONS* - list of all methods which had to be compiled
 ;		this is useful for finding flavors which weren't compiled in qfasl files
 ;		or which need to be recompiled to bring them up to date.
+; *FLAVOR-COMPILE-TRACE* - if non-NIL, a FORMAT destination for messages about
+;		recompilation of combined methods
 ; FLAVOR-ALLOWS-INIT-KEYWORD-P - determine whether a certain flavor allows
 ;		a certain keyword in its init-plist.
 
@@ -73,12 +78,14 @@
   ;   flavors.
   ; (:REQUIRED-METHODS m1 m2...) - any flavor incorporating this
   ;   flavor and actually instantiated must have methods for the specified
-  ;   messages.  This is used for defining general types of flavors.
+  ;   operations.  This is used for defining general types of flavors.
+  ; (:REQUIRED-FLAVORS f1 f2...) - similar,  for component flavors
+  ;   rather than methods.
   ; (:INITABLE-INSTANCE-VARIABLES v1 v2...) - these instance variables
   ;   may be initialized via the options to INSTANTIATE-FLAVOR.
   ;   The atomic form works too.
   ;   Settable instance variables are also initable.
-  ; (:INIT-KEYWORDS k1 k2...) - specifies keywords for the :INIT message
+  ; (:INIT-KEYWORDS k1 k2...) - specifies keywords for the :INIT operation
   ;   which are legal to give to this flavor.  Just used for error checking.
   ; (:DEFAULT-INIT-PLIST k1 v1 k2 v2...) - specifies defaults to be put
   ;   into the init-plist, if the keywords k1, k2, ... are not already
@@ -105,10 +112,12 @@
   ;   in the instance and access it directly, otherwise it will call SYMEVAL-IN-INSTANCE
   ;   at run-time.
   ;   The atomic form works too.
+  ; (:ACCESSOR-PREFIX sym) - uses "sym" as the prefix on the names of the above
+  ;   defsubsts instead of "flavor-".
   ; (:SELECT-METHOD-ORDER m1 m2...) - specifies that the keywords m1, m2, ... are
   ;   are important and should have their methods first in the select-method
   ;   table for increased efficiency.
-  ; (:METHOD-COMBINATION (type order message1 message2...)...)
+  ; (:METHOD-COMBINATION (type order operation1 operation2...)...)
   ;   Specify ways of combining methods from different flavors.  :DAEMON NIL is the
   ;   the default.  order is usually :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST,
   ;   but this depends on type.
@@ -131,6 +140,8 @@
 			  (RETURN (MAPCAR #'(LAMBDA (X) (IF (ATOM X) X (CAR X)))
 					  INSTANCE-VARIABLES))))
 		   (CDR VS))
+	       (PREFIX (OR (CADR (ASSQ-CAREFUL ':ACCESSOR-PREFIX OPTIONS))
+			   (STRING-APPEND NAME "-")))
 	       (ORDS (DO ((OPTS OPTIONS (CDR OPTS)))
 			 ((NULL OPTS) NIL)
 		       (AND (LISTP (CAR OPTS))
@@ -139,7 +150,7 @@
 		       (AND (EQ (CAR OPTS) ':ORDERED-INSTANCE-VARIABLES)
 			    (RETURN (MAPCAR #'(LAMBDA (X) (IF (ATOM X) X (CAR X)))
 					    INSTANCE-VARIABLES)))))
-	       (RES NIL (CONS `(DEFSUBST ,(INTERN1 (FORMAT NIL "~A-~A" NAME (CAR VS))) (,NAME)
+	       (RES NIL (CONS `(DEFSUBST ,(INTERN1 (STRING-APPEND PREFIX (CAR VS))) (,NAME)
 				 ,(IF (MEMQ (CAR VS) ORDS)
 				      `(%INSTANCE-REF ,NAME
 					   ,(1+ (FIND-POSITION-IN-LIST (CAR VS) ORDS)))
@@ -155,51 +166,45 @@
 	      (COMPOSE-AUTOMATIC-METHODS (GET ',NAME 'FLAVOR)))))
      (EVAL-WHEN (LOAD EVAL)
        ;; Verify the existence of the instance-variable get/set methods at load time
-       (COMPOSE-AUTOMATIC-METHODS (GET ',NAME 'FLAVOR)))))
+       (COMPOSE-AUTOMATIC-METHODS (GET ',NAME 'FLAVOR)))
+     ',NAME))
 
 ; This wraps a local-declare special of the instance variables around its body.
 ; It's good for things like defining functions that deal with a flavor but
 ; are not methods (generally they are called by methods.)
-(DEFMACRO DECLARE-FLAVOR-INSTANCE-VARIABLES ((FLAVOR-NAME) . BODY)
-  `(LOCAL-DECLARE (,(FLAVOR-SPECIAL-DECLARATION FLAVOR-NAME))
-     . ,BODY))
+(DEFMACRO DECLARE-FLAVOR-INSTANCE-VARIABLES ((FLAVOR-NAME) &BODY BODY)
+  (LET ((SPECIAL-DECLARATION (FLAVOR-SPECIAL-DECLARATION FLAVOR-NAME)))
+    (IF SPECIAL-DECLARATION
+	`(LOCAL-DECLARE (,SPECIAL-DECLARATION) . ,BODY)
+	;Don't do a (LOCAL-DECLARE (NIL) ...)
+	`(PROGN 'COMPILE . ,BODY))))
 
-; This lets you specify code to be wrapped around the invocation of the
-; various methods for a message.  For example,
-; (DEFWRAPPER (FOO-FLAVOR :MESSAGE) ((ARG1 ARG2) . BODY)
-;   `(WITH-FOO-LOCKED (SELF)
-;      (PRE-FROBULATE SELF ,ARG1 ,ARG2)
-;      ,@BODY
-;      (POST-FROBULATE SELF ,ARG2 ,ARG1)))
-;Note that the wrapper needs to be defined at both compile and run times
-;so that compiling combined methods as part of the qfasl file works.
-(DEFMACRO DEFWRAPPER ((FLAVOR-NAME MESSAGE) (DEFMACRO-LAMBDA . GUTS)
-		      . BODY)
-  `(PROGN 'COMPILE
-       ;; At compile-time, add enough information so that combined-methods
-       ;; can be compiled.  The compile-time definition of macros does not
-       ;; go through FDEFINE, so this is necessary to record the existence
-       ;; of the wrapper.
-       ,(AND (GET FLAVOR-NAME 'FLAVOR)
-	     COMPILER:QC-FILE-IN-PROGRESS
-	     `(EVAL-WHEN (COMPILE)
-		 (FLAVOR-NOTICE-METHOD '(,FLAVOR-NAME :WRAPPER ,MESSAGE))))
-       (EVAL-WHEN (COMPILE LOAD EVAL) ;Wrapper defs needed to stay around between files
-	 ;; The following optimization could go away if defmacro was made very smart
-	 ,(IF (AND (SYMBOLP DEFMACRO-LAMBDA) (STRING-EQUAL DEFMACRO-LAMBDA 'IGNORE))
-	     `(DEFMACRO (:METHOD ,FLAVOR-NAME :WRAPPER ,MESSAGE) (IGNORE . ,GUTS)
-		. ,BODY)
-	     `(DEFMACRO (:METHOD ,FLAVOR-NAME :WRAPPER ,MESSAGE) (ARGLISTNAME . ,GUTS)
-		`(DESTRUCTURING-BIND ,',DEFMACRO-LAMBDA (CDR ,ARGLISTNAME)
-					   ,,@BODY))))))
 
 (DEFVAR *ALL-FLAVOR-NAMES* NIL)	;List of names of all flavors (mostly for editor)
+(DEFVAR *ALL-FLAVOR-NAMES-AARRAY*	;For editor's completing reader
+	(MAKE-ARRAY 2400		;736 flavors in system 75
+		    ':TYPE 'ART-Q-LIST
+		    ':LEADER-LIST '(0 NIL)))
+
+(ADD-INITIALIZATION "Condense Flavor Name Tables"
+		    '(PROGN (ZWEI:SORT-COMPLETION-AARRAY *ALL-FLAVOR-NAMES-AARRAY*)
+			    (IF (= (%P-CDR-CODE *ALL-FLAVOR-NAMES*) CDR-NORMAL)
+				(SETQ *ALL-FLAVOR-NAMES* (COPYLIST *ALL-FLAVOR-NAMES*))))
+		    '(:BEFORE-COLD))
+
 (DEFVAR *JUST-COMPILING* NIL)	;T means putting combined methods into qfasl file,
 				; not updating the current flavor data-structure
 (DEFVAR *USE-OLD-COMBINED-METHODS* T)	;T means recycle old, NIL means generate new.
 					; This is an implicit argument to certain routines.
 (DEFVAR *FLAVOR-PENDING-DEPENDS* NIL)	;Used by DEFFLAVOR1
 (DEFVAR *FLAVOR-COMPILATIONS* NIL)	;List of methods compiled
+(DEFVAR *FLAVOR-COMPILE-TRACE* NIL)
+
+;This is an area in which to cons data internal to the flavor system.  It is used
+;rather than default-cons-area as a hedge against temporary area lossage which can
+;happen if you do things from an error in a compilation, or if you make instances
+;in a temporary area and that requires composing flavors or methods.
+(DEFVAR *FLAVOR-AREA* WORKING-STORAGE-AREA)
 
 ; These two functions are used when sending a message to yourself, for extra efficiency.
 (DEFMACRO FUNCALL-SELF (&REST ARGS)
@@ -212,9 +217,8 @@
 
 ; The data-structure on the FLAVOR property of a flavor-name
 ; This must agree with INSTANCE-DESCRIPTOR-OFFSETS in LISPM;QCOM
-(EVAL-WHEN (COMPILE LOAD EVAL)
 (DEFSTRUCT (FLAVOR :NAMED :ARRAY (:CONSTRUCTOR MAKE-FLAVOR)
-				 (:MAKE-ARRAY (PERMANENT-STORAGE-AREA)))
+				 (:MAKE-ARRAY (:AREA PERMANENT-STORAGE-AREA)))
   FLAVOR-INSTANCE-SIZE		;1+ the number of instance variables
   FLAVOR-BINDINGS		;List of locatives to instance variable
 				; internal value cells.  MUST BE CDR-CODED!!
@@ -237,40 +241,52 @@
   FLAVOR-DEPENDS-ON-ALL		;Names of all flavors depended on, to all levels, including
 				; this flavor itself.  NIL means flavor-combination not
 				; composed yet.  This is used by TYPEP of 2 arguments.
-  (FLAVOR-WHICH-OPERATIONS NIL)	;List of messages handled, created when needed.
+  (FLAVOR-WHICH-OPERATIONS NIL)	;List of operations handled, created when needed.
 				; This is NIL if it has not been computed yet.
   (FLAVOR-GETTABLE-INSTANCE-VARIABLES NIL)	;List of them
   (FLAVOR-SETTABLE-INSTANCE-VARIABLES NIL)	;List of them
-  (FLAVOR-INITABLE-INSTANCE-VARIABLES NIL)	;option
+  (FLAVOR-INITABLE-INSTANCE-VARIABLES NIL)
+				;Alist from init keyword to name of variable
   (FLAVOR-INIT-KEYWORDS NIL)			;option
   (FLAVOR-PLIST NIL)		;Esoteric things stored here as properties
 				;Known: :DEFAULT-HANDLER, :ORDERED-INSTANCE-VARIABLES,
-				; :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES,
+				; :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES, :ACCESSOR-PREFIX,
 				; :REQUIRED-INSTANCE-VARIABLES, :REQUIRED-METHODS,
-				; :SELECT-METHOD-ORDER, :DEFAULT-INIT-PLIST
-				; :DOCUMENTATION
+				; :REQUIRED-FLAVORS, :SELECT-METHOD-ORDER,
+				; :DEFAULT-INIT-PLIST, :DOCUMENTATION, :NO-VANILLA-FLAVOR
 				; ADDITIONAL-SPECIAL-VARIABLES
 				; COMPILE-FLAVOR-METHODS
 				;The convention on these is supposed to be that
 				;ones in the keyword packages are allowed to be
 				;used by users.
-  ))
+				;Some of these are not used by the flavor system, they are
+				;just remembered on the plist in case anyone cares.  The
+				;flavor system does all its handling of them during the
+				;expansion of the DEFFLAVOR macro.
+  )
 
 ;Named-structure handler for above structure, to make it print nicer
-(DEFUN FLAVOR (MESSAGE SELF &REST ARGS)
-  (SELECTQ MESSAGE
-    (:WHICH-OPERATIONS '(:PRINT :PRINT-SELF :DESCRIBE))
-    ((:PRINT :PRINT-SELF)
-	    (FORMAT (CAR ARGS) "#<FLAVOR ~S internal-info ~O>"
-			       (FLAVOR-NAME SELF) (%POINTER SELF)))
+(DEFUN (FLAVOR NAMED-STRUCTURE-INVOKE) (OPERATION &OPTIONAL SELF &REST ARGS)
+  (SELECTQ OPERATION
+    (:WHICH-OPERATIONS '(:PRINT-SELF :DESCRIBE))
+    ((:PRINT-SELF)
+     (SI:PRINTING-RANDOM-OBJECT (SELF (CAR ARGS))
+       (FORMAT (CAR ARGS) "FLAVOR ~S" (FLAVOR-NAME SELF))))
     (:DESCRIBE (DESCRIBE-FLAVOR SELF))
-    (OTHERWISE (FERROR NIL "~S unknown" MESSAGE))))
+    (OTHERWISE (FERROR NIL "~S unknown" OPERATION))))
 
 ;Format of flavor-method-table:
-; ((message-name combination-type combination-type-arg
-;	(method-type symbol)...)
-;  ...)
-; In the magic-list, there can be more than one symbol listed under a method-type,
+; New format of a flavor-method-table entry is:
+;   (message combination-type combination-order meth...)
+; A meth is:
+;   (function-spec definition plist)
+; Thus the second element of a meth is actually a function-cell.
+; The meth's are stored in permanent-storage-area so that they will be compact.
+;    [That might not be the best area, the select-methods, and component
+;     lists, and instanc-variable lists, and which-operations's, are also there.]
+; A magic-list entry is:
+;   (message combination-type combination-order (method-type function-spec...)...)
+; In the magic-list, there can be more than one method listed under a method-type,
 ; the base flavor always comes first.  The :COMBINED methods are elided from
 ; the magic-list.
 ;
@@ -299,7 +315,40 @@
 ; magic-list entry, and must return the symbol to go into the select-method,
 ; defining any necessary functions.  This function interprets combination-type-arg,
 ; which for many combination-types is either :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST.
+
+;Definitions of a meth (the datum which stands for a method)
+
+(DEFSTRUCT (METH :LIST :CONC-NAME (:CONSTRUCTOR NIL))
+		;No constructor because defstruct doesn't let me specify the area
+  FUNCTION-SPEC
+  DEFINITION
+  (PLIST NIL))
+
+; If there is no definition, it contains DTP-NULL and a pointer to the meth
+
+; Extract the method-type of a meth
+(DEFSUBST METH-METHOD-TYPE (METH)
+  (AND (CDDDR (METH-FUNCTION-SPEC METH))
+       (THIRD (METH-FUNCTION-SPEC METH))))
+
+; Return a meth of specified type from a list of meth's.
+(DEFUN METH-LOOKUP (METHOD-TYPE METH-LIST)
+  (LOOP FOR METH IN METH-LIST
+	WHEN (EQ (METH-METHOD-TYPE METH) METHOD-TYPE)
+	  RETURN METH))
+
+(DEFUN NULLIFY-METHOD-DEFINITION (METH)
+  (LET ((P (LOCF (METH-DEFINITION METH))))
+    (%P-STORE-TAG-AND-POINTER P (+ (LSH (%P-CDR-CODE P) 6) DTP-NULL) METH)))
+
+(DEFUN METH-DEFINEDP (METH)
+  ( (%P-DATA-TYPE (LOCF (METH-DEFINITION METH))) DTP-NULL))
+
+(DEFUN METHOD-PLIST (FUNCTION-SPEC)		;For debugging ease only
+  (METH-PLIST (FLAVOR-METHOD-ENTRY FUNCTION-SPEC T)))
 
+(DEFPROP DEFFLAVOR "Flavor" DEFINITION-TYPE-NAME)
+
 ;Function to define or redefine a flavor (used by DEFFLAVOR macro).
 ;Note that to ease initialization problems, the flavors depended upon need
 ;not be defined yet.  You will get an error the first time you try to create
@@ -308,61 +357,65 @@
 ;old instances continue to get the latest methods, unless you change
 ;something incompatibly, in which case you will get a warning.
 (DEFUN DEFFLAVOR1 (FLAVOR-NAME INSTANCE-VARIABLES COMPONENT-FLAVORS OPTIONS
-		   &AUX FFL PL ALREADY-EXISTS NO-VANILLA-P INSTV)
-  ;; This can happen if you get an error in a compilation and do things.
-  ;; Avoid arbitrary propagation of lossage and destruction.
-  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
-  (RECORD-SOURCE-FILE-NAME FLAVOR-NAME)
+		   &AUX FFL ALREADY-EXISTS INSTV IDENTICAL-COMPONENTS
+			GETTABLE SETTABLE INITABLE INIT-KEYWORDS INCLUDES METH-COMB
+			NEW-PLIST (PL (LOCF NEW-PLIST))
+			(DEFAULT-CONS-AREA *FLAVOR-AREA*))
+  (RECORD-SOURCE-FILE-NAME FLAVOR-NAME 'DEFFLAVOR)
   (WITHOUT-INTERRUPTS
-    (OR (MEMQ FLAVOR-NAME *ALL-FLAVOR-NAMES*)
-	(PUSH FLAVOR-NAME *ALL-FLAVOR-NAMES*)))
-  ;; If the flavor is being redefined, and the number or order of instance variables
-  ;; or component-flavors is being changed, and this flavor or any that depends on it
-  ;; has a select-method table (i.e. has probably been instantiated), give a warning
-  ;; and disconnect from the old FLAVOR defstruct so that old instances will
-  ;; retain the old information.
+    (COND ((NOT (MEMQ FLAVOR-NAME *ALL-FLAVOR-NAMES*))
+	   (PUSH FLAVOR-NAME *ALL-FLAVOR-NAMES*)
+	   ;; Push on the name without the package prefix.
+	   (ARRAY-PUSH-EXTEND *ALL-FLAVOR-NAMES-AARRAY*
+			      (CONS (GET-PNAME FLAVOR-NAME) FLAVOR-NAME))
+	   ;; Push on the name with the package prefix.
+	   (ARRAY-PUSH-EXTEND *ALL-FLAVOR-NAMES-AARRAY*
+			      (LET ((PACKAGE NIL))
+				(CONS (FORMAT NIL "~S" FLAVOR-NAME) FLAVOR-NAME)))
+	   ;; Array is no longer sorted.
+	   (STORE-ARRAY-LEADER NIL *ALL-FLAVOR-NAMES-AARRAY* 1))))
+  ;; Analyze and error check the instance-variable and component-flavor lists
   (SETQ INSTV (MAPCAR #'(LAMBDA (X) (IF (ATOM X) X (CAR X))) INSTANCE-VARIABLES))
-  (AND (SETQ ALREADY-EXISTS (GET FLAVOR-NAME 'FLAVOR))
-       (OR (NOT (EQUAL INSTV (MAPCAR #'(LAMBDA (X) (IF (ATOM X) X (CAR X)))
-				     (FLAVOR-LOCAL-INSTANCE-VARIABLES ALREADY-EXISTS))))
-	   (NOT (EQUAL COMPONENT-FLAVORS (FLAVOR-DEPENDS-ON ALREADY-EXISTS)))
-	   ;; Look for change of INCLUDED-FLAVORS
-	   (LET ((IF (DO L OPTIONS (CDR L) (NULL L)
-			 (AND (LISTP (CAR L)) (EQ (CAAR L) ':INCLUDED-FLAVORS)
-			      (RETURN (CDAR L))))))
-	     (OR (MEMQ ':NO-VANILLA-FLAVOR OPTIONS) (MEMQ 'VANILLA-FLAVOR IF)
-		 (SETQ IF (APPEND IF '(VANILLA-FLAVOR))))
-	     (NOT (EQUAL IF (FLAVOR-INCLUDES ALREADY-EXISTS)))))
-       (SETQ ALREADY-EXISTS (PERFORM-FLAVOR-REDEFINITION FLAVOR-NAME)))
-  ;; Make the information structure unless the flavor already exists.
-  (LET ((FL (OR ALREADY-EXISTS (MAKE-FLAVOR FLAVOR-NAME FLAVOR-NAME))))
-    (SETF (FLAVOR-PACKAGE FL) PACKAGE)
-    (SETF (FLAVOR-LOCAL-INSTANCE-VARIABLES FL) INSTANCE-VARIABLES)
-    (SETF (FLAVOR-DEPENDS-ON FL) COMPONENT-FLAVORS)
-    (SETQ PL (LOCF (FLAVOR-PLIST FL)))
-    ;; Process the options.
-    (DO ((L OPTIONS (CDR L))
-	 (OPTION) (ARGS))
-	((NULL L))
-      (IF (ATOM (CAR L))
-	  (SETQ OPTION (CAR L) ARGS NIL)
-	  (SETQ OPTION (CAAR L) ARGS (CDAR L)))
-      (SELECTQ OPTION
+  (DOLIST (IV INSTV)
+    (IF (OR (NULL IV) (NOT (SYMBOLP IV)))
+	(FERROR NIL "~S, which is not a symbol, was specified as an instance variable" IV)))
+  (DOLIST (CF COMPONENT-FLAVORS)
+    (IF (OR (NULL CF) (NOT (SYMBOLP CF)))
+	(FERROR NIL "~S, which is not a symbol, was specified as a component flavor" CF)))
+  ;; Certain properties are inherited from the old property list, while
+  ;; others are generated afresh each time from the defflavor-options.
+  (COND ((SETQ ALREADY-EXISTS (GET FLAVOR-NAME 'FLAVOR))
+	 (LOOP FOR (IND VAL) ON (FLAVOR-PLIST ALREADY-EXISTS) BY 'CDDR
+	       UNLESS (MEMQ IND '(:DEFAULT-HANDLER :ORDERED-INSTANCE-VARIABLES
+				  :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES :ACCESSOR-PREFIX
+				  :REQUIRED-INSTANCE-VARIABLES :REQUIRED-METHODS
+				  :REQUIRED-FLAVORS :SELECT-METHOD-ORDER
+				  :DEFAULT-INIT-PLIST :DOCUMENTATION :NO-VANILLA-FLAVOR))
+	         DO (PUTPROP PL VAL IND))))
+  ;; First, parse all the defflavor options into local variables so we can see
+  ;; whether the flavor is being redefined incompatibly.
+  (DO ((L OPTIONS (CDR L))
+       (OPTION) (ARGS))
+      ((NULL L))
+    (IF (ATOM (CAR L))
+	(SETQ OPTION (CAR L) ARGS NIL)
+	(SETQ OPTION (CAAR L) ARGS (CDAR L)))
+    (SELECTQ OPTION
 	(:GETTABLE-INSTANCE-VARIABLES
 	  (VALIDATE-INSTANCE-VARIABLES-SPEC ARGS INSTV FLAVOR-NAME OPTION)
-	  (SETF (FLAVOR-GETTABLE-INSTANCE-VARIABLES FL) (OR ARGS INSTV)))
+	  (SETQ GETTABLE (OR ARGS INSTV)))
 	(:SETTABLE-INSTANCE-VARIABLES
 	  (VALIDATE-INSTANCE-VARIABLES-SPEC ARGS INSTV FLAVOR-NAME OPTION)
-	  (SETF (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL) (OR ARGS INSTV)))
+	  (SETQ SETTABLE (OR ARGS INSTV)))
 	(:INITABLE-INSTANCE-VARIABLES
 	  (VALIDATE-INSTANCE-VARIABLES-SPEC ARGS INSTV FLAVOR-NAME OPTION)
-	  (SETF (FLAVOR-INITABLE-INSTANCE-VARIABLES FL) (OR ARGS INSTV)))
+	  (SETQ INITABLE (OR ARGS INSTV)))
 	(:INIT-KEYWORDS
-	  (SETF (FLAVOR-INIT-KEYWORDS FL) ARGS))
+	  (SETQ INIT-KEYWORDS ARGS))
 	(:INCLUDED-FLAVORS
-	  (SETF (FLAVOR-INCLUDES FL) ARGS))
+	  (SETQ INCLUDES ARGS))
 	(:NO-VANILLA-FLAVOR
-	  (SETQ NO-VANILLA-P T))
+	  (PUTPROP PL T OPTION))
 	(:ORDERED-INSTANCE-VARIABLES
 	  (VALIDATE-INSTANCE-VARIABLES-SPEC ARGS INSTV FLAVOR-NAME OPTION)
 	  (PUTPROP PL (OR ARGS INSTV) ':ORDERED-INSTANCE-VARIABLES))
@@ -370,29 +423,66 @@
 	  (VALIDATE-INSTANCE-VARIABLES-SPEC ARGS INSTV FLAVOR-NAME OPTION)
 	  (PUTPROP PL (OR ARGS INSTV) ':OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES))
 	(:METHOD-COMBINATION
-	  (DOLIST (DECL ARGS)
-	    (LET ((TYPE (CAR DECL)) (ORDER (CADR DECL)) ELEM)
-	      ;; Don't error-check TYPE now, its definition might not be loaded yet
-	      (DOLIST (MSG (CDDR DECL))
-		(OR (SETQ ELEM (ASSQ MSG (FLAVOR-METHOD-TABLE FL)))
-		    (PUSH (SETQ ELEM (LIST* MSG NIL NIL NIL)) (FLAVOR-METHOD-TABLE FL)))
-		(SETF (SECOND ELEM) TYPE)
-		(SETF (THIRD ELEM) ORDER)))))
+	  (SETQ METH-COMB ARGS))
 	(:DEFAULT-HANDLER
 	  (PUTPROP PL (CAR ARGS) OPTION))
-	((:REQUIRED-INSTANCE-VARIABLES :REQUIRED-METHODS :DOCUMENTATION
-	  :DEFAULT-INIT-PLIST :SELECT-METHOD-ORDER)
+	((:REQUIRED-INSTANCE-VARIABLES :REQUIRED-METHODS :REQUIRED-FLAVORS :DOCUMENTATION
+	  :DEFAULT-INIT-PLIST :SELECT-METHOD-ORDER :ACCESSOR-PREFIX)
 	  (PUTPROP PL ARGS OPTION))
 	(OTHERWISE (FERROR NIL "~S unknown option to DEFFLAVOR" OPTION))))
-    ;; Unless user has specially suppressed it, VANILLA-FLAVOR must be included
-    ;; so as to get default methods for :PRINT, :DESCRIBE, :WHICH-OPERATIONS
-    (OR NO-VANILLA-P
-	(MEMQ 'VANILLA-FLAVOR (FLAVOR-INCLUDES FL))
-	(SETF (FLAVOR-INCLUDES FL) (APPEND (FLAVOR-INCLUDES FL) '(VANILLA-FLAVOR))))
-    ;; All settable instance variables should also be gettable.
-    (DOLIST (V (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL))
-      (OR (MEMQ V (FLAVOR-GETTABLE-INSTANCE-VARIABLES FL))
-	  (PUSH V (FLAVOR-GETTABLE-INSTANCE-VARIABLES FL))))
+  ;; All settable instance variables should also be gettable and initable.
+  (DOLIST (V SETTABLE)
+    (OR (MEMQ V GETTABLE)
+	(PUSH V GETTABLE))
+    (OR (MEMQ V INITABLE)
+	(PUSH V INITABLE)))
+  ;; See whether there are any changes in component flavor structure from last time
+  (SETQ IDENTICAL-COMPONENTS
+	(AND ALREADY-EXISTS
+	     (EQUAL COMPONENT-FLAVORS (FLAVOR-DEPENDS-ON ALREADY-EXISTS))
+	     (EQUAL INCLUDES (FLAVOR-INCLUDES ALREADY-EXISTS))))
+  ;; If the flavor is being redefined, and the number or order of instance variables
+  ;; is being changed, and this flavor or any that depends on it
+  ;; has a select-method table (i.e. has probably been instantiated), give a warning
+  ;; and disconnect from the old FLAVOR defstruct so that old instances will
+  ;; retain the old information.  The instance variables can get changed either
+  ;; locally or by rearrangement of the component flavors.
+  (AND ALREADY-EXISTS
+       (NOT (AND (EQUAL (GET PL ':ORDERED-INSTANCE-VARIABLES)
+			(GET (LOCF (FLAVOR-PLIST ALREADY-EXISTS))
+			     ':ORDERED-INSTANCE-VARIABLES))
+		 (OR (EQUAL (FLAVOR-LOCAL-INSTANCE-VARIABLES ALREADY-EXISTS)
+			    INSTANCE-VARIABLES)
+		     (EQUAL (MAPCAR #'(LAMBDA (X) (IF (ATOM X) X (CAR X)))
+				    (FLAVOR-LOCAL-INSTANCE-VARIABLES ALREADY-EXISTS))
+			    INSTV))
+		 (OR IDENTICAL-COMPONENTS
+		     (EQUAL (FLAVOR-RELEVANT-COMPONENTS ALREADY-EXISTS
+							COMPONENT-FLAVORS INCLUDES)
+			    (FLAVOR-RELEVANT-COMPONENTS ALREADY-EXISTS
+							(FLAVOR-DEPENDS-ON ALREADY-EXISTS)
+							(FLAVOR-INCLUDES ALREADY-EXISTS))))))
+       (SETQ ALREADY-EXISTS (PERFORM-FLAVOR-REDEFINITION FLAVOR-NAME)))
+  ;; Make the information structure unless the flavor already exists.
+  (LET ((FL (OR ALREADY-EXISTS (MAKE-FLAVOR FLAVOR-NAME FLAVOR-NAME))))
+    (SETF (FLAVOR-PACKAGE FL) PACKAGE)
+    (SETF (FLAVOR-LOCAL-INSTANCE-VARIABLES FL) INSTANCE-VARIABLES)
+    (SETF (FLAVOR-DEPENDS-ON FL) COMPONENT-FLAVORS)
+    (SETF (FLAVOR-GETTABLE-INSTANCE-VARIABLES FL) GETTABLE)
+    (SETF (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL) SETTABLE)
+    (SETF (FLAVOR-INITABLE-INSTANCE-VARIABLES FL)
+	  (LOOP FOR V IN INITABLE COLLECT (CONS (CORRESPONDING-KEYWORD V) V)))
+    (SETF (FLAVOR-INIT-KEYWORDS FL) INIT-KEYWORDS)
+    (SETF (FLAVOR-INCLUDES FL) INCLUDES)
+    (SETF (FLAVOR-PLIST FL) NEW-PLIST)
+    (DOLIST (DECL METH-COMB)
+      (LET ((TYPE (CAR DECL)) (ORDER (CADR DECL)) ELEM)
+	;; Don't error-check TYPE now, its definition might not be loaded yet
+	(DOLIST (MSG (CDDR DECL))
+	  (OR (SETQ ELEM (ASSQ MSG (FLAVOR-METHOD-TABLE FL)))
+	      (PUSH (SETQ ELEM (LIST* MSG NIL NIL NIL)) (FLAVOR-METHOD-TABLE FL)))
+	  (SETF (SECOND ELEM) TYPE)
+	  (SETF (THIRD ELEM) ORDER))))
     ;; Make this a depended-on-by of its depends-on, or remember to do it later in
     ;; the case of depends-on's not yet defined.
     (DOLIST (COMPONENT-FLAVOR COMPONENT-FLAVORS)
@@ -416,12 +506,12 @@
 		   (PUSH (CDR X) (FLAVOR-DEPENDED-ON-BY FL)))
 	       (SETQ *FLAVOR-PENDING-DEPENDS* (DELQ X *FLAVOR-PENDING-DEPENDS*))))))
     (PUTPROP FLAVOR-NAME FL 'FLAVOR)
+    ;; Now, if the flavor was redefined in a way that changes the methods but doesn't
+    ;; invalidate old instances, we have to propagate some changes.
+    (AND ALREADY-EXISTS
+	 (NOT IDENTICAL-COMPONENTS)
+	 (PERFORM-FLAVOR-METHOD-ONLY-REDEFINITION FLAVOR-NAME))
     FLAVOR-NAME))
-
-(DEFUN FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE ()
-  (AND (BOUNDP 'COMPILER:FASD-TEMPORARY-AREA)	  ;This gets executed during bootstraping
-       (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
-       (FERROR NIL "You are about to lose with flavor data structure in a temporary area")))
 
 ;Check for typos in user-specified lists of instance variables.
 ;This assumes that only locally-specified (not inherited) instance variables
@@ -432,7 +522,21 @@
   (COND (BAD (FORMAT ERROR-OUTPUT "~&ERROR: Flavor ~S has misspelled :~A " FLAVOR-NAME OPTION)
 	     (FORMAT:PRINT-LIST ERROR-OUTPUT "~S" (NREVERSE BAD)))))
 
+;List of those components which affect the names, number, and ordering of the
+;instance variables.  Don't worry about undefined components, by definition
+;they must be different from the already-existing flavor, so the right
+;thing will happen.  (I wonder what that comment means?  Undefined components
+;will not even appear in the list.)
+(DEFUN FLAVOR-RELEVANT-COMPONENTS (FL COMPONENT-FLAVORS INCLUDED-FLAVORS)
+  (BIND (LOCF (FLAVOR-DEPENDS-ON FL)) COMPONENT-FLAVORS)
+  (BIND (LOCF (FLAVOR-INCLUDES FL)) INCLUDED-FLAVORS)
+  (DEL-IF-NOT #'(LAMBDA (FLAVOR)		;Splice out the uninteresting ones
+		  (FLAVOR-LOCAL-INSTANCE-VARIABLES (GET FLAVOR 'FLAVOR)))
+	      (COMPOSE-FLAVOR-INCLUSION (FLAVOR-NAME FL) NIL)))
+
 ;Return new copy of the FLAVOR defstruct, and propagate to those that depend on it.
+;*** This should hack the old flavor's select-method and combined-methods ***
+;*** so that the old methods will be called directly, not via symbols ***
 (DEFUN PERFORM-FLAVOR-REDEFINITION (FLAVOR-NAME &AUX FL NFL)
   (SETQ FL (GET FLAVOR-NAME 'FLAVOR))
   (COND ((FLAVOR-SELECT-METHOD FL)
@@ -450,6 +554,16 @@
   (DOLIST (FN (FLAVOR-DEPENDED-ON-BY FL))
     (PERFORM-FLAVOR-REDEFINITION FN))
   FL)
+
+;This one is when the old instances don't have to be discarded, but recomposition
+;does have to occur because something was changed in the order of flavor combination
+(DEFUN PERFORM-FLAVOR-METHOD-ONLY-REDEFINITION (FLAVOR-NAME &AUX FL)
+  (SETQ FL (GET FLAVOR-NAME 'FLAVOR))
+  (IF (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
+  (IF (FLAVOR-SELECT-METHOD FL) (COMPOSE-METHOD-COMBINATION FL))
+  (LET ((FDEFINE-FILE-PATHNAME NIL))	;Don't give warnings for combined methods
+    (DOLIST (FN (FLAVOR-DEPENDED-ON-BY FL))
+      (PERFORM-FLAVOR-METHOD-ONLY-REDEFINITION FN))))
 
 (DEFUN DESCRIBE-FLAVOR (FLAVOR-NAME &AUX FL)
   (CHECK-ARG FLAVOR-NAME (EQ 'FLAVOR (TYPEP (SETQ FL (IF (SYMBOLP FLAVOR-NAME)
@@ -474,7 +588,7 @@
 	   (FORMAT T "   ")
 	   (DO ((TPL (CDDDR M) (CDR TPL))) ((NULL TPL))
 	     (FORMAT T "~@[:~A ~]:~A~:[~;, ~]"
-		       (CAAR TPL) (CAR M) (CDR TPL)))
+		       (METH-METHOD-TYPE (CAR TPL)) (CAR M) (CDR TPL)))
 	   (AND (CADR M)
 		(FORMAT T "    :~A~@[ :~A~]" (CADR M) (CADDR M)))
 	   (TERPRI))))
@@ -488,7 +602,7 @@
 	         (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL)))
   (AND (FLAVOR-INITABLE-INSTANCE-VARIABLES FL)
        (FORMAT T "Instance variables that may be set by initialization: ~{~S~^, ~}~%"
-	         (FLAVOR-INITABLE-INSTANCE-VARIABLES FL)))
+	         (MAPCAR #'CDR (FLAVOR-INITABLE-INSTANCE-VARIABLES FL))))
   (AND (FLAVOR-INIT-KEYWORDS FL)
        (FORMAT T "Keywords in the :INIT message handled by this flavor: ~{~S~^, ~}~%"
 	         (FLAVOR-INIT-KEYWORDS FL)))
@@ -507,8 +621,9 @@
 ;; both Class methods and Flavor methods.
 ;; If in place of the lambda-list you have a symbol, and the body
 ;; is null, that symbol is a function which stands in for the method.
-(DEFMACRO DEFMETHOD (FSPEC LAMBDA-LIST . BODY)
-  (LET ((CLASS-NAME (CAR FSPEC)))
+(DEFMACRO DEFMETHOD (SPEC LAMBDA-LIST . BODY)
+  (LET ((CLASS-NAME (CAR SPEC))
+	(FUNCTION-SPEC (CONS ':METHOD SPEC)))
     `(PROGN 'COMPILE
        ;; At compile-time, add enough information so that combined-methods
        ;; can be compiled.  But don't recompile the flavor now, and don't define
@@ -519,19 +634,19 @@
 	     COMPILER:QC-FILE-IN-PROGRESS
 	     (NEQ CLASS-NAME 'VANILLA-FLAVOR)	;This kludge avoids bootstrapping problems!
 	     `(EVAL-WHEN (COMPILE)
-		 (FLAVOR-NOTICE-METHOD ',FSPEC)))
+		 (FLAVOR-NOTICE-METHOD ',FUNCTION-SPEC)))
        ;; At load-time, define the method function
        ,(COND ((AND (SYMBOLP LAMBDA-LIST) (NOT (NULL LAMBDA-LIST)) (NULL BODY))
-	       `(FDEFINE '(:METHOD ,@FSPEC) ',LAMBDA-LIST))
+	       `(FDEFINE ',FUNCTION-SPEC ',LAMBDA-LIST))
 	      ((GET CLASS-NAME 'FLAVOR)
 	       `(LOCAL-DECLARE (,(AND (NEQ CLASS-NAME 'VANILLA-FLAVOR) ;Bootstrap kludge
 				      (FLAVOR-SPECIAL-DECLARATION CLASS-NAME)))
-		  (DEFUN (:METHOD ,@FSPEC) (OPERATION . ,LAMBDA-LIST)
+		  (DEFUN ,FUNCTION-SPEC (OPERATION . ,LAMBDA-LIST)
 		    . ,BODY)))
 	      (T ;; The non-flavor class system
-		(AND (CDDR FSPEC) (FERROR NIL "~S bad in non-flavor DEFMETHOD"
-					  FSPEC))
-		(LET ((OPERATION (CADR FSPEC)))
+		(IF (NOT (NULL (CDDR SPEC)))
+		    (FERROR NIL "~S is not a flavor" (CAR SPEC)))
+		(LET ((OPERATION (CADR SPEC)))
 		  (COND ((ATOM OPERATION)
 			 `(PROGN 'COMPILE
 				 . ,(DEFMETHOD-1 CLASS-NAME OPERATION LAMBDA-LIST BODY)))
@@ -545,85 +660,149 @@
 						 (DEFMETHOD-1 CLASS-NAME OP LAMBDA-LIST BODY))
 					     OPERATION))))))))))
 
+; This lets you specify code to be wrapped around the invocation of the
+; various methods for an operation.  For example,
+; (DEFWRAPPER (FOO-FLAVOR :OPERATION) ((ARG1 ARG2) . BODY)
+;   `(WITH-FOO-LOCKED (SELF)
+;      (PRE-FROBULATE SELF ARG1 ARG2)
+;      ,@BODY
+;      (POST-FROBULATE SELF ARG2 ARG1)))
+;Note that the wrapper needs to be defined at both compile and run times
+;so that compiling combined methods as part of the qfasl file works.
+(DEFMACRO DEFWRAPPER ((FLAVOR-NAME OPERATION) (DEFMACRO-LAMBDA . GUTS)
+		      &BODY BODY)
+  (LET ((FUNCTION-SPEC `(:METHOD ,FLAVOR-NAME :WRAPPER ,OPERATION)))
+    `(PROGN 'COMPILE
+	 ;; At compile-time, add enough information so that combined-methods
+	 ;; can be compiled.  The compile-time definition of macros does not
+	 ;; go through FDEFINE, so this is necessary to record the existence
+	 ;; of the wrapper.
+	 ,(AND (GET FLAVOR-NAME 'FLAVOR)
+	       COMPILER:QC-FILE-IN-PROGRESS
+	       `(EVAL-WHEN (COMPILE)
+		   (FLAVOR-NOTICE-METHOD ',FUNCTION-SPEC)))
+	 (EVAL-WHEN (COMPILE LOAD EVAL) ;Wrapper defs needed to stay around between files
+	   ;; The following optimization could go away if defmacro was made very smart
+	   ,(IF (AND (SYMBOLP DEFMACRO-LAMBDA) (STRING-EQUAL DEFMACRO-LAMBDA 'IGNORE))
+	       `(DEFMACRO ,FUNCTION-SPEC (IGNORE . ,GUTS)
+		  . ,BODY)
+	       `(DEFMACRO ,FUNCTION-SPEC (ARGLISTNAME . ,GUTS)
+		  `(DESTRUCTURING-BIND ,',DEFMACRO-LAMBDA (CDR ,ARGLISTNAME)
+					     ,,@BODY)))))))
+
 ;This just exists to be called at compile-time from the DEFMETHOD macro,
 ;so that any combined methods generated by COMPILE-FLAVOR-METHODS will
 ;know that this method will be around at run time and should be called.
 (DEFUN FLAVOR-NOTICE-METHOD (FUNCTION-SPEC)
-  (MULTIPLE-VALUE-BIND (METHOD-SYMBOL FL TYPE MESSAGE)
-      (FLAVOR-METHOD-SYMBOL FUNCTION-SPEC)
-    (PUSH METHOD-SYMBOL COMPILER:FUNCTIONS-DEFINED)
-    (FLAVOR-ADD-METHOD FL TYPE MESSAGE METHOD-SYMBOL)))
+  (AND (BOUNDP 'COMPILER:FUNCTIONS-DEFINED)
+       (PUSH FUNCTION-SPEC COMPILER:FUNCTIONS-DEFINED))
+  (FLAVOR-METHOD-ENTRY FUNCTION-SPEC))
 
-;;; This is called by FDEFINE when a Flavor method is being defined.
-(DEFUN FDEFINE-FLAVOR (FUNCTION-SPEC DEFINITION CAREFULLY-FLAG FORCE-FLAG &AUX REDEFINING)
-  ;; First, decode the function-spec and check that the flavor is defined.
-  (MULTIPLE-VALUE-BIND (METHOD-SYMBOL FL TYPE MESSAGE)
-      (FLAVOR-METHOD-SYMBOL (CDR FUNCTION-SPEC))
-    (SETQ REDEFINING (FBOUNDP METHOD-SYMBOL))
-    ;; Store the function definition on the method symbol
-    ;; except that they may be EQ in some bizarre cases, apparently(?)
-    (OR (EQ METHOD-SYMBOL DEFINITION)
-	(FDEFINE METHOD-SYMBOL DEFINITION CAREFULLY-FLAG FORCE-FLAG))
-    ;; Put the method symbol into the flavor's method table.
-    ;; Incrementally recompile the flavor if this is a new method, unless
-    ;; it is a :COMBINED method, which is the result of compilation, not a client of it.
-    ;; The reason there are two things to check to see if it is a new method
-    ;; is because of FLAVOR-NOTICE-METHOD.
-    (COND ((AND (OR (FLAVOR-ADD-METHOD FL TYPE MESSAGE METHOD-SYMBOL) (NOT REDEFINING))
-		(NEQ TYPE ':COMBINED))
-	   (RECOMPILE-FLAVOR (FLAVOR-NAME FL) MESSAGE)
-	   (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL)))	;Needs to be recomputed
-    ;; Always return the method symbol, for want of anything better
-    METHOD-SYMBOL))
-
-;;; Put a method-symbol into a flavor's method table.
-;;; Returns non-NIL if this is a new method, NIL if it existed already.
-(DEFUN FLAVOR-ADD-METHOD (FL TYPE MESSAGE METHOD-SYMBOL &AUX MTE)
-  ;; This can happen if you get an error in a compilation and do things.
-  ;; Avoid arbitrary propagation of lossage and destruction.
-  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
-  (IF (NULL (SETQ MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))))
-      ;; Message not previously known about, put into table
-      (PUSH (LIST* MESSAGE NIL NIL (LIST TYPE METHOD-SYMBOL) NIL)
-	    (FLAVOR-METHOD-TABLE FL))
-      ;; Message known, search for the type entry, and update it, or create it
-      (DO ((L (CDDDR MTE) (CDR L)))
-	  ((NULL L)
-	   (PUSH (LIST TYPE METHOD-SYMBOL) (CDDDR MTE)))
-	(COND ((EQ (CAAR L) TYPE)
-	       (SETF (CADAR L) METHOD-SYMBOL)
-	       (RETURN NIL))))))		;Not a new method, return NIL
-
-;;; Returns a symbol which names a flavor method, given a list (flavor type message)
-;;; where type is optional and may be omitted.
-;;; The symbol is put into the same package as the flavor name.
-;;; Also returns various other handy things decoded from the function spec.
-;;; Note that this symbol is NOT the same as the name of the function which
-;;; handles that message.  Use GET-HANDLER-FOR for that.
-;;; This function works for Class methods as well as Flavor methods.
-(LOCAL-DECLARE ((RETURN-LIST METHOD-SYMBOL FL TYPE MESSAGE))
-(DEFUN FLAVOR-METHOD-SYMBOL (FSPEC)
-  ;*** This is a temporary kludge since I gratuitously changed this guy's calling sequence
-  (AND (EQ (CAR FSPEC) ':METHOD) (SETQ FSPEC (CDR FSPEC)))
-  (PROG* ((FLAVOR-NAME (CAR FSPEC))
-	  (TYPE (CADR FSPEC))
-	  (MESSAGE (CADDR FSPEC))
-	  (FL (GET FLAVOR-NAME 'FLAVOR))
-	  (PKG PACKAGE))
-    (AND (NULL MESSAGE) (SETQ MESSAGE TYPE TYPE NIL))	;If no type
-    (AND (OR (NULL MESSAGE) (> (LENGTH FSPEC) 3))
-	 (FERROR NIL "~S is not a valid function-spec" (CONS ':METHOD FSPEC)))
-    ;; If flavor is undefined, assume current package.  Don't want to give an error since
-    ;; then you could not edit a source file containing methods of an undefined flavor.
-    (AND (TYPEP FL 'FLAVOR) (SETQ PKG (FLAVOR-PACKAGE FL)))
-    (RETURN (INTERN1 (FORMAT NIL "~A~@[-~A~]-~A-METHOD" FLAVOR-NAME TYPE MESSAGE) PKG)
-	    FL TYPE MESSAGE))))
+;Find or create a method-table entry for the specified method.
+(DEFUN FLAVOR-METHOD-ENTRY (FUNCTION-SPEC &OPTIONAL DONT-CREATE)
+  (LET ((FLAVOR-NAME (SECOND FUNCTION-SPEC))
+	(TYPE (THIRD FUNCTION-SPEC))
+	(MESSAGE (FOURTH FUNCTION-SPEC)))
+    (IF (NULL MESSAGE) (SETQ MESSAGE TYPE TYPE NIL))	;If no type
+    (IF (OR (NULL MESSAGE) (NEQ (FIRST FUNCTION-SPEC) ':METHOD) (> (LENGTH FUNCTION-SPEC) 4)
+	    (NOT (SYMBOLP FLAVOR-NAME)) (NOT (SYMBOLP TYPE)) (NOT (SYMBOLP MESSAGE)))
+	(FERROR NIL "~S is not a valid function-spec" FUNCTION-SPEC))
+    (LET* ((FL (GET FLAVOR-NAME 'FLAVOR))
+	   (MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))))
+      (OR MTE DONT-CREATE
+	  ;; Message not previously known about, put into table
+	  (PUSH (SETQ MTE (LIST* MESSAGE NIL NIL NIL)) (FLAVOR-METHOD-TABLE FL)))
+      ;; Message known, search for the type entry
+      (OR (METH-LOOKUP TYPE (CDDDR MTE))
+	  (AND (NOT DONT-CREATE)
+	       ;; Type not known, create a new meth with an unbound definition cell
+	       (LET ((METH (LIST-IN-AREA PERMANENT-STORAGE-AREA FUNCTION-SPEC NIL NIL)))
+		 (NULLIFY-METHOD-DEFINITION METH)
+		 (PUSH METH (CDDDR MTE))
+		 (VALUES METH T)))))))
 
 ;;; See if a certain method exists in a flavor
-(DEFUN FLAVOR-METHOD-EXISTS (FL TYPE MESSAGE &AUX MTE)
-  (AND (SETQ MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL)))
-       (ASSQ TYPE (CDDDR MTE))))
+(DEFUN FLAVOR-METHOD-EXISTS (FL TYPE OPERATION &AUX MTE)
+  (AND (SETQ MTE (ASSQ OPERATION (FLAVOR-METHOD-TABLE FL)))
+       (METH-LOOKUP TYPE (CDDDR MTE))))
+
+;;; Forcibly remove a method definition from a flavor's method table
+;;; Syntax is identical to the beginning of a defmethod for the same method.
+(DEFMACRO UNDEFMETHOD (SPEC)
+  `(FUNDEFINE '(:METHOD . ,SPEC)))
+
+;;; Interface to function-spec system
+;; (:METHOD class-name operation) refers to the method in that class for
+;;   that operation; this works for both Class methods and Flavor methods.
+;;   In the case of Flavor methods, the specification may also be of the form
+;;   (:METHOD flavor-name method-type operation).
+(DEFPROP :METHOD METHOD-FUNCTION-SPEC-HANDLER FUNCTION-SPEC-HANDLER)
+(DEFUN METHOD-FUNCTION-SPEC-HANDLER (FUNCTION FUNCTION-SPEC &OPTIONAL ARG1 ARG2)
+  (LET ((FLAVOR (SECOND FUNCTION-SPEC))
+	(METHOD-TYPE (THIRD FUNCTION-SPEC))
+	(MESSAGE (FOURTH FUNCTION-SPEC)))
+    (IF (NULL (CDDDR FUNCTION-SPEC))
+	(SETQ MESSAGE (THIRD FUNCTION-SPEC) METHOD-TYPE NIL))
+    (COND ((AND (SYMBOLP FLAVOR) (GET FLAVOR 'FLAVOR))
+	   (IF (EQ FUNCTION 'VALIDATE-FUNCTION-SPEC)
+	       (AND (SYMBOLP METHOD-TYPE) (SYMBOLP MESSAGE) ( 3 (LENGTH FUNCTION-SPEC) 4))
+	       (LET ((FL (GET FLAVOR 'FLAVOR))
+		     (METH (FLAVOR-METHOD-ENTRY FUNCTION-SPEC 
+						(NOT (MEMQ FUNCTION '(FDEFINE PUTPROP))))))
+		 (OR (NOT (NULL METH))
+		     (MEMQ FUNCTION '(FDEFINEDP COMPILER-FDEFINEDP GET FUNCTION-PARENT))
+		     (FERROR NIL "~S is not a defined method; it is not possible to ~S it"
+			         FUNCTION-SPEC FUNCTION))
+		 (SELECTQ FUNCTION
+		   (FDEFINE
+		     (LET ((NEW-DEFINITION (NOT (METH-DEFINEDP METH))))
+		       (SETF (METH-DEFINITION METH) ARG1)
+		       ;; Incrementally recompile the flavor if this is a new method, unless
+		       ;; it is a :COMBINED method, which is the result of compilation,
+		       ;; not a client of it.
+		       (AND NEW-DEFINITION
+			    (NEQ METHOD-TYPE ':COMBINED)
+			    (RECOMPILE-FLAVOR FLAVOR MESSAGE))))
+		   (FDEFINITION (METH-DEFINITION METH))
+		   (FDEFINEDP (AND METH (METH-DEFINEDP METH)))
+		   (FDEFINITION-LOCATION (LOCF (METH-DEFINITION METH)))
+		   (FUNDEFINE
+		     (LET ((MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))) TEM)
+		       (SETF (CDDDR MTE) (DELQ METH (CDDDR MTE)))	;Remove this method
+		       (IF (OR (NULL (CDDDR MTE))	;No methods left for this operation?
+							;or just a worthless combined method?
+			       (AND (= (LENGTH (CDDDR MTE)) 1)
+				    (EQ (METH-METHOD-TYPE (CADDDR MTE)) ':COMBINED)
+				    (= (LENGTH (SETQ TEM
+						 (CDDDR (FUNCTION-SPEC-GET
+							  (METH-FUNCTION-SPEC (CADDDR MTE))
+							  'COMBINED-METHOD-DERIVATION))))
+				       1)
+				    (IF METHOD-TYPE (EQ (CADDAR TEM) METHOD-TYPE)
+					(NULL (CDDDAR TEM)))))
+			   (SETF (FLAVOR-METHOD-TABLE FL)
+				 (DELQ MTE (FLAVOR-METHOD-TABLE FL))))
+		       (RECOMPILE-FLAVOR (FLAVOR-NAME FL) MESSAGE)	;Propagate the change
+		       ;; In case anyone has their paws on the function cell
+		       (NULLIFY-METHOD-DEFINITION METH)))
+		   (FUNCTION-PARENT (VALUES FLAVOR 'DEFFLAVOR))	;Useful for automatic methods
+		   (COMPILER-FDEFINEDP METH)
+		   (GET (AND METH (GET (LOCF (METH-PLIST METH)) ARG1)))
+		   (PUTPROP (PUTPROP (LOCF (METH-PLIST METH)) ARG1 ARG2))
+		   (OTHERWISE
+		     (FUNCTION-SPEC-DEFAULT-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2))))))
+	  ((AND (SYMBOLP FLAVOR) (CLASS-SYMBOLP FLAVOR))
+	   (CLASS-METHOD-FUNCTION-SPEC-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2))
+	  (T (FERROR NIL "In the function spec ~S,
+    ~S is neither the name of a flavor nor the name of a class"
+		     	 FUNCTION-SPEC FLAVOR)))))
 
+;Make an object of a particular flavor, taking the init-plist options
+;as a rest argument and sending the :INIT message if the flavor
+;handles it.
+(DEFUN MAKE-INSTANCE (FLAVOR-NAME &REST INIT-OPTIONS)
+  (INSTANTIATE-FLAVOR FLAVOR-NAME (LOCF INIT-OPTIONS) 'MAYBE))
+
 ;Make an object of a particular flavor.
 ;If the flavor hasn't been composed yet, must do so now.
 ; Delaying it until the first time it is needed aids initialization,
@@ -634,7 +813,7 @@
 		           &OPTIONAL SEND-INIT-MESSAGE-P
 				     RETURN-UNHANDLED-KEYWORDS-P ;as second value
 				     AREA-TO-CONS-INSTANCE-IN
-			   &AUX FL FFL UNHANDLED-KEYWORDS INSTANCE VARS N)
+			   &AUX FL FFL UNHANDLED-KEYWORDS INSTANCE VARS N TEM)
   (CHECK-ARG FLAVOR-NAME (SETQ FL (GET FLAVOR-NAME 'FLAVOR)) "the name of a flavor")
   ;; Do any composition (compilation) of combined stuff, if not done already
   (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
@@ -650,27 +829,19 @@
     (%P-STORE-TAG-AND-POINTER (%MAKE-POINTER-OFFSET DTP-LOCATIVE INSTANCE I)
 			      DTP-NULL (CAR V)))
   ;; Put defaults into the INIT-PLIST
-  (DOLIST (FFL (FLAVOR-DEPENDS-ON-ALL FL))
-    (SETQ FFL (GET FFL 'FLAVOR))
-    (DO L (GET (LOCF (FLAVOR-PLIST FFL)) ':DEFAULT-INIT-PLIST) (CDDR L) (NULL L)
-      (DO ((M (CDR INIT-PLIST) (CDDR M)))
-	  ((NULL M) (PUTPROP INIT-PLIST (EVAL (CADR L)) (CAR L)))
-	(AND (EQ (CAR M) (CAR L)) (RETURN)))))
+  (FLAVOR-DEFAULT-INIT-PLIST FLAVOR-NAME INIT-PLIST)
   ;; For each init keyword, either initialize the corresponding variable, remember
   ;; that it will be handled later by an :INIT method, or give an error for not being handled.
   (DO L (CDR INIT-PLIST) (CDDR L) (NULL L)
-    (LET ((KEYWORD (CAR L)) (ARG (CADR L)) V)
+    (LET ((KEYWORD (CAR L)) (ARG (CADR L)))
       (DO ((FFLS (FLAVOR-DEPENDS-ON-ALL FL) (CDR FFLS)))
 	  ((NULL FFLS) (PUSH KEYWORD UNHANDLED-KEYWORDS))
 	(SETQ FFL (GET (CAR FFLS) 'FLAVOR))
-	(COND ((SETQ V (MEM #'STRING-EQUAL KEYWORD (FLAVOR-INITABLE-INSTANCE-VARIABLES FFL)))
-	       (RETURN (%P-STORE-CONTENTS-OFFSET ARG INSTANCE
-						 (1+ (FIND-POSITION-IN-LIST (CAR V) VARS)))))
-	      ((SETQ V (MEM #'STRING-EQUAL KEYWORD (FLAVOR-SETTABLE-INSTANCE-VARIABLES FFL)))
-	       (RETURN (%P-STORE-CONTENTS-OFFSET ARG INSTANCE
-						 (1+ (FIND-POSITION-IN-LIST (CAR V) VARS)))))
-	      ((MEMQ KEYWORD (FLAVOR-INIT-KEYWORDS FFL))
-	       (RETURN))))))
+	(COND ((SETQ TEM (ASSQ KEYWORD (FLAVOR-INITABLE-INSTANCE-VARIABLES FFL)))
+	       (%P-STORE-CONTENTS-OFFSET ARG INSTANCE
+					 (1+ (FIND-POSITION-IN-LIST (CDR TEM) VARS)))
+	       (RETURN))
+	      ((MEMQ KEYWORD (FLAVOR-INIT-KEYWORDS FFL)) (RETURN))))))
   ;; Do default initializations
   (DOLIST (FFL (FLAVOR-DEPENDS-ON-ALL FL))
     (SETQ FFL (GET FFL 'FLAVOR))
@@ -687,9 +858,24 @@
 	       FLAVOR-NAME
 	       (LENGTH UNHANDLED-KEYWORDS)
 	       UNHANDLED-KEYWORDS))
+  (AND (EQ SEND-INIT-MESSAGE-P 'MAYBE)
+       (NOT (GET-HANDLER-FOR INSTANCE ':INIT))
+       (SETQ SEND-INIT-MESSAGE-P NIL))
   (AND SEND-INIT-MESSAGE-P
        (FUNCALL INSTANCE ':INIT INIT-PLIST))
   (PROG () (RETURN INSTANCE UNHANDLED-KEYWORDS)))
+
+(DEFUN FLAVOR-DEFAULT-INIT-PLIST (FLAVOR-NAME &OPTIONAL (INIT-PLIST (NCONS NIL)) &AUX FL)
+  (CHECK-ARG FLAVOR-NAME (SETQ FL (GET FLAVOR-NAME 'FLAVOR)) "the name of a flavor")
+  ;; Do any composition (compilation) of combined stuff, if not done already
+  (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
+  (DOLIST (FFL (FLAVOR-DEPENDS-ON-ALL FL))
+    (SETQ FFL (GET FFL 'FLAVOR))
+    (DO L (GET (LOCF (FLAVOR-PLIST FFL)) ':DEFAULT-INIT-PLIST) (CDDR L) (NULL L)
+      (DO ((M (CDR INIT-PLIST) (CDDR M)))
+	  ((NULL M) (PUTPROP INIT-PLIST (EVAL (CADR L)) (CAR L)))
+	(AND (EQ (CAR M) (CAR L)) (RETURN)))))
+  INIT-PLIST)
 
 ;Returns non-NIL if the flavor allows the specified keyword in its init-plist,
 ;NIL if it doesn't.  The return value is the name of the component flavor
@@ -697,8 +883,7 @@
 (DEFUN FLAVOR-ALLOWS-INIT-KEYWORD-P (FLAVOR-NAME KEYWORD)
   (MAP-OVER-COMPONENT-FLAVORS 0 T T
       #'(LAMBDA (FL IGNORE KEYWORD)
-	  (AND (OR (MEM #'STRING-EQUAL KEYWORD (FLAVOR-INITABLE-INSTANCE-VARIABLES FL))
-		   (MEM #'STRING-EQUAL KEYWORD (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL))
+	  (AND (OR (ASSQ KEYWORD (FLAVOR-INITABLE-INSTANCE-VARIABLES FL))
 		   (MEMQ KEYWORD (FLAVOR-INIT-KEYWORDS FL)))
 	       (FLAVOR-NAME FL)))
       FLAVOR-NAME NIL KEYWORD))
@@ -707,6 +892,9 @@
 ;  DEPENDS-ON's to all levels first, then the INCLUDES's at all levels and
 ;  what they depend on.
 ; Note that it does the specified flavor itself as well as all its components.
+; Note well: if there are included flavors, this does not do them in the
+;  right order.  Also note well: if there are multiple paths to a component,
+;  it will be done more than once.
 ; RECURSION-STATE is 0 except when recursively calling itself.
 ; ERROR-P is T if not-yet-defflavored flavors are to be complained about,
 ;  NIL if they are to be ignored.  This exists to get rid of certain
@@ -763,13 +951,13 @@
 ; information and that of any that depend on it.
 ;If a compilation is in progress the compilations performed
 ; will get output as part of that compilation.
-;SINGLE-MESSAGE is NIL to do all messages, or the name of a message
+;SINGLE-OPERATION is NIL to do all operations, or the name of an operation
 ; which needs incremental compilation.
 ;USE-OLD-COMBINED-METHODS can be NIL to force regeneration of all combined methods.
 ; This is used if a wrapper has changed or there was a bug in the method-combining routine.
 ;DO-DEPENDENTS controls whether flavors that depend on this one are also compiled.
 (DEFUN RECOMPILE-FLAVOR (FLAVOR-NAME
-		         &OPTIONAL (SINGLE-MESSAGE NIL) (*USE-OLD-COMBINED-METHODS* T)
+		         &OPTIONAL (SINGLE-OPERATION NIL) (*USE-OLD-COMBINED-METHODS* T)
 				   (DO-DEPENDENTS T)
 			 &AUX FL)
   (CHECK-ARG FLAVOR-NAME (SETQ FL (GET FLAVOR-NAME 'FLAVOR)) "the name of a flavor")
@@ -777,34 +965,50 @@
   (COND ((FLAVOR-SELECT-METHOD FL)
 	 (OR (FLAVOR-DEPENDS-ON-ALL FL)
 	     (COMPOSE-FLAVOR-COMBINATION FL))
-	 (COMPOSE-METHOD-COMBINATION FL SINGLE-MESSAGE)))
-  (AND DO-DEPENDENTS
-       (DOLIST (FN (FLAVOR-DEPENDED-ON-BY FL))
-	 (RECOMPILE-FLAVOR FN SINGLE-MESSAGE))))
+	 (COMPOSE-METHOD-COMBINATION FL SINGLE-OPERATION)))
+  (IF DO-DEPENDENTS
+      (LET ((FDEFINE-FILE-PATHNAME NIL))	;Don't give warnings for combined methods
+	(DOLIST (FN (FLAVOR-DEPENDED-ON-BY-ALL FL))
+	  (RECOMPILE-FLAVOR FN SINGLE-OPERATION *USE-OLD-COMBINED-METHODS* NIL)))))
+
+;Make a list of all flavors that depend on this one, not including this flavor itself.
+;This is a list of the names, not the defstructs.
+(DEFUN FLAVOR-DEPENDED-ON-BY-ALL (FL &OPTIONAL (LIST-SO-FAR NIL) &AUX FFL)
+  (DOLIST (FN (FLAVOR-DEPENDED-ON-BY FL))
+    (OR (MEMQ FN LIST-SO-FAR)
+	(NOT (SETQ FFL (GET FN 'FLAVOR)))
+	(SETQ LIST-SO-FAR (FLAVOR-DEPENDED-ON-BY-ALL FFL (CONS FN LIST-SO-FAR)))))
+  LIST-SO-FAR)
 
 ;This function takes care of flavor-combination.  It sets up the list
 ;of all component flavors, in appropriate order, and the list of all
 ;instance variables.  It generally needs to be called only once for a
 ;flavor, and must be called before method-combination can be dealt with.
-(DEFUN COMPOSE-FLAVOR-COMBINATION (FL &AUX FLS VARS ORDS REQS SIZE)
-  ;; This can happen if you get an error in a compilation and do things.
-  ;; Avoid arbitrary propagation of lossage and destruction.
-  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
+(DEFUN COMPOSE-FLAVOR-COMBINATION (FL &AUX FLS VARS ORDS REQS SIZE
+				           (DEFAULT-CONS-AREA *FLAVOR-AREA*))
   ;; Make list of all component flavors' names.
   ;; This list is in outermost-first order.
   ;; Would be nice for this not to have to search to all levels, but for
   ;; the moment that is hard, so I won't do it.
+  ;; Included-flavors are hairy: if not otherwise in the list of components, they
+  ;; are stuck in after the rightmost component that includes them, along with
+  ;; any components of their own not otherwise in the list.
   (SETF (FLAVOR-DEPENDS-ON-ALL FL)
-	(SETQ FLS (COPYLIST (NREVERSE (MAP-OVER-COMPONENT-FLAVORS 0 T NIL
-					 #'(LAMBDA (FL LIST)
-					     (SETQ FL (FLAVOR-NAME FL))
-					     (OR (MEMQ FL LIST) (PUSH FL LIST))
-					     LIST)
-					 (FLAVOR-NAME FL) NIL))
+	(SETQ FLS (COPYLIST (COMPOSE-FLAVOR-INCLUSION (FLAVOR-NAME FL) T)
 			    PERMANENT-STORAGE-AREA)))
+  ;; Vanilla-flavor may have been put in by magic, so maintain the dependencies
+  ;; in case new methods get added to it later.
+  (LET ((VAN (GET 'VANILLA-FLAVOR 'FLAVOR))
+	(FLAV (FLAVOR-NAME FL)))
+    (AND (NOT (NULL VAN))
+	 (NEQ FLAV 'VANILLA-FLAVOR)
+	 (MEMQ 'VANILLA-FLAVOR FLS)
+	 (NOT (MEMQ FLAV (FLAVOR-DEPENDED-ON-BY VAN)))
+	 (PUSH FLAV (FLAVOR-DEPENDED-ON-BY VAN))))
   ;; Compute what the instance variables will be, and in what order.
   ;; Also collect the required but not present instance variables, which go onto the
-  ;; ADDITIONAL-SPECIAL-VARIABLES property.
+  ;; ADDITIONAL-SPECIAL-VARIABLES property.  The instance variables of the
+  ;; :REQUIRED-FLAVORS work the same way. 
   (DOLIST (F FLS)
     (SETQ F (GET F 'FLAVOR))
     (DOLIST (V (FLAVOR-LOCAL-INSTANCE-VARIABLES F))
@@ -812,6 +1016,13 @@
       (OR (MEMQ V VARS) (PUSH V VARS)))
     (DOLIST (V (GET (LOCF (FLAVOR-PLIST F)) ':REQUIRED-INSTANCE-VARIABLES))
       (OR (MEMQ V VARS) (MEMQ V REQS) (PUSH V REQS)))
+    (DOLIST (FF (GET (LOCF (FLAVOR-PLIST F)) ':REQUIRED-FLAVORS))
+      (COND ((AND (NOT (MEMQ FF FLS)) (SETQ FF (GET FF 'FLAVOR)))
+	     (OR (FLAVOR-DEPENDS-ON-ALL FF) (COMPOSE-FLAVOR-COMBINATION FF))
+	     (DOLIST (V (FLAVOR-ALL-INSTANCE-VARIABLES FF))
+	       (OR (MEMQ V VARS) (MEMQ V REQS) (PUSH V REQS)))
+	     (DOLIST (V (GET (LOCF (FLAVOR-PLIST FF)) 'ADDITIONAL-SPECIAL-VARIABLES))
+	       (OR (MEMQ V VARS) (MEMQ V REQS) (PUSH V REQS))))))
     (LET ((ORD (GET (LOCF (FLAVOR-PLIST F)) ':ORDERED-INSTANCE-VARIABLES)))
       ;; Merge into existing order requirement.  Shorter of the two must be
       ;; a prefix of the longer, and we take the longer.
@@ -835,7 +1046,7 @@
   (SETF (FLAVOR-ALL-INSTANCE-VARIABLES FL) (COPYLIST VARS PERMANENT-STORAGE-AREA))
   ;; Tell microcode about the instance variables
   (SETF (FLAVOR-BINDINGS FL)
-	(LET ((B (MAKE-LIST PERMANENT-STORAGE-AREA (LENGTH VARS))))
+	(LET ((B (MAKE-LIST (LENGTH VARS) ':AREA PERMANENT-STORAGE-AREA)))
 	  (DO ((V VARS (CDR V))		;This way rather than MAPCAR for CDR-coding
 	       (L B (CDR L)))
 	      ((NULL V) B)
@@ -856,36 +1067,76 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 		     (COPYLIST REQS PERMANENT-STORAGE-AREA)
 		     'ADDITIONAL-SPECIAL-VARIABLES))
   NIL)
+
+(DEFUN COMPOSE-FLAVOR-INCLUSION (FLAVOR ERROR-P)
+  (MULTIPLE-VALUE-BIND (FLS ADDITIONS) (COMPOSE-FLAVOR-INCLUSION-1 FLAVOR NIL ERROR-P)
+    ;; The new additions may themselves imply more components
+    (DO L ADDITIONS (CDR L) (NULL L)
+      (LET ((MORE-FLS (COMPOSE-FLAVOR-INCLUSION-1 (CAR L) FLS ERROR-P)))
+	(DOLIST (F MORE-FLS)
+	  ;; This hair inserts F before (after) the thing that indirectly included it
+	  ;; and then puts that next on ADDITIONS so it gets composed also
+	  (LET ((LL (MEMQ (CAR L) FLS)))
+	    (RPLACA (RPLACD LL (CONS (CAR LL) (CDR LL))) F)
+	    (RPLACD L (CONS F (CDR L)))))))
+    ;; Now attach vanilla-flavor if desired
+    (OR (LOOP FOR FLAVOR IN FLS
+	      THEREIS (GET (LOCF (FLAVOR-PLIST (GET FLAVOR 'FLAVOR))) ':NO-VANILLA-FLAVOR))
+	(PUSH 'VANILLA-FLAVOR FLS))
+    (NREVERSE FLS)))
+
+(LOCAL-DECLARE ((SPECIAL OTHER-COMPONENTS))
+(DEFUN COMPOSE-FLAVOR-INCLUSION-1 (FLAVOR OTHER-COMPONENTS ERROR-P)
+  ;; First, make a backwards list of all the normal (non-included) components
+  (LET ((FLS (MAP-OVER-COMPONENT-FLAVORS 1 ERROR-P NIL
+					 #'(LAMBDA (FL LIST)
+					     (SETQ FL (FLAVOR-NAME FL))
+					     (OR (MEMQ FL LIST)
+						 (MEMQ FL OTHER-COMPONENTS)
+						 (PUSH FL LIST))
+					     LIST)
+					 FLAVOR NIL))
+	(ADDITIONS NIL))
+    ;; If there are any inclusions that aren't in the list, plug
+    ;; them in right after (before in backwards list) their last (first) includer
+    (DO L FLS (CDR L) (NULL L)
+      (DOLIST (FL (FLAVOR-INCLUDES (GET (CAR L) 'FLAVOR)))
+	(OR (MEMQ FL FLS)
+	    (MEMQ FL OTHER-COMPONENTS)
+	    (PUSH (CAR (RPLACA (RPLACD L (CONS (CAR L) (CDR L))) FL)) ADDITIONS))))
+    (OR (MEMQ FLAVOR FLS)
+	(SETQ FLS (NCONC FLS
+			 (NREVERSE
+			   (LOOP FOR FL IN (FLAVOR-INCLUDES (GET FLAVOR 'FLAVOR))
+				 UNLESS (OR (MEMQ FL FLS) (MEMQ FL OTHER-COMPONENTS))
+				   COLLECT FL
+				   AND DO (PUSH FL ADDITIONS))))))
+    (VALUES FLS ADDITIONS))))
 
 ;Once the flavor-combination stuff has been done, do the method-combination stuff.
 ;The above function usually only gets called once, but this function gets called
 ;when a new method is added.
-;Specify SINGLE-MESSAGE to do this for just one message, for incremental update.
-(DEFUN COMPOSE-METHOD-COMBINATION (FL &OPTIONAL (SINGLE-MESSAGE NIL)
+;Specify SINGLE-OPERATION to do this for just one operation, for incremental update.
+;NOTE WELL: If a meth is in the method-table at all, it is considered to be defined
+; for purposes of compose-method-combination.  Thus merely putprop'ing a method,
+; or calling flavor-notice-method, will make the flavor think that method exists
+; when it is next composed.  This is necessary to make compile-flavor-methods work.
+; (Putprop must create the meth because loading does putprop before fdefine.)
+(DEFUN COMPOSE-METHOD-COMBINATION (FL &OPTIONAL (SINGLE-OPERATION NIL)
 				   &AUX TEM MAGIC-LIST DEFAULT-HANDLER ORDER
-				        MSG ELEM SYMS SM FFL PL)
-  ;; This can happen if you get an error in a compilation and do things.
-  ;; Avoid arbitrary propagation of lossage and destruction.
-  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
+				        MSG ELEM HANDLERS SM FFL PL
+					(DEFAULT-CONS-AREA *FLAVOR-AREA*))
   ;; Look through all the flavors depended upon and collect the following:
-  ;; A list of all the messages handled and all the methods for each, called MAGIC-LIST.
-  ;; The default handler for unknown messages.
+  ;; A list of all the operations handled and all the methods for each, called MAGIC-LIST.
+  ;; The default handler for unknown operations.
   ;; The declared order of entries in the select-method alist.
   ;; Also generate any automatically-created methods not already present.
   ;; MAGIC-LIST is roughly the same format as the flavor-method-table, see its comments.
-  (DO ((FFLS (FLAVOR-DEPENDS-ON-ALL FL) (CDR FFLS))
-       (NO-MORE NIL))
+  ;; Each magic-list entry is (message comb-type comb-order (type function-spec...)...)
+  (DO ((FFLS (FLAVOR-DEPENDS-ON-ALL FL) (CDR FFLS)))
       ((NULL FFLS))
     (SETQ FFL (GET (CAR FFLS) 'FLAVOR) PL (LOCF (FLAVOR-PLIST FFL)))
-    ;; If we are doing COMPILE-FLAVOR-METHODS, don't look past the
-    ;; first component flavor which itself has been compiled-flavor-methods.
-    ;; That is, do look past it, but don't add any more messages.
-    ;; This will not do the right thing in all cases, but it will do the
-    ;; right thing in most cases, with respect to sharing of combined methods.
-    ;; (It won't work if you combine flavors in a funny order, in which
-    ;; case some run-time compilation will still be required.)
-    (AND *JUST-COMPILING* (NEQ FFL FL) (GET PL 'COMPILE-FLAVOR-METHODS) (SETQ NO-MORE T))
-    (COND ((NOT SINGLE-MESSAGE)
+    (COND ((NOT SINGLE-OPERATION)
 	   (OR DEFAULT-HANDLER (SETQ DEFAULT-HANDLER (GET PL ':DEFAULT-HANDLER)))
 	   (AND (SETQ TEM (GET PL ':SELECT-METHOD-ORDER))
 		(SETQ ORDER (NCONC ORDER (COPYLIST TEM))))))
@@ -893,21 +1144,23 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
     ;; But skip over combined methods, they are not relevant here
     (DOLIST (MTE (FLAVOR-METHOD-TABLE FFL))
       (SETQ MSG (CAR MTE))
-      (COND ((OR (NOT SINGLE-MESSAGE) (EQ MSG SINGLE-MESSAGE))
-	     ;; Well, we're supposed to concern ourselves with this message
-	     (COND ((AND (OR (SETQ ELEM (ASSQ MSG MAGIC-LIST)) (NOT NO-MORE))
-			 (DOLIST (X (CDDDR MTE))
-			   (OR (EQ (CAR X) ':COMBINED) (RETURN T))))
-		    ;; OK, this flavor really contributes to handling this message
+      (COND ((OR (NOT SINGLE-OPERATION) (EQ MSG SINGLE-OPERATION))
+	     ;; Well, we're supposed to concern ourselves with this operation
+	     (SETQ ELEM (ASSQ MSG MAGIC-LIST))	;What we already know about it
+	     (COND ((DOLIST (METH (CDDDR MTE))
+		      (OR (EQ (METH-METHOD-TYPE METH) ':COMBINED) (RETURN T)))
+		    ;; OK, this flavor really contributes to handling this operation
 		    (OR ELEM (PUSH (SETQ ELEM (LIST* MSG NIL NIL NIL)) MAGIC-LIST))
-		    ;; For each non-combined method for this message, add it to the front
+		    ;; For each non-combined method for this operation, add it to the front
 		    ;; of the magic-list element, thus they are in base-flavor-first order.
-		    (DOLIST (X (CDDDR MTE))
-		      (COND ((EQ (CAR X) ':COMBINED) )
-			    ((NOT (SETQ TEM (ASSQ (CAR X) (CDDDR ELEM))))
-			     (PUSH (LIST (CAR X) (CADR X)) (CDDDR ELEM)))
-			    ((NOT (MEMQ (CADR X) (CDR TEM)))	;but don't let a method
-			     (PUSH (CADR X) (CDR TEM)))))))	; get in twice
+		    (DOLIST (METH (CDDDR MTE))
+		      (LET ((TYPE (METH-METHOD-TYPE METH)))
+			(COND ((EQ TYPE ':COMBINED))
+			      ((NOT (SETQ TEM (ASSQ TYPE (CDDDR ELEM))))
+			       (PUSH (LIST TYPE (METH-FUNCTION-SPEC METH)) (CDDDR ELEM)))
+			      ;; Don't let the same method get in twice (how could it?)
+			      ((NOT (MEMQ (METH-FUNCTION-SPEC METH) (CDR TEM)))
+			       (PUSH (METH-FUNCTION-SPEC METH) (CDR TEM))))))))
 	     ;; Pick up method-combination declarations
 	     (AND (CADR MTE) (CADR ELEM)	;If both specify combination-type, check
 		  (OR (NEQ (CADR MTE) (CADR ELEM)) (NEQ (CADDR MTE) (CADDR ELEM)))
@@ -936,87 +1189,135 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 		    (SETF (CDDDR MTE) (DELQ TEM (CDDDR MTE)))
 		    (RPLACA TEM NIL)))
 	   (OR (SETQ TEM (GET (OR (CADR MTE) ':DAEMON) 'METHOD-COMBINATION))
-	       (FERROR NIL "~S unknown method combination type for ~S message"
+	       (FERROR NIL "~S unknown method combination type for ~S operation"
 		           (CADR MTE) (CAR MTE)))
-	   (PUSH (FUNCALL TEM FL MTE) SYMS))
+	   (PUSH (FUNCALL TEM FL MTE) HANDLERS))
 	  (T (SETQ MAGIC-LIST (DELQ MTE MAGIC-LIST 1)))))
-  ;; Get back into declared order
-  (SETQ SYMS (NREVERSE SYMS))
+  ;; Get back into declared order.  We now have a list of function specs for handlers.
+  (SETQ HANDLERS (NREVERSE HANDLERS))
   (COND	(*JUST-COMPILING* )	;If just compiling, don't affect select-method
-	(SINGLE-MESSAGE
-	  ;; If doing SINGLE-MESSAGE, put it into the select-method list
+	(SINGLE-OPERATION
+	  ;; If doing SINGLE-OPERATION, put it into the select-method list
 	  (SETQ SM (%MAKE-POINTER DTP-LIST (FLAVOR-SELECT-METHOD FL)))
-	  (IF (SETQ ELEM (ASSQ-CAREFUL SINGLE-MESSAGE SM))
-	      (RPLACD ELEM (CAR SYMS))
-	      (RPLACD (LAST SM) (CONS-IN-AREA (CONS-IN-AREA SINGLE-MESSAGE (CAR SYMS)
-							    PERMANENT-STORAGE-AREA)
-					      (CDR (LAST SM)) PERMANENT-STORAGE-AREA))))
+	  (SETQ ELEM (ASSQ-CAREFUL SINGLE-OPERATION SM))
+	  (COND ((NULL HANDLERS)		;Deleting method
+		 (COND (ELEM
+			 (SETF (FLAVOR-SELECT-METHOD FL)
+			       (%MAKE-POINTER DTP-SELECT-METHOD (DELQ ELEM SM 1)))
+			 ;; This will have to be recomputed
+			 (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL))))
+		(ELEM				;Replacing method
+		 (STORE-HANDLER-EVCP ELEM (CAR HANDLERS)))
+		(T (RPLACD (LAST SM)		;Adding method
+			   (CONS-IN-AREA (CONS-HANDLER-EVCP SINGLE-OPERATION (CAR HANDLERS))
+					 (CDR (LAST SM)) PERMANENT-STORAGE-AREA))
+		   ;; This will have to be recomputed
+		   (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL))))
 	(T
 	  ;; Now cons up the select-method list.  CDR-code its top-level to save on memory.
-	  (SETQ SM (MAKE-LIST PERMANENT-STORAGE-AREA (1+ (LENGTH MAGIC-LIST))))
+	  (SETQ SM (MAKE-LIST (1+ (LENGTH MAGIC-LIST)) ':AREA PERMANENT-STORAGE-AREA))
 	  (DO ((SM SM (CDR SM))
-	       (SYMS SYMS (CDR SYMS))
+	       (HANDLERS HANDLERS (CDR HANDLERS))
 	       (ML MAGIC-LIST (CDR ML)))
 	      ((NULL ML)
 	       ;; Final CDR is default handler
-	       (RPLACA SM (OR DEFAULT-HANDLER 'UNCLAIMED-MESSAGE))
+	       (RPLACA SM (OR DEFAULT-HANDLER 'FLAVOR-UNCLAIMED-MESSAGE))
 	       (%P-DPB-OFFSET CDR-NORMAL %%Q-CDR-CODE SM -1)
 	       (%P-DPB-OFFSET CDR-ERROR %%Q-CDR-CODE SM 0))
-	    (RPLACA SM (CONS-IN-AREA (CAAR ML) (CAR SYMS) PERMANENT-STORAGE-AREA)))
+	    (RPLACA SM (CONS-HANDLER-EVCP (CAAR ML) (CAR HANDLERS))))
 	  (SETF (FLAVOR-SELECT-METHOD FL) (%MAKE-POINTER DTP-SELECT-METHOD SM))
-	  (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL)	;This will have to be recomputed
-	  ;; Make sure that the required variables and methods are present.
-	  (DO ((FFLS (FLAVOR-DEPENDS-ON-ALL FL) (CDR FFLS))
-	       (MISSING-METHODS NIL)
-	       (MISSING-INSTANCE-VARIABLES NIL))
-	      ((NULL FFLS)
-	       (AND (OR MISSING-INSTANCE-VARIABLES MISSING-METHODS)
-		    (FERROR NIL "Flavor ~S is missing ~:[~*~*~;instance variable~P ~{~S~^, ~} ~]~:[~;and ~]~:[~*~*~;method~P ~{~S~^, ~}~]"
-			        (FLAVOR-NAME FL)
-				MISSING-INSTANCE-VARIABLES
-				(LENGTH MISSING-INSTANCE-VARIABLES)
-				MISSING-INSTANCE-VARIABLES
-				(AND MISSING-INSTANCE-VARIABLES MISSING-METHODS)
-				MISSING-METHODS
-				(LENGTH MISSING-METHODS)
-				MISSING-METHODS)))
-	    (SETQ FFL (GET (CAR FFLS) 'FLAVOR) PL (LOCF (FLAVOR-PLIST FFL)))
-	    (DOLIST (REQM (GET PL ':REQUIRED-METHODS))
-	      (OR (ASSQ REQM MAGIC-LIST)
-		  (MEMQ REQM MISSING-METHODS)
-		  (PUSH REQM MISSING-METHODS)))
-	    (DOLIST (REQV (GET PL ':REQUIRED-INSTANCE-VARIABLES))
-	      (OR (MEMQ REQV (FLAVOR-ALL-INSTANCE-VARIABLES FL))
-		  (MEMQ REQV MISSING-INSTANCE-VARIABLES)
-		  (PUSH REQV MISSING-INSTANCE-VARIABLES))))))
+	  (SETF (FLAVOR-WHICH-OPERATIONS FL) NIL)))	;This will have to be recomputed
+  (OR SINGLE-OPERATION
+      ;; Make sure that the required variables and methods are present.
+      (DO ((FFLS (FLAVOR-DEPENDS-ON-ALL FL) (CDR FFLS))
+	   (MISSING-METHODS NIL)
+	   (MISSING-INSTANCE-VARIABLES NIL)
+	   (MISSING-FLAVORS NIL))
+	  ((NULL FFLS)
+	   (AND (OR MISSING-INSTANCE-VARIABLES MISSING-METHODS MISSING-FLAVORS)
+		(FERROR NIL "Flavor ~S is missing ~
+				~:[~2*~;instance variable~P ~{~S~^, ~} ~]~
+				~:[~3*~;~:[~;and ~]method~P ~{~S~^, ~}~]~
+				~:[~3*~;~:[~;and ~]component flavor~P ~{~S~^, ~}~]"
+			(FLAVOR-NAME FL)
+			MISSING-INSTANCE-VARIABLES
+			(LENGTH MISSING-INSTANCE-VARIABLES)
+			MISSING-INSTANCE-VARIABLES
+			MISSING-METHODS
+			MISSING-INSTANCE-VARIABLES
+			(LENGTH MISSING-METHODS)
+			MISSING-METHODS
+			MISSING-FLAVORS
+			(OR MISSING-INSTANCE-VARIABLES MISSING-METHODS)
+			(LENGTH MISSING-FLAVORS)
+			MISSING-FLAVORS)))
+	(SETQ FFL (GET (CAR FFLS) 'FLAVOR) PL (LOCF (FLAVOR-PLIST FFL)))
+	(DOLIST (REQM (GET PL ':REQUIRED-METHODS))
+	  (OR (ASSQ REQM MAGIC-LIST)
+	      (MEMQ REQM MISSING-METHODS)
+	      (PUSH REQM MISSING-METHODS)))
+	(DOLIST (REQV (GET PL ':REQUIRED-INSTANCE-VARIABLES))
+	  (OR (MEMQ REQV (FLAVOR-ALL-INSTANCE-VARIABLES FL))
+	      (MEMQ REQV MISSING-INSTANCE-VARIABLES)
+	      (PUSH REQV MISSING-INSTANCE-VARIABLES)))
+	(DOLIST (REQF (GET PL ':REQUIRED-FLAVORS))
+	  (OR (MEMQ REQF (FLAVOR-DEPENDS-ON-ALL FL))
+	      (MEMQ REQF MISSING-FLAVORS)
+	      (PUSH REQF MISSING-FLAVORS)))))
   NIL)
+
+;This is the default handler for flavors.
+(DEFUN FLAVOR-UNCLAIMED-MESSAGE (&REST MESSAGE)
+  (IF (FUNCALL-SELF ':OPERATION-HANDLED-P ':UNCLAIMED-MESSAGE)
+      (LEXPR-FUNCALL-SELF ':UNCLAIMED-MESSAGE MESSAGE)
+      (FERROR ':UNCLAIMED-MESSAGE "The object ~S received a ~S message, which went unclaimed.
+The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
+
+;Cons up an a-list entry mapping the message keyword into an evcp to the handler function cell
+(DEFUN CONS-HANDLER-EVCP (MESSAGE HANDLER)
+  (STORE-HANDLER-EVCP (CONS-IN-AREA MESSAGE NIL PERMANENT-STORAGE-AREA) HANDLER))
+
+;Store an external-value-cell-pointer to the function cell of the handler
+;into the cdr of the cons (a-list element)
+(DEFUN STORE-HANDLER-EVCP (LOC HANDLER)
+  (SETQ HANDLER (FDEFINITION-LOCATION HANDLER))
+  (LET ((P (%MAKE-POINTER-OFFSET DTP-LOCATIVE LOC 1)))
+    (%P-STORE-TAG-AND-POINTER P (+ (LSH (%P-CDR-CODE P) 6) DTP-EXTERNAL-VALUE-CELL-POINTER)
+				HANDLER))
+  LOC)
 
 ;; Make the instance-variable getting and setting methods
 (DEFUN COMPOSE-AUTOMATIC-METHODS (FL)
   (DOLIST (V (FLAVOR-GETTABLE-INSTANCE-VARIABLES FL))
-    (LET ((VV (INTERN (GET-PNAME V) "")))
+    (LET ((VV (CORRESPONDING-KEYWORD V)))
       (AND (OR *JUST-COMPILING* (NOT (FLAVOR-METHOD-EXISTS FL NIL VV)))
-	   (LET ((LOCAL-DECLARATIONS (CONS `(SPECIAL ,V) LOCAL-DECLARATIONS)))
-	     (COMPILE-AT-APPROPRIATE-TIME FL
-					  `(:METHOD ,(FLAVOR-NAME FL) ,VV)
-					  `(LAMBDA (IGNORE) ,V))))))
+	   (LET ((LOCAL-DECLARATIONS (CONS `(SPECIAL ,V) LOCAL-DECLARATIONS))
+		 (METH `(:METHOD ,(FLAVOR-NAME FL) ,VV)))
+	     (FLAVOR-NOTICE-METHOD METH)
+	     (COMPILE-AT-APPROPRIATE-TIME FL METH `(LAMBDA (IGNORE) ,V))))))
   (DOLIST (V (FLAVOR-SETTABLE-INSTANCE-VARIABLES FL))
-    (LET ((SV (INTERN1 (FORMAT NIL "SET-~A" V) "")))
+    (LET ((SV (INTERN1 (FORMAT NIL "SET-~A" V) PKG-USER-PACKAGE)))
       (AND (OR *JUST-COMPILING* (NOT (FLAVOR-METHOD-EXISTS FL NIL SV)))
-	   (LET ((LOCAL-DECLARATIONS (CONS `(SPECIAL ,V) LOCAL-DECLARATIONS)))
-	     (COMPILE-AT-APPROPRIATE-TIME FL
-			  `(:METHOD ,(FLAVOR-NAME FL) ,SV)
+	   (LET ((LOCAL-DECLARATIONS (CONS `(SPECIAL ,V) LOCAL-DECLARATIONS))
+		 (METH `(:METHOD ,(FLAVOR-NAME FL) ,SV)))
+	     (FLAVOR-NOTICE-METHOD METH)
+	     (COMPILE-AT-APPROPRIATE-TIME FL METH
 			  `(LAMBDA (IGNORE .NEWVALUE.) (SETQ ,V .NEWVALUE.))))))))
 
 ;INTERN but always return-array the print-name argument
 (DEFUN INTERN1 (PNAME &OPTIONAL (PKG PACKAGE))
   (PROG1 (INTERN PNAME PKG)
 	 (RETURN-ARRAY PNAME)))
+
+;Given a symbol return the corresponding one in the keyword package
+(DEFUN CORRESPONDING-KEYWORD (SYMBOL)
+  (INTERN (GET-PNAME SYMBOL) PKG-USER-PACKAGE))
 
 ; Method-combination functions.  Found on the SI:METHOD-COMBINATION property
 ; of the combination-type.  These are passed the flavor structure, and the
-; magic-list entry, and must return the symbol to go into the select-method,
-; defining any necessary functions.  This function interprets combination-type-arg,
+; magic-list entry, and must return the function-spec for the handler
+; to go into the select-method, defining any necessary functions.
+; This function interprets combination-type-arg,
 ; which for many combination-types is either :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST.
 
 ; :DAEMON combination
@@ -1034,6 +1335,11 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 	(AFTER-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY ':AFTER T T
 					    ':BASE-FLAVOR-FIRST))
 	(WRAPPERS-P (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY))))
+    ;; Remove shadowed primary methods from the magic-list-entry so that it won't look like
+    ;; we depend on them (which could cause extraneous combined-method recompilation).
+    (LET ((MLE (ASSQ NIL (CDDDR MAGIC-LIST-ENTRY))))
+      (AND (CDDR MLE)
+	   (SETF (CDR MLE) (LIST PRIMARY-METHOD))))
     (OR (AND (NOT WRAPPERS-P) (NULL BEFORE-METHODS) (NULL AFTER-METHODS) PRIMARY-METHOD)
 	(HAVE-COMBINED-METHOD FL MAGIC-LIST-ENTRY)
 	(MAKE-COMBINED-METHOD FL MAGIC-LIST-ENTRY
@@ -1053,6 +1359,51 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 		   ;; You are allowed to not have a primary method
 		   (AND PRIMARY-METHOD
 			`(LEXPR-FUNCALL #',PRIMARY-METHOD .DAEMON-CALLER-ARGS.))))))))
+
+; :DAEMON-WITH-OVERRIDE combination
+; This is the same as :DAEMON (the default), except that :OVERRIDE type methods
+; are combined with the :BEFORE-primary-:AFTER methods in an OR.  This allows
+; overriding of the main methods function.  For example, a combined method as follows
+; might be generated: (OR (FOO-OVERRIDE-BAR-METHOD) (PROGN (FOO-BEFORE-BAR-METHOD)))
+(DEFUN (:DAEMON-WITH-OVERRIDE METHOD-COMBINATION) (FL MAGIC-LIST-ENTRY)
+  (LET ((PRIMARY-METHOD (CAR (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY NIL
+						  '(:BEFORE :AFTER :OVERRIDE) T
+						  ':BASE-FLAVOR-LAST)))
+	(BEFORE-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY ':BEFORE T T
+					     ':BASE-FLAVOR-LAST))
+	(AFTER-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY ':AFTER T T
+					    ':BASE-FLAVOR-FIRST))
+	(WRAPPERS-P (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY)))
+	(OVERRIDE-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY
+					       ':OVERRIDE T T ':BASE-FLAVOR-LAST)))
+    ;; Remove shadowed primary methods from the magic-list-entry so that it won't look like
+    ;; we depend on them (which could cause extraneous combined-method recompilation).
+    (LET ((MLE (ASSQ NIL (CDDDR MAGIC-LIST-ENTRY))))
+      (AND (CDDR MLE)
+	   (SETF (CDR MLE) (LIST PRIMARY-METHOD))))
+    (OR (AND (NOT WRAPPERS-P) (NULL BEFORE-METHODS) (NULL AFTER-METHODS)
+	     (NULL OVERRIDE-METHODS)
+	     PRIMARY-METHOD)
+	(HAVE-COMBINED-METHOD FL MAGIC-LIST-ENTRY)
+	(MAKE-COMBINED-METHOD FL MAGIC-LIST-ENTRY
+	  `(OR ,@(MAPCAR #'(LAMBDA (X) `(LEXPR-FUNCALL #',X .DAEMON-CALLER-ARGS.))
+			 OVERRIDE-METHODS)
+	     (PROGN 
+	      ,@(MAPCAR #'(LAMBDA (X) `(LEXPR-FUNCALL #',X .DAEMON-CALLER-ARGS.))
+			BEFORE-METHODS)
+	      ,(IF AFTER-METHODS
+		   ;; Kludge to return a few multiple values
+		   `(PROG (.VAL1. .VAL2. .VAL3.)
+		       ,(AND PRIMARY-METHOD
+			     `(MULTIPLE-VALUE (.VAL1. .VAL2. .VAL3.)
+				(LEXPR-FUNCALL #',PRIMARY-METHOD .DAEMON-CALLER-ARGS.)))
+		       ,@(MAPCAR #'(LAMBDA (X) `(LEXPR-FUNCALL #',X .DAEMON-CALLER-ARGS.))
+				 AFTER-METHODS)
+		       (RETURN .VAL1. .VAL2. .VAL3.))
+		   ;; No :AFTER methods, hair not required
+		   ;; You are allowed to not have a primary method
+		   (AND PRIMARY-METHOD
+			`(LEXPR-FUNCALL #',PRIMARY-METHOD .DAEMON-CALLER-ARGS.)))))))))
 
 ; :LIST combination
 ; No typed-methods allowed.  Returns a list of the results of all the methods.
@@ -1075,7 +1426,7 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 	    . ,(DO ((ML (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY NIL NIL NIL NIL) (CDR ML))
 		    (R NIL))
 		   ((NULL ML) (NREVERSE R))
-		 (PUSH `(,(CAR ML) (CAR .DAEMON-CALLER-ARGS.) (CAR .FOO.)) R)
+		 (PUSH `(FUNCALL #',(CAR ML) (CAR .DAEMON-CALLER-ARGS.) (CAR .FOO.)) R)
 		 (AND (CDR ML) (PUSH '(SETQ .FOO. (CDR .FOO.)) R)))))))
 
 ; :PROGN combination
@@ -1100,6 +1451,45 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 	   (CONS (CADR MAGIC-LIST-ENTRY)
 		 (MAPCAR #'(LAMBDA (M) `(LEXPR-FUNCALL #',M .DAEMON-CALLER-ARGS.))
 			 METHODS))))))
+
+; :PASS-ON combination
+; The values from the individual methods are the arguments to the next one;
+; the values from the last method are the values returned by the combined
+; method.  Format is (:METHOD-COMBINATION (:PASS-ON (ORDERING . ARGLIST)) . OPERATION-NAMES)
+; ORDERING is :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST.  ARGLIST can have &AUX and &OPTIONAL.
+
+(DEFUN (:PASS-ON METHOD-COMBINATION) (FL MAGIC-LIST-ENTRY)
+  (LET ((METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY NIL NIL NIL (CAADDR MAGIC-LIST-ENTRY)))
+	(ARGLIST (CDADDR MAGIC-LIST-ENTRY))
+	ARGS REST-ARG-P)
+    (DO ((L ARGLIST (CDR L))
+	 (ARG)
+	 (NL NIL))
+	((NULL L)
+	 (SETQ ARGS (NREVERSE NL)))
+      (SETQ ARG (CAR L))
+      (AND (LISTP ARG)
+	   (SETQ ARG (CAR ARG)))
+      (COND ((EQ ARG '&REST)
+	     (SETQ REST-ARG-P T))
+	    ((EQ ARG '&AUX))
+	    (T
+	     (PUSH ARG NL))))      
+    (OR (HAVE-COMBINED-METHOD FL MAGIC-LIST-ENTRY)
+	(MAKE-COMBINED-METHOD FL MAGIC-LIST-ENTRY
+	  `(DESTRUCTURING-BIND ,(CONS '.OPERATION. ARGLIST) SI:.DAEMON-CALLER-ARGS.
+	     . ,(DO ((METHS METHODS (CDR METHS))
+		     (LIST NIL)
+		     (METH))
+		    ((NULL METHS)
+		     (NREVERSE LIST))
+		  (SETQ METH `(,(IF REST-ARG-P 'LEXPR-FUNCALL 'FUNCALL)
+			       #',(CAR METHS) .OPERATION. . ,ARGS))
+		  (AND (CDR METHS)
+		       (SETQ METH (IF (NULL (CDR ARGS))
+				      `(SETQ ,(CAR ARGS) ,METH)
+				      `(MULTIPLE-VALUE ,ARGS ,METH))))
+		  (PUSH METH LIST)))))))
 
 ; This function does most of the analysis of the magic-list-entry needed by
 ; method-combination functions, including most error checking.
@@ -1138,40 +1528,84 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 ;; still valid, otherwise returns NIL.
 ;; Always canonicalizes the magic-list-entry, since it will be needed
 ;; canonicalized later.
-(DEFUN HAVE-COMBINED-METHOD (FL MAGIC-LIST-ENTRY &AUX MESSAGE-NAME CMS TEM)
+(DEFUN HAVE-COMBINED-METHOD (FL MAGIC-LIST-ENTRY
+			     &AUX OPERATION-NAME CMS MTE OLD-MLE OLD-CMS TEM)
   ;; Canonicalize the magic-list-entry so can compare with EQUAL
   (SETF (CDDDR MAGIC-LIST-ENTRY)		;Canonicalize before comparing
-	(SORTCAR (CDDDR MAGIC-LIST-ENTRY) #'STRING-LESSP))
-  ;; Get the :COMBINED method symbol for this flavor.  Note that if a suitable
-  ;; one can be inherited, we will do so, unless directed not to by
-  ;; *USE-OLD-COMBINED-METHODS*.
-  (SETQ MESSAGE-NAME (CAR MAGIC-LIST-ENTRY)
-	CMS (AND *USE-OLD-COMBINED-METHODS*
-		 (DOLIST (FFL (FLAVOR-DEPENDS-ON-ALL FL))
-		   (AND (SETQ TEM (ASSQ ':COMBINED
-				    (CDDDR (ASSQ MESSAGE-NAME
-						 (FLAVOR-METHOD-TABLE (GET FFL 'FLAVOR))))))
-			(RETURN (CADR TEM))))))
-  ;; If all OK, return the symbol, else return NIL if new combined method must be made
-  (AND CMS (EQUAL MAGIC-LIST-ENTRY (GET CMS 'COMBINED-METHOD-DERIVATION))
-       CMS))
+	(SORTCAR (CDDDR MAGIC-LIST-ENTRY) #'STRING-LESSP))	;Sort by method-type
+  (SETQ OPERATION-NAME (CAR MAGIC-LIST-ENTRY))
+  ;; Get the :COMBINED method function spec for this flavor.  Note that if a suitable
+  ;; one can be inherited, we will do so.
+  ;; *USE-OLD-COMBINED-METHODS* controls whether we reuse an existing one for this
+  ;; flavor; if we inherit one it will always be up-to-date already.
+  ;; If all OK, return the function spec, else return NIL if new combined method must be made.
+  (OR (AND *USE-OLD-COMBINED-METHODS*		;See if we already have one ourselves
+	   (SETQ MTE (ASSQ OPERATION-NAME (FLAVOR-METHOD-TABLE FL)))
+	   (SETQ OLD-CMS (SETQ CMS (METH-FUNCTION-SPEC (METH-LOOKUP ':COMBINED (CDDDR MTE)))))
+	   (FDEFINEDP CMS)
+	   (EQUAL MAGIC-LIST-ENTRY
+		  (SETQ OLD-MLE (FUNCTION-SPEC-GET CMS 'COMBINED-METHOD-DERIVATION)))
+	   CMS)
+      ;; See if we can inherit one in either the current or future (being-compiled) world
+      (DOLIST (FFL (CDR (FLAVOR-DEPENDS-ON-ALL FL)))  ;CDR = not self!
+	(AND (SETQ MTE (ASSQ OPERATION-NAME (FLAVOR-METHOD-TABLE (GET FFL 'FLAVOR))))
+	     (SETQ CMS (METH-FUNCTION-SPEC (METH-LOOKUP ':COMBINED (CDDDR MTE))))
+	     (OR (FDEFINEDP CMS) *JUST-COMPILING*)
+	     (EQUAL MAGIC-LIST-ENTRY
+		    (SETQ TEM
+			  (OR (AND *JUST-COMPILING*
+				  (FUNCTION-SPEC-GET CMS 'FUTURE-COMBINED-METHOD-DERIVATION))
+			      (FUNCTION-SPEC-GET CMS 'COMBINED-METHOD-DERIVATION))))
+	     (RETURN CMS))
+	;Save first combined-method seen for tracing, it's the one we would
+	;have been most likely to inherit
+	(OR OLD-CMS (NULL CMS) (NULL TEM)
+	    (SETQ OLD-CMS CMS OLD-MLE TEM)))
+      ;; Have to make a new combined method.  Trace if desired, but return NIL in any case.
+      (PROGN
+	(COND (*FLAVOR-COMPILE-TRACE*
+	       (FORMAT *FLAVOR-COMPILE-TRACE*
+		       "~&~S's ~S combined method needs to be recompiled~%to come from "
+		       (FLAVOR-NAME FL) OPERATION-NAME)
+	       (PRINT-COMBINED-METHOD-DERIVATION MAGIC-LIST-ENTRY *FLAVOR-COMPILE-TRACE*)
+	       (COND (OLD-CMS
+		      (FORMAT *FLAVOR-COMPILE-TRACE*
+			      "~%rather than using ~S which comes from " OLD-CMS)
+		      (PRINT-COMBINED-METHOD-DERIVATION OLD-MLE *FLAVOR-COMPILE-TRACE*))
+		     ((NOT *USE-OLD-COMBINED-METHODS*)
+		      (FORMAT *FLAVOR-COMPILE-TRACE* "~%because of forced recompilation.")))))
+	NIL)))
 
-;; This function creates a combined-method, and returns the appropriate symbol.
+
+(DEFUN PRINT-COMBINED-METHOD-DERIVATION (MLE STREAM)
+  (LOOP FOR (TYPE . FUNCTION-SPECS) IN (CDDDR MLE)
+	DO (LOOP FOR FUNCTION-SPEC IN FUNCTION-SPECS DO (FORMAT STREAM "~S " FUNCTION-SPEC)))
+  (IF (OR (CADR MLE) (CADDR MLE))
+      (FORMAT STREAM "with method-combination ~S ~S" (CADR MLE) (CADDR MLE))))
+
+;; This function creates a combined-method, and returns the appropriate function spec.
 ;; Its main job in life is to take care of wrappers.  Note the combined method
 ;; always takes a single &REST argument named .DAEMON-CALLER-ARGS.
 ;; FORM is a single form to be used as the body.
-(DEFUN MAKE-COMBINED-METHOD (FL MAGIC-LIST-ENTRY FORM
-			     &AUX FSPEC COMBINED-METHOD-SYMBOL)
-  ;; Get the symbol which will name the combined-method
-  (SETQ FSPEC `(,(FLAVOR-NAME FL) :COMBINED ,(CAR MAGIC-LIST-ENTRY))
-	COMBINED-METHOD-SYMBOL (FLAVOR-METHOD-SYMBOL FSPEC))
+(DEFUN MAKE-COMBINED-METHOD (FL MAGIC-LIST-ENTRY FORM &AUX FSPEC)
+  ;; Get the function spec which will name the combined-method
+  (SETQ FSPEC `(:METHOD ,(FLAVOR-NAME FL) :COMBINED ,(CAR MAGIC-LIST-ENTRY)))
   ;; Put the wrappers around the form.  The base-flavor wrapper goes on the inside.
   ;; Here we just put the macro-names.  The macros will be expanded by the compiler.
   (DO ((WRAPPERS (CDR (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY))) (CDR WRAPPERS)))
       ((NULL WRAPPERS))
-    (OR (AND (FBOUNDP (CAR WRAPPERS)) (EQ (CAR (FSYMEVAL (CAR WRAPPERS))) 'MACRO))
+    (OR (AND (FDEFINEDP (CAR WRAPPERS))
+	     (LET ((DEF (FDEFINITION (CAR WRAPPERS))))
+	       (OR (AND (LISTP DEF) (EQ (CAR DEF) 'MACRO))
+		   ;--- temporary code so I can test things in the kludge environment
+		   (AND (SYMBOLP DEF)
+			(EQ (CAR (FSYMEVAL DEF)) 'MACRO)))))
 	(FERROR NIL "~S supposed to be a wrapper macro, but missing!" (CAR WRAPPERS)))
-    (SETQ FORM (LIST (CAR WRAPPERS) '.DAEMON-CALLER-ARGS. FORM)))
+    (SETQ FORM `(MACROCALL #',(CAR WRAPPERS) .DAEMON-CALLER-ARGS. ,FORM)))
+  ;; Remember that it's going to be there, for HAVE-COMBINED-METHOD
+  (FLAVOR-NOTICE-METHOD FSPEC)
+  (IF *JUST-COMPILING*
+      (FUNCTION-SPEC-PUTPROP FSPEC MAGIC-LIST-ENTRY 'FUTURE-COMBINED-METHOD-DERIVATION))
   ;; Compile the function.  It will be inserted into the flavor's tables either
   ;; now or when the QFASL file is loaded.
   ;; Declare the instance variables special in case wrappers use them
@@ -1179,13 +1613,24 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 				  LOCAL-DECLARATIONS)))
     (COMPILE-AT-APPROPRIATE-TIME
 	FL
-	(CONS ':METHOD FSPEC)
+	FSPEC
 	`(LAMBDA (&REST .DAEMON-CALLER-ARGS.)
 	   ,FORM)
-	`(DEFPROP ,COMBINED-METHOD-SYMBOL
-		  ,MAGIC-LIST-ENTRY
-		  COMBINED-METHOD-DERIVATION)))
-  COMBINED-METHOD-SYMBOL)
+	`(FUNCTION-SPEC-PUTPROP ',FSPEC
+				',MAGIC-LIST-ENTRY
+				'COMBINED-METHOD-DERIVATION)))
+  FSPEC)
+
+;Sort of a macro version of funcall, for wrappers
+(DEFMACRO MACROCALL (&REST X)
+  (LET ((MACRO (EVAL (CAR X))))
+    (IF (AND (LISTP MACRO) (EQ (CAR MACRO) 'MACRO))
+	(FUNCALL (CDR MACRO) X)
+	;--- Temporary code so I can test things in the kludge environment
+	(IF (AND (SYMBOLP MACRO) (LISTP (FSYMEVAL MACRO)) (EQ (CAR (FSYMEVAL MACRO)) 'MACRO))
+	    (FUNCALL (CDR (FSYMEVAL MACRO)) X)
+	    (FERROR NIL "~S evaluated to ~S, which is not a macro" (CAR X) MACRO)))))
+
 
 ;Return the SPECIAL declaration for a flavor, suitable for use in methods.
 ;No error (returns NIL) if flavor not fully defined yet, although you may get a 
@@ -1219,15 +1664,13 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
   :NO-VANILLA-FLAVOR  ;No instance variables, no other flavors
   (:DOCUMENTATION :MIXIN "The default base flavor.
 This flavor provides the normal handlers for the :PRINT, :DESCRIBE, and :WHICH-OPERATIONS
-messages.  Only esoteric hacks should give the :NO-VANILLA-FLAVOR option to DEFFLAVOR to
+operations.  Only esoteric hacks should give the :NO-VANILLA-FLAVOR option to DEFFLAVOR to
 prevent this inclusion."))
 )
 
-(DEFMETHOD (VANILLA-FLAVOR :PRINT) (STREAM &REST ARGS)
-  (LEXPR-FUNCALL-SELF ':PRINT-SELF STREAM ARGS))
-
 (DEFMETHOD (VANILLA-FLAVOR :PRINT-SELF) (STREAM &REST IGNORE)
-  (FORMAT STREAM "#<~A ~O>" (TYPEP SELF) (%POINTER SELF)))
+  (SI:PRINTING-RANDOM-OBJECT (SELF STREAM)
+    (PRINC (TYPEP SELF) STREAM)))
 
 (DEFMETHOD (VANILLA-FLAVOR :DESCRIBE) ()
   (FORMAT T "~&~S, an object of flavor ~S,~% has instance variable values:~%"
@@ -1244,7 +1687,7 @@ prevent this inclusion."))
 	   (FORMAT T "unbound~%"))
 	  (T (FORMAT T "~S~%" (%P-CONTENTS-OFFSET SELF I))))))
 
-;The default response to :WHICH-OPERATIONS is a list of all messages
+;The default response to :WHICH-OPERATIONS is a list of all operations
 ;handled.  The list is consed up just once.  It is computed by examination
 ;of the dtp-select-method table, since that has no duplications.
 ;This goes to some pains to produce a cdr-coded list, for fast MEMQ'ing.
@@ -1253,11 +1696,22 @@ prevent this inclusion."))
     (OR (FLAVOR-WHICH-OPERATIONS FL)
 	(SETF (FLAVOR-WHICH-OPERATIONS FL)
 	      (LET ((S-M (%MAKE-POINTER DTP-LIST (FLAVOR-SELECT-METHOD FL))))
-		(LET ((W-O (MAKE-LIST DEFAULT-CONS-AREA (LENGTH S-M))))
+		(LET ((W-O (MAKE-LIST (LENGTH S-M) ':AREA PERMANENT-STORAGE-AREA)))
 		  (DO ((S-M S-M (CDR S-M))
 		       (R W-O (CDR R)))
 		      ((ATOM S-M) W-O)
 		    (RPLACA R (CAAR S-M)))))))))
+
+(DEFMETHOD (VANILLA-FLAVOR :OPERATION-HANDLED-P) (OP)
+  (LET* ((FL (%MAKE-POINTER DTP-ARRAY-POINTER (%P-CONTENTS-AS-LOCATIVE-OFFSET SELF 0)))
+	 (WO (OR (FLAVOR-WHICH-OPERATIONS FL) (FUNCALL-SELF ':WHICH-OPERATIONS))))
+    (NOT (NOT (MEMQ OP WO)))))
+
+(DEFMETHOD (VANILLA-FLAVOR :SEND-IF-HANDLES) (OP &REST TO-SEND)
+  (LET* ((FL (%MAKE-POINTER DTP-ARRAY-POINTER (%P-CONTENTS-AS-LOCATIVE-OFFSET SELF 0)))
+	 (WO (OR (FLAVOR-WHICH-OPERATIONS FL) (FUNCALL-SELF ':WHICH-OPERATIONS))))
+    (AND (MEMQ OP WO)
+	 (LEXPR-FUNCALL-SELF OP TO-SEND))))
 
 ;This is useful for debugging.  E.g. you can get a break with all the
 ;instance variables bound.  If we go to lexical closures, this method
@@ -1267,6 +1721,32 @@ prevent this inclusion."))
 
 (DEFMETHOD (VANILLA-FLAVOR :FUNCALL-INSIDE-YOURSELF) (FUNCTION &REST ARGS)
   (APPLY FUNCTION ARGS))
+
+(DEFMETHOD (VANILLA-FLAVOR :GET-HANDLER-FOR) (OP)
+  (GET-HANDLER-FOR SELF OP))
+
+;;; This flavor is a useful mixin that provides messages for a property list protocol.
+
+(DEFFLAVOR PROPERTY-LIST-MIXIN ((PROPERTY-LIST NIL)) ()
+  :SETTABLE-INSTANCE-VARIABLES
+  (:DOCUMENTATION :MIXIN "A mixin that provides property list messages."))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :GET) (INDICATOR)
+  (GET (LOCF PROPERTY-LIST) INDICATOR))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :GETL) (INDICATOR-LIST)
+  (GETL (LOCF PROPERTY-LIST) INDICATOR-LIST))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :PUTPROP) (PROPERTY INDICATOR)
+  (PUTPROP (LOCF PROPERTY-LIST) PROPERTY INDICATOR))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :REMPROP) (INDICATOR)
+  (REMPROP (LOCF PROPERTY-LIST) INDICATOR))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :PUSH-PROPERTY) (PROPERTY INDICATOR)
+  (PUSH PROPERTY (GET (LOCF PROPERTY-LIST) INDICATOR)))
+
+(DEFMETHOD (PROPERTY-LIST-MIXIN :PLIST) () PROPERTY-LIST)
 
 (DEFUN GET-HANDLER-FOR (FUNCTION OPERATION &OPTIONAL (SUPERIORS-P T) &AUX TEM)
   "Given a functional object, return its subfunction to do the given operation or NIL.
@@ -1274,8 +1754,8 @@ prevent this inclusion."))
   (DO-NAMED GET-HANDLER-FOR () (NIL)	;Repeat until reduced to a select-method (if possible)
     (SELECT (%DATA-TYPE FUNCTION)
       (DTP-ARRAY-POINTER
-       (AND (NAMED-STRUCTURE-P FUNCTION)	;This is a crock
-	    (SETQ FUNCTION (NAMED-STRUCTURE-SYMBOL FUNCTION))))
+       (AND (NAMED-STRUCTURE-P FUNCTION)	;This is a crock (why?)
+	    (SETQ FUNCTION (GET (NAMED-STRUCTURE-SYMBOL FUNCTION) 'NAMED-STRUCTURE-INVOKE))))
       (DTP-SYMBOL
        (OR (FBOUNDP FUNCTION) (RETURN NIL))
        (SETQ FUNCTION (FSYMEVAL FUNCTION)))
@@ -1298,6 +1778,49 @@ prevent this inclusion."))
 					  %INSTANCE-DESCRIPTOR-FUNCTION)))
       (OTHERWISE
        (RETURN-FROM GET-HANDLER-FOR NIL)))))
+
+;;; Get the function that would handle an operation for a flavor
+(DEFUN GET-FLAVOR-HANDLER-FOR (FLAVOR-NAME OPERATION &OPTIONAL (SUPERIORS-P T) &AUX FL)
+  (CHECK-ARG FLAVOR-NAME (SETQ FL (GET FLAVOR-NAME 'FLAVOR)) "the name of a flavor")
+  ;; Do any composition (compilation) of combined stuff, if not done already
+  (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
+  (OR (FLAVOR-SELECT-METHOD FL) (COMPOSE-METHOD-COMBINATION FL))
+  (GET-HANDLER-FOR (FLAVOR-SELECT-METHOD FL) OPERATION SUPERIORS-P))
+
+;; (:HANDLER flavor operation) refers to the function that is called when
+;;   an object of flavor FLAVOR is sent the message OPERATION.
+;; Storing into this changes the select-method for that specific flavor
+;;  which should make it possible to trace and so forth.
+(DEFPROP :HANDLER HANDLER-FUNCTION-SPEC-HANDLER FUNCTION-SPEC-HANDLER)
+(DEFUN HANDLER-FUNCTION-SPEC-HANDLER (FUNCTION FUNCTION-SPEC &OPTIONAL ARG1 ARG2)
+  (LET ((FLAVOR (SECOND FUNCTION-SPEC))
+	(MESSAGE (THIRD FUNCTION-SPEC)))
+    ;; Checking structure like :INTERNAL
+    (AND (SYMBOLP FLAVOR)
+	 (LET ((FL (GET FLAVOR 'FLAVOR)))
+	   (OR FL (FERROR NIL "In the function spec ~S, ~S is not the name of a flavor"
+			      FUNCTION-SPEC FLAVOR))
+	   ;; Do any composition (compilation) of combined stuff, if not done already
+	   (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
+	   (OR (FLAVOR-SELECT-METHOD FL) (COMPOSE-METHOD-COMBINATION FL))
+	   (LET ((LOC (DO ((L (%MAKE-POINTER DTP-LIST (FLAVOR-SELECT-METHOD FL)) (CDR L)))
+			  ((ATOM L) NIL)
+			(IF (EQ (CAAR L) MESSAGE)
+			    (RETURN (CAR L))))))	;CDR of this is the method
+	     (OR (NOT (NULL LOC))
+		 (MEMQ FUNCTION '(VALIDATE-FUNCTION-SPEC FDEFINEDP))
+		 (FERROR NIL "The flavor ~S does not handle the ~S message" FLAVOR MESSAGE))
+	     (SELECTQ FUNCTION
+	       (VALIDATE-FUNCTION-SPEC (AND (= (LENGTH FUNCTION-SPEC) 3)
+					    (SYMBOLP MESSAGE)))
+	       (FDEFINE (RPLACD LOC ARG1))
+	       (FDEFINITION (CDR LOC))
+	       (FDEFINEDP LOC)
+	       (FDEFINITION-LOCATION LOC)
+	       (FUNDEFINE (FERROR NIL "FUNDEFINE is not implemented for :HANDLER"))
+	       (OTHERWISE (FUNCTION-SPEC-DEFAULT-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2))
+	       ))))))
+
 
 (DEFPROP %INSTANCE-REF ((%INSTANCE-REF INSTANCE INDEX)
 			%INSTANCE-SET VAL INSTANCE INDEX) SETF)
@@ -1366,7 +1889,7 @@ prevent this inclusion."))
 	   (IF (AND (NOT COMPILER:QC-FILE-LOAD-FLAG) *JUST-COMPILING*)
 	       'COMPILER:QFASL 'COMPILER:COMPILE-TO-CORE))
 	;; This case if not doing anything special
-	(LET ((FDEFINE-FILE-SYMBOL NIL)
+	(LET ((FDEFINE-FILE-PATHNAME NIL)
 	      (INHIBIT-FDEFINE-WARNINGS T))
 	  (PUSH NAME *FLAVOR-COMPILATIONS*)
 	  (COMPILER:COMPILE NAME LAMBDA-EXP)))
@@ -1409,7 +1932,7 @@ prevent this inclusion."))
 ;; as the methods should already all have been compiled, unless something has changed.
 (DEFUN COMPILE-FLAVOR-METHODS-2 (FLAVOR-NAME &AUX FL)
   (CHECK-ARG FLAVOR-NAME (SETQ FL (GET FLAVOR-NAME 'FLAVOR)) "the name of a flavor")
-  (PUTPROP (LOCF (FLAVOR-PLIST FL)) T 'COMPILE-FLAVOR-METHODS)
+  (PUTPROP (LOCF (FLAVOR-PLIST FL)) (OR FDEFINE-FILE-PATHNAME T) 'COMPILE-FLAVOR-METHODS)
   (COND ((FLAVOR-COMPONENTS-DEFINED-P FLAVOR-NAME)
 	 (OR (FLAVOR-DEPENDS-ON-ALL FL) (COMPOSE-FLAVOR-COMBINATION FL))
 	 (OR (FLAVOR-SELECT-METHOD FL) (COMPOSE-METHOD-COMBINATION FL))))

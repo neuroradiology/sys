@@ -1,20 +1,7 @@
-;Compile a -*-LISP-*- source file into a QFASL file.
+;-*- Mode:LISP; Package:COMPILER; Base:8 -*-
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
-(DECLARE (COND ((STATUS FEATURE LISPM))
-	       ((NULL (MEMQ 'NEWIO (STATUS FEATURES)))
-		(BREAK 'YOU-HAVE-TO-COMPILE-THIS-WITH-QCOMPL T))
-	       ((NULL (GET 'IF-FOR-MACLISP 'MACRO))
-		(LOAD '(MACROS > DSK LISPM2))
-		(LOAD '(DEFMAC FASL DSK LISPM2))
-		(LOAD '(LMMAC > DSK LISPM2))
-		(MACROS T))))
-
-(IF-FOR-MACLISP (DECLARE (*LEXPR QC-FILE)))   ;Unnecessary on LISPM, and *LEXPR happens
-				;not to be defined when this reads in.  Not entirely
-				;clear why this is necessary in MACLISP either...
-
-(DECLARE (SETQ RUN-IN-MACLISP-SWITCH T))
+;Compile a LISP source file into a QFASL file.
 
 (DECLARE (SPECIAL QC-FILE-LOAD-FLAG QC-FILE-IN-CORE-FLAG QC-FILE-IN-PROGRESS
 		  QC-FILE-READ-IN-PROGRESS QC-BARF-P 
@@ -31,10 +18,7 @@
 		  QC-TF-ELEMENT QC-TF-PROCESSING-MODE QC-TF-OUTPUT-MODE
 		  CPROG QCOMPILE-POST-PROC LAST-ERROR-FUNCTION))
 
-(IF-FOR-LISPM
- (SETQ QC-FILE-TEMPORARY-AREA FASD-TEMPORARY-AREA))
-
-;(DECLARE (PUTPROP 'QC-FILE-WORK 404 'Q-ARGS-PROP))
+(SETQ QC-FILE-TEMPORARY-AREA FASD-TEMPORARY-AREA)
 
 (OR (BOUNDP 'QC-FILE-IN-PROGRESS)
     (SETQ QC-FILE-IN-PROGRESS NIL))
@@ -78,8 +62,8 @@
 ;The package we compiled in is left here by COMPILE-STREAM.
 (DEFVAR QC-FILE-PACKAGE)
 
-(DEFUN QC-FILE-LOAD (FILENAME)
-  (LOAD (QC-FILE FILENAME)))
+(DEFUN QC-FILE-LOAD (&REST QC-FILE-ARGS)
+  (LOAD (APPLY #'QC-FILE QC-FILE-ARGS)))
 
 ;Compile a source file, producing a QFASL file in the binary format.
 ;If QC-FILE-LOAD-FLAG is T, the stuff in the source file is left defined
@@ -97,201 +81,217 @@
 ;Note that macros and specials are put on LOCAL-DECLARATIONS to make them temporary.
 ;They are also sent over into the QFASL file.
 
-(IF-FOR-LISPM
 (DEFUN FASD-UPDATE-FILE (INFILE &OPTIONAL OUTFILE)
     (QC-FILE INFILE OUTFILE NIL T))
- )
 
 ;This function does all the "outer loop" of the compiler.  It is called
 ;by the editor as well as the compiler.
-;INPUT-STREAM is what to compile.  FILE-GROUP-SYMBOL is its corresponding file symbol.
+;INPUT-STREAM is what to compile.  GENERIC-PATHNAME is for the corresponding file.
 ;FASD-FLAG is NIL if not making a QFASL file.
 ;PROCESS-FN is called on each form.
 ;QC-FILE-LOAD-FLAG, QC-FILE-IN-CORE-FLAG, and PACKAGE-SPEC are options.
-;FUNCTIONS-DEFINED and FILE-LOCAL-DECLARATIONS are normally initialized to NIL,
-;but you can optionally pass in initializations for them.
-;Looks at COMPILER-WARNINGS-BUFFER and CONCATENATE-COMPILER-WARNINGS-P,
-;which may cause STANDARD-OUTPUT to be bound to a stream to save any typeout.
-(DEFUN COMPILE-STREAM (INPUT-STREAM FILE-GROUP-SYMBOL FASD-FLAG PROCESS-FN
+;FILE-LOCAL-DECLARATIONS is normally initialized to NIL,
+;but you can optionally pass in an initializations for it.
+;READ-THEN-PROCESS-FLAG means do all reading first, thus minimizing thrashing.
+(DEFUN COMPILE-STREAM (INPUT-STREAM GENERIC-PATHNAME FASD-FLAG PROCESS-FN
 		       QC-FILE-LOAD-FLAG QC-FILE-IN-CORE-FLAG PACKAGE-SPEC
-		       &OPTIONAL (FUNCTIONS-DEFINED NIL) (FILE-LOCAL-DECLARATIONS NIL)
-		       &AUX LAST-ERROR-FUNCTION
-		            #Q (PACKAGE PACKAGE)
-			    ;;On the LISP machine, bind the area.  We may change it later.
-			    #Q (DEFAULT-CONS-AREA DEFAULT-CONS-AREA)
+		       &OPTIONAL (FILE-LOCAL-DECLARATIONS NIL) READ-THEN-PROCESS-FLAG
+		       &AUX LAST-ERROR-FUNCTION COMPILING-WHOLE-FILE-P
+		            (PACKAGE PACKAGE)
 			    ;;QC-FILE-RESET uses this to unbind this area after a boot
-			    #Q (QC-FILE-OLD-DEFAULT-CONS-AREA DEFAULT-CONS-AREA)
-			    #Q (STANDARD-OUTPUT STANDARD-OUTPUT))
-    ;; Set up the compiler warnings save stream
-    #Q (COND (COMPILER-WARNINGS-BUFFER
-	      (LET (ISTREAM)
-		 (MULTIPLE-VALUE (STANDARD-OUTPUT ISTREAM)
-		   (ZWEI:MAKE-BUFFER-WINDOW-OR-BROADCAST-STREAM
-		     COMPILER-WARNINGS-BUFFER CONCATENATE-COMPILER-WARNINGS-P))
-		 (AND FILE-GROUP-SYMBOL
-		      (FORMAT ISTREAM "~2&Compiling ~A~2%" FILE-GROUP-SYMBOL)))))
+			    (QC-FILE-OLD-DEFAULT-CONS-AREA DEFAULT-CONS-AREA)
+			    FDEFINE-FILE-PATHNAME)
+  (COMPILER-WARNINGS-CONTEXT-BIND
+       (SETQ COMPILING-WHOLE-FILE-P
+	     (OR (NULL COMPILER-WARNINGS-INTERVAL-STREAM)
+		 (ZWEI:SETUP-COMPILER-WARNINGS INPUT-STREAM)))
     ;; Bind all the variables required by the file property list.
-    (MULTIPLE-VALUE-BIND (VARS VALS) (FS:FILE-PROPERTY-BINDINGS FILE-GROUP-SYMBOL)
+    (MULTIPLE-VALUE-BIND (VARS VALS) (FS:FILE-PROPERTY-BINDINGS GENERIC-PATHNAME)
       (PROGV VARS VALS
 	;; Override the package if required.  It has been bound in any case.
 	(AND PACKAGE-SPEC (SETQ PACKAGE (PKG-FIND-PACKAGE PACKAGE-SPEC)))
+	;; Override the generic pathname
+	(SETQ FDEFINE-FILE-PATHNAME
+	      (LET ((PATHNAME (AND (MEMQ ':PATHNAME (FUNCALL INPUT-STREAM ':WHICH-OPERATIONS))
+				   (FUNCALL INPUT-STREAM ':PATHNAME))))
+		(AND PATHNAME (FUNCALL PATHNAME ':GENERIC-PATHNAME))))
 	;; Having bound the variables, process the file.
 	(DO ((QC-FILE-IN-PROGRESS T)
 	     (UNDO-DECLARATIONS-FLAG (NOT QC-FILE-LOAD-FLAG))
 	     (LOCAL-DECLARATIONS NIL)
-	     (BARF-SPECIAL-LIST NIL)
-	     (FUNCTIONS-REFERENCED NIL)
 	     (OPEN-CODE-MAP-SWITCH OPEN-CODE-MAP-SWITCH)
 	     (RUN-IN-MACLISP-SWITCH RUN-IN-MACLISP-SWITCH)
 	     (OBSOLETE-FUNCTION-WARNING-SWITCH OBSOLETE-FUNCTION-WARNING-SWITCH)
 	     (ALL-SPECIAL-SWITCH ALL-SPECIAL-SWITCH)
-	     (RETAIN-VARIABLE-NAMES-SWITCH RETAIN-VARIABLE-NAMES-SWITCH)
 	     (SOURCE-FILE-UNIQUE-ID)
 	     (FORM-LIST))
 	    ()
 	  (COND (FASD-FLAG
-		 (LET ((PLIST (LIST ':PACKAGE (INTERN (PKG-NAME PACKAGE)
-						      SI:PKG-USER-PACKAGE))))
-		   (COND ((AND INPUT-STREAM
-			       (MEMQ ':GET (FUNCALL INPUT-STREAM ':WHICH-OPERATIONS))
-			       (SETQ SOURCE-FILE-UNIQUE-ID
-				     (FUNCALL INPUT-STREAM ':GET ':UNIQUE-ID)))
-			  (SETQ PLIST (NCONC (LIST ':QFASL-SOURCE-FILE-UNIQUE-ID
-						   SOURCE-FILE-UNIQUE-ID)
-					     PLIST))))
-		 ;; First thing in QFASL file must be property list
-		 ;; Properties supported are PACKAGE and QFASL-SOURCE-FILE-UNIQUE-ID
-		 ;; These properties wind up on the FASL-GROUP-SYMBOL, ie,
-		 ;;  FILES:|AI: RG; FOO >|
-		 ;; Must load QFASL file into same package compiled in
+		 ;; Copy all suitable file properties into the fasl file
+		 ;; Suitable means those that are lambda-bound when you read in a file.
+		 (LET ((PLIST (COPYLIST (FUNCALL GENERIC-PATHNAME ':PLIST))))
+		   ;; Remove unsuitable properties
+		   (DO ((L (LOCF PLIST)))
+		       ((NULL (CDR L)))
+		     (IF (NOT (NULL (GET (CADR L) 'FS:FILE-PROPERTY-BINDINGS)))
+			 (SETQ L (CDDR L))
+			 (RPLACD L (CDDDR L))))
+		   ;; Make sure the package property is really the package compiled in
+		   ;; Must load QFASL file into same package compiled in
+		   (PUTPROP (LOCF PLIST)
+			    (INTERN (PKG-NAME PACKAGE) SI:PKG-USER-PACKAGE)  ;keyword package
+			    ':PACKAGE)
+		   (AND INPUT-STREAM
+			(MEMQ ':TRUENAME (FUNCALL INPUT-STREAM ':WHICH-OPERATIONS))
+			(SETQ SOURCE-FILE-UNIQUE-ID (FUNCALL INPUT-STREAM ':TRUENAME))
+			(PUTPROP (LOCF PLIST)
+				 SOURCE-FILE-UNIQUE-ID
+				 ':QFASL-SOURCE-FILE-UNIQUE-ID))
+		   ;; If a file is being compiled across directories, remember where the
+		   ;; source really came from.
+		   (AND FDEFINE-FILE-PATHNAME FASD-STREAM
+			(LET ((OUTFILE (AND (MEMQ ':PATHNAME
+						  (FUNCALL FASD-STREAM ':WHICH-OPERATIONS))
+					    (FUNCALL FASD-STREAM ':PATHNAME))))
+			  (COND (OUTFILE
+				 (SETQ OUTFILE (FUNCALL OUTFILE ':GENERIC-PATHNAME))
+				 (AND (NEQ OUTFILE FDEFINE-FILE-PATHNAME)
+				      (PUTPROP (LOCF PLIST) FDEFINE-FILE-PATHNAME
+					       ':SOURCE-FILE-GENERIC-PATHNAME))))))
+		   (MULTIPLE-VALUE-BIND (MAJOR MINOR)
+		       (SI:GET-SYSTEM-VERSION "System")
+		     (PUTPROP (LOCF PLIST)
+			      (LIST USER-ID
+				    SI:LOCAL-PRETTY-HOST-NAME
+				    (TIME:GET-UNIVERSAL-TIME)
+				    MAJOR MINOR)
+			      ':COMPILE-DATA))
+		   ;; First thing in QFASL file must be property list
+		   ;; These properties wind up on the GENERIC-PATHNAME.
 		   (COND (QC-FILE-REL-FORMAT
 			  (QFASL-REL:DUMP-FILE-PROPERTY-LIST
-			     FILE-GROUP-SYMBOL
+			     GENERIC-PATHNAME
 			     PLIST))
 			 (T
 			  (FASD-FILE-PROPERTY-LIST PLIST))))))
 	  (QC-PROCESS-INITIALIZE)
+	  (IF READ-THEN-PROCESS-FLAG
 	  ;; Read in all the forms and make a list of them (reversed) so that we
 	  ;; don't have the reader and obarrays fighting the compiler for core.
 	  ;; This is suboptimal in Maclisp but who cares about the Maclisp version.
-	  (DO ((EOF (NCONS NIL))
-	       (FORM)
-	       #Q (DEFAULT-CONS-AREA (IF QC-FILE-LOAD-FLAG DEFAULT-CONS-AREA
-					 QC-FILE-TEMPORARY-AREA))
-	       (QC-FILE-READ-IN-PROGRESS FASD-FLAG))  ;looked at by XR-#,-MACRO
-	      (NIL)
-	    (SETQ FORM (READ INPUT-STREAM EOF))
-	    (AND (EQ FORM EOF) (RETURN))
-	    (PUSH FORM FORM-LIST))
-	  (CLOSE INPUT-STREAM)	;Mainly for the sake of the who-line
-	  ;; Now scan down the list compiling.
-	  (DOLIST (FORM (NREVERSE FORM-LIST))
-	    #Q (PROCESS-ALLOW-SCHEDULE)
-	    ;; Start a new whack if FASD-TABLE is getting too big.
-	    (AND FASD-FLAG
-		 (>= (FASD-TABLE-LENGTH) QC-FILE-WHACK-THRESHOLD)
-		 (FASD-END-WHACK))
-	    (FUNCALL PROCESS-FN FORM))
-	  ;; The stream that accepts the typeout below may cons.  Don't get scrod.
-	  (SETQ DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA)
-	  ;; Report functions referenced but not defined, which may be spelling errors
-	  (DOLIST (X FUNCTIONS-REFERENCED)
-	    (AND (MEMQ (CAR X) FUNCTIONS-DEFINED)	;Remove newly-defined functions
-		 (SETQ FUNCTIONS-REFERENCED (DELQ X FUNCTIONS-REFERENCED))))
-	  (COND (FUNCTIONS-REFERENCED
-		  (FORMAT T
-			  "~&The following functions were referenced but don't seem defined:")
-		  (DOLIST (X FUNCTIONS-REFERENCED)
-		    (FORMAT T "~& ~S referenced by " (CAR X))
-		    (FORMAT:PRINT-LIST T "~S" (CDR X))
-		    (FORMAT T "~&"))))))))
+	      (PROGN
+		(DO ((EOF (NCONS NIL))
+		     (FORM)
+		     (READ-AREA (IF QC-FILE-LOAD-FLAG DEFAULT-CONS-AREA
+				    QC-FILE-TEMPORARY-AREA))
+		     (QC-FILE-READ-IN-PROGRESS FASD-FLAG))	;looked at by XR-#,-MACRO
+		    (NIL)
+		  (SETQ FORM (READ INPUT-STREAM EOF))
+		  (AND (EQ FORM EOF) (RETURN))
+		  (SETQ FORM-LIST (CONS-IN-AREA FORM FORM-LIST READ-AREA)))
+		(CLOSE INPUT-STREAM)	;Mainly for the sake of the who-line
+		;; Now scan down the list compiling.
+		(DOLIST (FORM (NREVERSE FORM-LIST))
+		  ;; Start a new whack if FASD-TABLE is getting too big.
+		  (AND FASD-FLAG
+		       ( (FASD-TABLE-LENGTH) QC-FILE-WHACK-THRESHOLD)
+		       (FASD-END-WHACK))
+		  (FUNCALL PROCESS-FN FORM)))
+	      ;Do things in order.  This may cause more thrashing, but sometimes the other
+	      ; thing loses (particularily in case of #,).
+	      (PROGN
+		(DO ((EOF (NCONS NIL))
+		     (FORM))
+		    (NIL)
+		  (SETQ FORM
+			(LET ((READ-AREA (IF QC-FILE-LOAD-FLAG DEFAULT-CONS-AREA
+					     QC-FILE-TEMPORARY-AREA))
+			      (QC-FILE-READ-IN-PROGRESS FASD-FLAG)) ;looked at by XR-#,-MACRO
+			  (READ INPUT-STREAM EOF)))
+		  (AND (EQ FORM EOF) (RETURN))
+		  ;; Start a new whack if FASD-TABLE is getting too big.
+		  (AND FASD-FLAG
+		       ( (FASD-TABLE-LENGTH) QC-FILE-WHACK-THRESHOLD)
+		       (FASD-END-WHACK))
+		  (FUNCALL PROCESS-FN FORM)))))))))
 
-(IF-FOR-LISPM
+(DEFUN ENTER-COMPILER-WARNINGS-CONTEXT ()
+  (COND (COMPILER-WARNINGS-BUFFER
+	 (MULTIPLE-VALUE (STANDARD-OUTPUT COMPILER-WARNINGS-INTERVAL-STREAM)
+	   (ZWEI:MAKE-BUFFER-WINDOW-OR-BROADCAST-STREAM
+	     COMPILER-WARNINGS-BUFFER CONCATENATE-COMPILER-WARNINGS-P)))
+	(T
+	 (SETQ COMPILER-WARNINGS-INTERVAL-STREAM NIL))))
+
+(DEFUN PRINT-FUNCTIONS-REFERENCED-BUT-NOT-DEFINED ()
+  ;; Report functions referenced but not defined, which may be spelling errors
+  (SETQ FUNCTIONS-REFERENCED
+	(DEL-IF #'(LAMBDA (X)
+		    (OR (MEMQ (CAR X) FUNCTIONS-DEFINED)
+			(FDEFINEDP (CAR X))))
+		FUNCTIONS-REFERENCED))
+  (COND (FUNCTIONS-REFERENCED
+	 (FORMAT T
+		 "~&The following functions were referenced but don't seem defined:")
+	 (DOLIST (X FUNCTIONS-REFERENCED)
+	   (FORMAT T "~& ~S referenced by " (CAR X))
+	   (FORMAT:PRINT-LIST T "~S" (CDR X))
+	   (FORMAT T "~&")))))
+
 (DEFUN QC-FILE (INFILE &OPTIONAL OUTFILE LOAD-FLAG IN-CORE-FLAG PACKAGE-SPEC
-				 FUNCTIONS-DEFINED FILE-LOCAL-DECLARATIONS
-		&AUX FILE-GROUP-SYMBOL INPUT-STREAM FASD-STREAM QC-FILE-PACKAGE
-		(QC-FILE-REL-FORMAT QC-FILE-REL-FORMAT))
+				 FILE-LOCAL-DECLARATIONS
+				 DONT-SET-DEFAULT-P
+				 READ-THEN-PROCESS-FLAG
+		       &AUX GENERIC-PATHNAME QC-FILE-PACKAGE
+			    (QC-FILE-REL-FORMAT QC-FILE-REL-FORMAT))
   ;; Default the specified input and output file names.  Open files.
-  (SETQ INFILE (FS:FILE-PARSE-NAME INFILE))
-  (SETQ OUTFILE
-	(COND (OUTFILE (FS:FILE-PARSE-NAME OUTFILE NIL
-					   (FUNCALL INFILE ':COPY-WITH-TYPE ':QFASL)))
-	      (T (FUNCALL INFILE ':COPY-WITH-TYPE ':QFASL))))
-  (MULTIPLE-VALUE (NIL FILE-GROUP-SYMBOL) (FS:GET-FILE-SYMBOLS INFILE))
-  (UNWIND-PROTECT
-    (PROGN (SETQ INPUT-STREAM (OPEN INFILE '(READ)))
-	   ;; Get the file property list again, in case we don't have it already or it changed
-	   (FS:FILE-READ-PROPERTY-LIST FILE-GROUP-SYMBOL INPUT-STREAM)
-	   (OR QC-FILE-REL-FORMAT-OVERRIDE
-	      (SELECTQ (GET FILE-GROUP-SYMBOL ':FASL)
-		(:REL (SETQ QC-FILE-REL-FORMAT T))
-		(:FASL (SETQ QC-FILE-REL-FORMAT NIL))
-		(NIL)
-		(T (FERROR NIL "File property FASL value not FASL or REL in file ~A"
-			   FILE-GROUP-SYMBOL))))
-	   (COND (QC-FILE-REL-FORMAT
-		   (QFASL-REL:DUMP-START))
-		 (T
-		   (FASD-OPEN OUTFILE)
-		   (FASD-INITIALIZE)))
-	   (COMPILE-STREAM INPUT-STREAM FILE-GROUP-SYMBOL FASD-STREAM 'QC-FILE-WORK-COMPILE
-			   LOAD-FLAG IN-CORE-FLAG PACKAGE-SPEC
-			   FUNCTIONS-DEFINED FILE-LOCAL-DECLARATIONS)
-	   (COND (QC-FILE-REL-FORMAT
-		   (LET ((PACKAGE QC-FILE-PACKAGE))
-		     (QFASL-REL:WRITE-REL-FILE OUTFILE)))
-		 (T
-		   (FASD-END-WHACK)
-		   (FASD-END-FILE)
-		   (FASD-CLOSE OUTFILE))))
-    ;; UNWIND-PROTECT forms
-    (AND INPUT-STREAM (CLOSE INPUT-STREAM))
-    (COND (FASD-STREAM
-	    (ERRSET (DELETEF FASD-STREAM)) ;flush partial qfasl file
-	    (CLOSE FASD-STREAM))))
-  ;; For the sake of users, and also for the sake of QC-FILE-LOAD,
-  ;; return the name of the output file.  Should also return an indication
-  ;; of whether there was an error, so that QC-FILE-LOAD can figure out whether
-  ;; to abort, but that would take some work...
+  (SETQ INFILE (FS:MERGE-PATHNAME-DEFAULTS INFILE FS:LOAD-PATHNAME-DEFAULTS "LISP"))
+  (WITH-OPEN-FILE (INPUT-STREAM INFILE '(:READ))
+    ;; The input pathname might have been changed by the user in response to an error
+    (SETQ INFILE (FUNCALL INPUT-STREAM ':PATHNAME))
+    (OR DONT-SET-DEFAULT-P (FS:SET-DEFAULT-PATHNAME INFILE FS:LOAD-PATHNAME-DEFAULTS))
+    (SETQ GENERIC-PATHNAME (FUNCALL INFILE ':GENERIC-PATHNAME))
+    (SETQ OUTFILE
+	  (IF OUTFILE
+	      (FS:MERGE-PATHNAME-DEFAULTS OUTFILE INFILE "QFASL")
+	      (FUNCALL INFILE ':NEW-PATHNAME
+		       ':TYPE "QFASL"
+		       ':VERSION (FUNCALL (FUNCALL INPUT-STREAM ':TRUENAME) ':VERSION))))
+    ;; Get the file property list again, in case we don't have it already or it changed
+    (FS:FILE-READ-PROPERTY-LIST GENERIC-PATHNAME INPUT-STREAM)
+    (OR QC-FILE-REL-FORMAT-OVERRIDE
+	(SELECTQ (FUNCALL GENERIC-PATHNAME ':GET ':FASL)
+	  (:REL (SETQ QC-FILE-REL-FORMAT T))
+	  (:FASL (SETQ QC-FILE-REL-FORMAT NIL))
+	  (NIL)
+	  (T (FERROR NIL "File property FASL value not FASL or REL in file ~A"
+		     GENERIC-PATHNAME))))
+    (COND (QC-FILE-REL-FORMAT
+	   (LET ((FASD-STREAM NIL))	;REL compiling doesn't work the same way
+	     (QFASL-REL:DUMP-START)
+	     (COMPILE-STREAM INPUT-STREAM GENERIC-PATHNAME FASD-STREAM 'QC-FILE-WORK-COMPILE
+			     LOAD-FLAG IN-CORE-FLAG PACKAGE-SPEC
+			     FILE-LOCAL-DECLARATIONS READ-THEN-PROCESS-FLAG)
+	     (LET ((PACKAGE QC-FILE-PACKAGE))
+	       (QFASL-REL:WRITE-REL-FILE OUTFILE))))
+	  (T
+	   (WITH-OPEN-FILE (FASD-STREAM OUTFILE '(:WRITE :FIXNUM))
+	     (SETQ OUTFILE (FUNCALL FASD-STREAM ':PATHNAME))
+	     (FASD-START-FILE)
+	     (FASD-INITIALIZE)
+	     (COMPILE-STREAM INPUT-STREAM GENERIC-PATHNAME FASD-STREAM 'QC-FILE-WORK-COMPILE
+			     LOAD-FLAG IN-CORE-FLAG PACKAGE-SPEC
+			     FILE-LOCAL-DECLARATIONS READ-THEN-PROCESS-FLAG)
+	     (FASD-END-WHACK)
+	     (FASD-END-FILE)))))
   OUTFILE)
- )
-
-(IF-FOR-MACLISP
- (DEFUN QC-FILE EXPR NARGS
-    (PROG (^R ^Q OUTFILES FILE OFILE EFILE INPUT-STREAM
-	      QC-ERROR-OUTPUT-FILE QC-BARF-P)
-	(OR (= NARGS 1) (= NARGS 2) (= NARGS 3)
-	    (ERROR '|FIRST ARG IS INPUT FILE, SECOND IS OPTIONAL OUTPUT FILE,
-THIRD IS OPTIONAL ERROR OUTPUT FILE|))
-	(SETQ OFILE (SETQ FILE (ARG 1)))
-	(AND (> NARGS 1) (SETQ OFILE (ARG 2)))
-	(COND ((> NARGS 2) (SETQ EFILE (ARG 3)))
-	      (T (SETQ EFILE OFILE)))
-	(SETQ FILE (MERGEF FILE '(* >)))
-	(INPUSH (SETQ INPUT-STREAM (OPEN FILE '(IN BLOCK))))
-	(SETQ QC-ERROR-OUTPUT-FILE (OPEN (MERGEF '((*) _QCMP_ ERRS) EFILE) '(OUT BLOCK)))
-	(SETQ ^Q T)
-	(QC-FILE-RESET)
-	(FASD-OPEN (MERGEF '(* QFASL) OFILE))
-	(FASD-INITIALIZE)
-	(COMPILE-STREAM INPUT-STREAM NIL FASD-STREAM 'QC-FILE-WORK-COMPILE NIL NIL NIL)
-	(FASD-END-WHACK)
-	(FASD-END-FILE)
-	(FASD-CLOSE OFILE)
-	(QC-FILE-RESET)
-	(RENAMEF QC-ERROR-OUTPUT-FILE (MERGEF '(* QERRS) EFILE))
-	(CLOSE QC-ERROR-OUTPUT-FILE)
-	(OR QC-BARF-P (DELETEF QC-ERROR-OUTPUT-FILE))
-	(CLOSE INFILE)
-	(INPUSH -1)
-	(RETURN T))) )
 
 ;;; COMPILE-STREAM when called by QC-FILE calls this on each form in the file
 (DEFUN QC-FILE-WORK-COMPILE (FORM)
-  ;; On the real machine, maybe macroexpand in temp area.
-  (IF-FOR-LISPM (OR QC-FILE-LOAD-FLAG (SETQ DEFAULT-CONS-AREA QC-FILE-TEMPORARY-AREA)))
-  ;; Macro-expand and output this form in the appropriate way.
-  (COMPILE-DRIVER FORM #'QC-FILE-COMMON NIL))
+  ;; Maybe macroexpand in temp area.
+  (LET-IF (NOT QC-FILE-LOAD-FLAG) ((DEFAULT-CONS-AREA QC-FILE-TEMPORARY-AREA))
+    ;; Macro-expand and output this form in the appropriate way.
+    (COMPILE-DRIVER FORM #'QC-FILE-COMMON NIL)))
 
 ;Common processing of each form, for both QC-FILE and FASD-UPDATE-FILE.
 (DEFUN QC-FILE-COMMON (FORM TYPE)
@@ -299,20 +299,19 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 	   ;; While evaluating the thing, turn off the temporary area, and
 	   ;; if this is an EVAL-WHEN (COMPILE), turn off the undo-declarations
 	   ;; flag so that macro definitions will really happen.
-	   (LET (#Q (DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA)
+	   (LET ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA)
 		 (UNDO-DECLARATIONS-FLAG (AND UNDO-DECLARATIONS-FLAG
 					      (NOT (EQ TYPE 'DECLARE)))))
-	     (OR QC-FILE-IN-CORE-FLAG (EVAL (SUBST NIL NIL FORM))))
+	     (OR QC-FILE-IN-CORE-FLAG (EVAL (COPYTREE FORM))))
 	   ;; If supposed to compile or fasdump as well as eval, do so.
 	   (COND ((EQ TYPE 'SPECIAL) (QC-FILE-FASD-FORM FORM NIL))
 		 ((EQ TYPE 'MACRO)
 		  (QC-TRANSLATE-FUNCTION (CADR FORM)
 					 `(MACRO LAMBDA . ,(CDDR FORM))
 					 'MACRO-COMPILE
-					 (COND (QC-FILE-REL-FORMAT 'REL)
-					       (T 'QFASL))))))
+					 (IF QC-FILE-REL-FORMAT 'REL 'QFASL)))))
 	  ((EQ TYPE 'BEGF))
-#Q        (QC-FILE-IN-CORE-FLAG (QC-FILE-FASD-FORM FORM T))
+	  (QC-FILE-IN-CORE-FLAG (QC-FILE-FASD-FORM FORM T))
           (T (QC-FILE-FORM FORM))))
 
 ;Handle one form from the source file, in a QC-FILE which is actually recompiling.
@@ -323,14 +322,11 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
     (COND ((EQ (CAR FORM) 'COMMENT)) ;Delete comments entirely
 	  ((EQ (CAR FORM) 'DEFUN)
 	   (SETQ TEM (CADR FORM))
-	   (IF-FOR-LISPM
-	     (COND (QC-FILE-LOAD-FLAG
+	   (COND (QC-FILE-LOAD-FLAG
 		     (RPLACA (FUNCTION-CELL-LOCATION TEM)	;In case used interpreted
 			     (SETQ FV (CONS 'LAMBDA (CDDR FORM))))
 		     (COMPILE-1 TEM FV)
-		     (RETURN (QC-FILE-FASD-FORM FORM T)))))
-	   (IF-FOR-MACLISP
-	      (AND (ATOM TEM) (PUTPROP TEM (CADDR FORM) 'Q-LAMBDA-LIST)))
+		     (RETURN (QC-FILE-FASD-FORM FORM T))))
            (QC-TRANSLATE-FUNCTION TEM (CONS 'LAMBDA (CDDR FORM))
 				  'MACRO-COMPILE
 				  (COND (QC-FILE-REL-FORMAT 'REL)
@@ -360,8 +356,9 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 ;Dump out a form to be evaluated at load time.
 ;Method of dumping depends on format of file being written.
 (DEFUN QC-FILE-FASD-FORM (FORM &OPTIONAL OPTIMIZE)
-  (COND (QC-FILE-REL-FORMAT (QFASL-REL:DUMP-FORM FORM OPTIMIZE))
-	(T (FASD-FORM FORM OPTIMIZE))))
+  (LET ((DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))
+    (COND (QC-FILE-REL-FORMAT (QFASL-REL:DUMP-FORM FORM OPTIMIZE))
+	  (T (FASD-FORM FORM OPTIMIZE)))))
 
 ;Call this function if the machine bombs out inside a QC-FILE.
 ;We do merely what stack unwinding ought to do.
@@ -371,9 +368,8 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
     (SETQ QC-FILE-READ-IN-PROGRESS NIL)
     (SETQ LOCAL-DECLARATIONS NIL)
     (SETQ FILE-LOCAL-DECLARATIONS NIL)
-    (IF-FOR-LISPM
-       (COND ((BOUNDP 'QC-FILE-OLD-DEFAULT-CONS-AREA)
-	      (SETQ DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA)))))
+    (COND ((BOUNDP 'QC-FILE-OLD-DEFAULT-CONS-AREA)
+	   (SETQ DEFAULT-CONS-AREA QC-FILE-OLD-DEFAULT-CONS-AREA))))
 
 ;(COMPILE-DRIVER form processing-function override-fn) should be used by anyone
 ;trying to do compilation of forms from source files, or any similar operation.
@@ -481,35 +477,22 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 
 (DEFUN SPECIAL FEXPR (SYMBOLS)		;FEXPR so runs in MACLISP.
    (COND 
-#Q	 (UNDO-DECLARATIONS-FLAG
-	  (PUSH (CONS 'SPECIAL SYMBOLS) FILE-LOCAL-DECLARATIONS))
+	 (UNDO-DECLARATIONS-FLAG
+	  (PUSH (CONS 'SPECIAL (COPYLIST SYMBOLS)) FILE-LOCAL-DECLARATIONS))
 	 (T
-	  (MAPC (FUNCTION (LAMBDA (X) (PUTPROP X #M T
-					         #Q (OR (AND (BOUNDP 'SI:FDEFINE-FILE-SYMBOL)
-							     SI:FDEFINE-FILE-SYMBOL)
-							T)
-						 'SPECIAL)))
+	  (MAPC #'(LAMBDA (X)
+		    (PUTPROP X (OR FDEFINE-FILE-PATHNAME T) 'SPECIAL))
 		SYMBOLS)))
    T)
-
-(IF-FOR-MACLISP-ELSE-LISPM
-(DEFUN SPECIAL-1 (SYMBOL)
-     (PUTPROP SYMBOL T 'SPECIAL))
 
 (DEFUN SPECIAL-1 (SYMBOL)
     (COND (UNDO-DECLARATIONS-FLAG
 	   (PUSH (CONS 'SPECIAL SYMBOL) FILE-LOCAL-DECLARATIONS))
-	  (T (PUTPROP SYMBOL (OR (AND (BOUNDP 'SI:FDEFINE-FILE-SYMBOL)
-				      SI:FDEFINE-FILE-SYMBOL)
-				 T) 'SPECIAL)))))
+	  (T (PUTPROP SYMBOL (OR FDEFINE-FILE-PATHNAME T) 'SPECIAL))))
 
 (DEFUN UNSPECIAL FEXPR (SYMBOLS)	;FEXPR so runs in MACLISP.
 	(MAPC (FUNCTION UNSPECIAL-1) SYMBOLS)
 	T)
-
-(IF-FOR-MACLISP-ELSE-LISPM
-(DEFUN UNSPECIAL-1 (SYMBOL)
-     (REMPROP SYMBOL 'SPECIAL))
 
 (DEFUN UNSPECIAL-1 (SYMBOL)
      (COND (UNDO-DECLARATIONS-FLAG
@@ -523,26 +506,31 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 				(RETURN NIL)))))
 		 (PUSH (LIST 'UNSPECIAL SYMBOL) FILE-LOCAL-DECLARATIONS)))
 	   (T (REMPROP SYMBOL 'SPECIAL)
-	      (REMPROP SYMBOL 'SYSTEM-CONSTANT)))))
+	      (REMPROP SYMBOL 'SYSTEM-CONSTANT))))
 
 ;Process a DEFUN arglist, converting old Maclisp types of function
 ;such as Fexprs, Lexprs, etc. into Lisp-machine style definitions.
 ;This must be done before the name of the function can be determined with certainty.
 ;Actually, the argument is the arglist of the DEFUN, sans the DEFUN itself.
 ;The value is an entire form, whose car will be DEFUN or MACRO.
+;The cdr of the value must be EQ to the argument, exp, if nothing has to be done.
 (DEFUN DEFUN-COMPATIBILITY (EXP)
   (PROG (FCTN-NAME LL BODY TYPE)
 	(SETQ TYPE 'EXPR)
 	(SETQ FCTN-NAME (CAR EXP))
-	(COND ((AND (NOT (ATOM FCTN-NAME))   ;Convert (DEFUN (FOO MACRO) ...)
-                    (EQ (SECOND FCTN-NAME) 'MACRO))
-               (SETQ TYPE 'MACRO FCTN-NAME (CAR FCTN-NAME)))
-              ((OR (NOT (ATOM (CADR EXP))) (NULL (CADR EXP))) ;Detect a valid DEFUN.
+	(COND ((NOT (ATOM FCTN-NAME))		;Convert list function specs
+	       (COND ((AND (= (LENGTH FCTN-NAME) 2)	;(DEFUN (FOO MACRO) ...)
+			   (EQ (SECOND FCTN-NAME) 'MACRO))
+		      (SETQ TYPE 'MACRO FCTN-NAME (CAR FCTN-NAME)))
+		     ((EQ FCTN-NAME (SETQ FCTN-NAME (STANDARDIZE-FUNCTION-SPEC FCTN-NAME)))
+		      (RETURN (CONS 'DEFUN EXP)))))	;Return if no conversion required
+	      ((OR (NOT (ATOM (CADR EXP))) (NULL (CADR EXP))) ;Detect a valid DEFUN.
 	       (RETURN (CONS 'DEFUN EXP)))
 	      ((MEMQ (CADR EXP) '(FEXPR EXPR MACRO))
-		(SETQ TYPE (CADR EXP) EXP (CDR EXP)))
+	       (SETQ TYPE (CADR EXP) EXP (CDR EXP)))
 	      ((MEMQ FCTN-NAME '(FEXPR EXPR MACRO))
-		(SETQ TYPE FCTN-NAME FCTN-NAME (CADR EXP) EXP (CDR EXP))))
+	       (SETQ TYPE FCTN-NAME FCTN-NAME (CADR EXP) EXP (CDR EXP))))
+	;; Here if a new DEFUN has to be constructed
 	(SETQ LL (CADR EXP))
 	(SETQ BODY (CDDR EXP))
 ;WEIRD CONVERSION HACK TO UNCONVERT INTERLISP NLAMBDAS THAT WERE PREVIOUSLY CONVERTED
@@ -575,32 +563,15 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 
 (DECLARE (SPECIAL FUNCTION-BEING-PROCESSED))
 
-(IF-FOR-MACLISP
 (DEFUN BARF (EXP REASON SEVERITY)
-  (PROG (^W ^R)
-       (SETQ QC-BARF-P T)				;REMEMBER THERE WAS AN ERROR
-       (TERPRI)		;ONE COPY FOR THE CONSOLE
-       (PRINT (LIST 'PROCESSING FUNCTION-BEING-PROCESSED))
-       (PRINT (LIST 'BARF REASON))
-       (PRINT EXP)
-       (COND (QC-ERROR-OUTPUT-FILE
-	      (TERPRI QC-ERROR-OUTPUT-FILE)	;ANOTHER COPY FOR THE OUTPUT FILE IF ANY
-	      (PRINT (LIST 'PROCESSING FUNCTION-BEING-PROCESSED) QC-ERROR-OUTPUT-FILE)
-	      (PRINT (LIST 'BARF REASON) QC-ERROR-OUTPUT-FILE)
-	      (PRINT EXP QC-ERROR-OUTPUT-FILE)))
-       (COND ((NOT (EQ SEVERITY 'WARN))
-	      (BREAK 'BARF T))))))
-
-(IF-FOR-LISPM
-(DEFUN BARF (EXP REASON SEVERITY)
-  (LET ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA))   ;AVOID GROSS SCREWS
+  (LET ((DEFAULT-CONS-AREA WORKING-STORAGE-AREA))	;Stream may cons
     (COND ((EQ FUNCTION-BEING-PROCESSED LAST-ERROR-FUNCTION))
           (T (SETQ LAST-ERROR-FUNCTION FUNCTION-BEING-PROCESSED)
-             (FORMAT T "~%<<While compiling ~S>>" LAST-ERROR-FUNCTION)))
+             (FORMAT T "~%<< While compiling ~S >>" LAST-ERROR-FUNCTION)))
     (COND ((EQ SEVERITY 'WARN)
 	   (FORMAT T "~%Warning: ~S ~A." EXP REASON))
 	  (T (FERROR NIL "~S ~A"
-		     EXP REASON))))))
+		     EXP REASON)))))
 
 (DEFUN MEMQL (A B)
   (PROG NIL
@@ -609,7 +580,6 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 	(SETQ A (CDR A))
 	(GO L)))
 
-(IF-FOR-LISPM
 ;World-load version of DEFMIC.
 ;Store into MICRO-CODE-ENTRY-ARGLIST-AREA
 ;Put on QLVAL and QINTCMP properties
@@ -628,4 +598,5 @@ THIRD IS OPTIONAL ERROR OUTPUT FILE|))
 	 (OR (EQ FUNCTION-NAME INSTRUCTION-NAME)
 	     (PUTPROP FUNCTION-NAME (LENGTH ARGLIST) 'QINTCMP))))
   (PUTPROP INSTRUCTION-NAME OPCODE 'QLVAL))
-)
+
+  

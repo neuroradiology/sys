@@ -76,8 +76,10 @@
 ;(DEFUN <-AS (CLASS-SYMBOL &REST MESSAGE)
 ;   (LEXPR-FUNCALL (SYMEVAL-IN-CLOSURE CLASS-SYMBOL 'CLASS-METHOD-SYMBOL) MESSAGE))
 
-(DEFUN UNCLAIMED-MESSAGE (KEY &REST REST)  ;GET TO HERE VIA TAIL POINTER ON OBJECT-CLASS
-  (FERROR NIL "The object ~S received a ~S message, which went unclaimed.
+;; GET TO HERE VIA TAIL POINTER ON OBJECT-CLASS
+;; Flavors now use FLAVOR-UNCLAIMED-MESSAGE by default instead.
+(DEFUN UNCLAIMED-MESSAGE (KEY &REST REST)
+  (FERROR ':UNCLAIMED-MESSAGE "The object ~S received a ~S message, which went unclaimed.
 The rest of the message was ~S~%" SELF KEY REST))
 
 ;CLASS of any object returns the actual class of that object, an instance of class CLASS.
@@ -191,6 +193,11 @@ The rest of the message was ~S~%" SELF KEY REST))
                              (CAADR L))
                        ANS)))
        ((NULL L) ANS)))
+
+;Returns the function a closure is closing around.
+(DEFUN CLOSURE-FUNCTION (CLOSURE)
+   (CHECK-ARG CLOSURE (OR (ENTITYP CLOSURE) (CLOSUREP CLOSURE)) "an entity or a closure")
+   (CAR (%MAKE-POINTER DTP-LIST CLOSURE)))
 
 (DEFUN CLOSURE-COPY (CLOSURE &AUX CLOSURE1)
    (CHECK-ARG CLOSURE (OR (ENTITYP CLOSURE) (CLOSUREP CLOSURE)) "an entity or a closure")
@@ -439,9 +446,6 @@ The rest of the message was ~S~%" SELF KEY REST))
 (DEFMETHOD (OBJECT-CLASS :SYMBOL-HIERARCHY) ()
   (<- (CLASS SELF) ':CLASS-SYMBOL-HIERARCHY))
 
-(DEFMETHOD (OBJECT-CLASS :PRINT) (&OPTIONAL (STREAM T) &REST IGNORE)
-  (<-AS OBJECT-CLASS ':PRINT-SELF STREAM))
-
 (DEFMETHOD (OBJECT-CLASS :PRINT-SELF) (&OPTIONAL (STREAM T) &REST IGNORE &AUX TEM)
   (COND ((NOT (ENTITYP SELF))
          (PRIN1 SELF STREAM))
@@ -497,7 +501,7 @@ The rest of the message was ~S~%" SELF KEY REST))
 ;; Ask an object which operations it handles.
 ;; This definition is sufficient except for objects with ideosyncratic handlers,
 ;; which don't exist yet.
-(DEFMETHOD (OBJECT-CLASS :OPERATIONS) (&OPTIONAL (SUPERIORS-FLAG T))
+(DEFMETHOD (OBJECT-CLASS :WHICH-OPERATIONS) (&OPTIONAL (SUPERIORS-FLAG T))
     (<- (CLASS SELF) ':CLASS-OPERATIONS SUPERIORS-FLAG))
 
 ;; This message sent to a class returns the method used by that class
