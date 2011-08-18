@@ -1,7 +1,7 @@
 ;;; ZWEI keyboard macros -*-MODE:LISP;PACKAGE:ZWEI-*-
 ;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 
-(DEFVAR MACRO-ESCAPE-CHAR #\BACK-NEXT)
+(DEFVAR MACRO-ESCAPE-CHAR #\MACRO)
 (DEFVAR MACRO-STREAM)
 (DEFVAR MACRO-LEVEL)
 (DEFVAR MACRO-UNTYI)
@@ -12,14 +12,14 @@
 (DEFVAR MACRO-REDIS-LEVEL -1)
 (DEFVAR MACRO-OPERATIONS)
 
-(DEFSTRUCT (MACRO-ARRAY ARRAY-LEADER (MAKE-ARRAY (NIL 'ART-Q 100)))
+(DEFSTRUCT (MACRO-ARRAY ARRAY-LEADER (:MAKE-ARRAY (:LENGTH 100)))
 	   (MACRO-POSITION 0)		;Current position reading or writing
 	   (MACRO-LENGTH 0)		;Length of macro
 	   MACRO-COUNT			;Current repeat count for macro
 	   MACRO-DEFAULT-COUNT		;Initial value of MACRO-COUNT, or NIL if writing
            MACRO-NAME)                  ;Name of macro as a string, or NIL if temporary.
 
-;;; The following structure is used for the Backnext-A command.
+;;; The following structure is used for the MACRO-A command.
 ;;; It is important that it be a LIST since that is how it is
 ;;; identified.
 (DEFSTRUCT (MACRO-A LIST)
@@ -32,7 +32,7 @@
   (LET-CLOSED ((MACRO-STREAM STREAM)
 	       (MACRO-LEVEL -1)
 	       (MACRO-UNTYI NIL)
-	       (MACRO-LEVEL-ARRAY (MAKE-ARRAY NIL 'ART-Q 20))
+	       (MACRO-LEVEL-ARRAY (MAKE-ARRAY 20))
 	       (MACRO-CURRENT-ARRAY NIL)
 	       (MACRO-PREVIOUS-ARRAY NIL)
 	       (MACRO-OPERATIONS
@@ -43,7 +43,7 @@
 		   `(:TYI :UNTYI :LISTEN :CLEAR-INPUT :MACRO-LEVEL :MACRO-ERROR
 		     :MACRO-EXECUTE :MACRO-PUSH :MACRO-POP :MACRO-QUERY :MACRO-PREVIOUS-ARRAY
 		     . ,OPS))))
-    #'MACRO-STREAM-IO))
+    'MACRO-STREAM-IO))
 
 (DEFSELECT (MACRO-STREAM-IO MACRO-STREAM-DEFAULT-HANDLER T)
   (:WHICH-OPERATIONS ()
@@ -73,25 +73,35 @@
 	  (MACRO-STOP NIL)))
   (:CLEAR-INPUT ()
    (MACRO-STOP NIL)
+   (SETQ MACRO-UNTYI NIL)
    (FUNCALL MACRO-STREAM ':CLEAR-INPUT))
   (:MACRO-EXECUTE (&OPTIONAL ARRAY TIMES)
-   (OR ARRAY (SETQ ARRAY MACRO-PREVIOUS-ARRAY))
-   (MACRO-PUSH-LEVEL (MACRO-STORE ARRAY))
-   (AND TIMES
-	(SETF (MACRO-COUNT ARRAY) TIMES)))
-  (:MACRO-PUSH (&OPTIONAL N)
+    (COND ((OR ARRAY (SETQ ARRAY MACRO-PREVIOUS-ARRAY))
+	   (MACRO-PUSH-LEVEL (MACRO-STORE ARRAY))
+	   (AND TIMES
+		(SETF (MACRO-COUNT ARRAY) TIMES)))
+	  (T
+	   (BEEP))))
+  (:MACRO-PUSH (&OPTIONAL N APPEND-TO)
    (AND MACRO-CURRENT-ARRAY		;Erase the command that caused this to happen
 	N
 	(SETF (MACRO-POSITION MACRO-CURRENT-ARRAY)
 	      (- (MACRO-POSITION MACRO-CURRENT-ARRAY) N)))
-   (MACRO-PUSH-LEVEL (MACRO-STORE)))
+   (COND (APPEND-TO
+	  (SETF (MACRO-DEFAULT-COUNT APPEND-TO) NIL)
+	  (INCF (MACRO-POSITION APPEND-TO))))
+   (MACRO-PUSH-LEVEL (MACRO-STORE (OR APPEND-TO T)) (NULL APPEND-TO)))
   (:MACRO-POP (&OPTIONAL N TIMES)
    (AND MACRO-CURRENT-ARRAY
 	N
 	(SETF (MACRO-POSITION MACRO-CURRENT-ARRAY)
 	      (- (MACRO-POSITION MACRO-CURRENT-ARRAY) N)))
    (MACRO-REPEAT TIMES))
-  (:MACRO-QUERY ()
+  (:MACRO-QUERY (&OPTIONAL N)
+   (AND MACRO-CURRENT-ARRAY
+	N
+	(SETF (MACRO-POSITION MACRO-CURRENT-ARRAY)
+	      (- (MACRO-POSITION MACRO-CURRENT-ARRAY) N)))
    (MACRO-STORE '*SPACE*))
   (:MACRO-PREVIOUS-ARRAY ()
    MACRO-PREVIOUS-ARRAY))
@@ -115,7 +125,7 @@
                    ((#/? #\HELP)
                     (FORMAT T "~&You are in an interactive macro.
 Space continues on, Rubout skips this one, Form refreshes the screen,
-Control-R enters a typein macro level (Backnext R exits), anything else exits.")
+Control-R enters a typein macro level (~:C R exits), anything else exits." MACRO-ESCAPE-CHAR)
                     (*THROW 'MACRO-LOOP NIL))
                    (#\RUBOUT
                     (SETQ TEM (MACRO-LENGTH MACRO-CURRENT-ARRAY)
@@ -218,8 +228,11 @@ Control-R enters a typein macro level (Backnext R exits), anything else exits.")
 			    (FORMAT T "~&Macro commands are:
 P push a level of macro, R end and repeat arg times, C call a macro by name,
 S stop macro definition, U allow typein now only, T allow typein in expansion too.
+/(terminate typein with ~:C R/)
 M define a named macro, D define a named macro but don't execute as building.
-Space enter macro query, A store an increasing character string.")
+Space enter macro query, A store an increasing character string.
+Now type a macro command: "
+				    MACRO-ESCAPE-CHAR)
 			    (SETQ FLAG T))
 			   (OTHERWISE
 			    (MACRO-BARF))))))
@@ -229,7 +242,7 @@ Space enter macro query, A store an increasing character string.")
 		  (AND (NUMBERP CH) (MACRO-STORE (IF (LDB-TEST %%KBD-MOUSE CH) '*MOUSE* CH)))
 		  (OR SUPPRESS (RETURN CH TEM)))))))))
 
-(DEFUN MACRO-PUSH-LEVEL (MAC)
+(DEFUN MACRO-PUSH-LEVEL (MAC &OPTIONAL (RESET-POSITION T))
   (COND (MAC
 	  (AND (SYMBOLP MAC) (SETQ MAC (GET MAC 'MACRO-STREAM-MACRO)))
 	  (OR (ARRAYP MAC) (MACRO-BARF))))
@@ -237,7 +250,7 @@ Space enter macro query, A store an increasing character string.")
 	MACRO-CURRENT-ARRAY MAC)
   (ASET MAC MACRO-LEVEL-ARRAY MACRO-LEVEL)
   (COND (MAC
-	  (SETF (MACRO-POSITION MAC) 0)
+	  (AND RESET-POSITION (SETF (MACRO-POSITION MAC) 0))
 	  (SETF (MACRO-COUNT MAC) (MACRO-DEFAULT-COUNT MAC))
 	  (DO ((I 0 (1+ I))
 	       (X)
@@ -325,7 +338,7 @@ Space enter macro query, A store an increasing character string.")
     (IF (STRINGP THING)
 	(SETQ LEN (+ LEN (STRING-LENGTH THING)))
 	(SETQ LEN (1+ LEN))))
-  (SETQ MACRO-ARRAY (MAKE-MACRO-ARRAY MAKE-ARRAY (NIL 'ART-Q LEN)
+  (SETQ MACRO-ARRAY (MAKE-MACRO-ARRAY :MAKE-ARRAY (:LENGTH LEN)
 				      MACRO-LENGTH (1- LEN)
 				      MACRO-DEFAULT-COUNT COUNT
 				      MACRO-NAME STRING))
@@ -354,13 +367,13 @@ Space enter macro query, A store an increasing character string.")
 
 (DEFUN GET-KEYBOARD-MACRO-DEFINITION (NAME MACRO-ARRAY)
   (OR MACRO-ARRAY (SETQ MACRO-ARRAY (GET NAME 'MACRO-STREAM-MACRO)))
-  (SETQ NAME (INTERN NAME "ZWEI"))
+  (SETQ NAME (INTERN (STRING NAME) "ZWEI"))
   (DO ((I 0 (1+ I))
        (LEN (1+ (MACRO-LENGTH MACRO-ARRAY)))
        (THING)
        (STATE NIL)
        (LIST NIL)
-       (STRING (MAKE-ARRAY NIL 'ART-STRING 10. NIL 1)))
+       (STRING (MAKE-ARRAY 10. ':TYPE 'ART-STRING ':LEADER-LENGTH 1)))
       (( I LEN)
        `(DEFINE-KEYBOARD-MACRO ,NAME () . ,(NREVERSE LIST)))
     (SETQ THING (AREF MACRO-ARRAY I))

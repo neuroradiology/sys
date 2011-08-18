@@ -4,46 +4,103 @@
 
 ;;; Character search
 
-(DEFCOM COM-CHAR-SEARCH "Search for a single character.
-Special characters:
-C-A	Do string search
-C-B	Go to beginning first
-C-E	Go to end first
-C-F	Put the line containing the search object at the top of the screen
-C-R	Search backwards
-C-S	Repeat the last search." (KM)
+(DEFCONST *STRING-SEARCH-OPTION-DOCUMENTATION*
+"While you are typing the search string, the following characters have special meanings:
+C-B     Search forward from the beginning of the buffer.
+C-E     Search backwards from the end of the buffer.
+C-F     Leave the point at the top of the window, if the window must be recentered.
+C-G     Abort the search.
+C-D     Get a string to search for from the ring buffer of previously-searched strings.
+C-L     Redisplay the typein line.
+C-Q     Quotes the next character.
+C-R     Reverse the direction of the search.
+C-S     Do the search, then come back to the command loop.
+C-U     Flush all characters typed so far.
+C-V     Delimited Search: Search for occurrences of the string surrounded by delimiters.
+C-W     Word Search: Search for words in this sequence regardless of intervening
+             punctuation, whitespace, newlines, and other delimiters.
+C-Y     Append the string on top of the ring buffer to the search string.
+Rubout  Rub out the previous character typed.
+Clear-Input  Flush all characters typed so far.
+Altmode Do the search and exit.
+
+If you search for the empty string, the default is used.  Otherwise, the
+string you type becomes the default, and the default is saved on a ring
+buffer unless it is a single character.")
+
+(DEFCOM COM-CHAR-SEARCH DOC-CHAR-SEARCH (KM)
    (CHAR-SEARCH-INTERNAL NIL))
 
-(DEFCOM COM-REVERSE-CHAR-SEARCH "Search backward for a single character.
+(DEFUN DOC-CHAR-SEARCH (COMMAND CHAR TYPE)
+  CHAR ;is not used
+  (SELECTQ TYPE
+    (:NAME (GET COMMAND 'COMMAND-NAME))
+    ((:FULL :SHORT)
+     (FUNCALL STANDARD-OUTPUT ':STRING-OUT "Search for a single character.")
+     (COND ((EQ TYPE ':FULL)
+	    (FUNCALL STANDARD-OUTPUT ':STRING-OUT "
 Special characters:
-C-A	Do string search
-C-B	Go to beginning first
-C-E	Go to end first
-C-F	Put the line containing the search object at the top of the screen
-C-R	Repeat the last search
-C-S	Ditto." (KM)
+C-A	Do string search (see below).
+C-B     Search forward from the beginning of the buffer.
+C-E     Search backwards from the end of the buffer.
+C-F     Leave the point at the top of the window, if the window must be recentered.
+C-R	Search backwards.
+C-S	Repeat the last search.
+
+String search, which you get into from C-A, reads in a string and searches for it.
+")
+	    (FUNCALL STANDARD-OUTPUT ':STRING-OUT *STRING-SEARCH-OPTION-DOCUMENTATION*))))))
+
+(DEFCOM COM-REVERSE-CHAR-SEARCH DOC-REVERSE-CHAR-SEARCH (KM)
    (CHAR-SEARCH-INTERNAL T))
+
+(DEFUN DOC-REVERSE-CHAR-SEARCH (COMMAND CHAR TYPE)
+  CHAR ;is not used
+  (SELECTQ TYPE
+    (:NAME (GET COMMAND 'COMMAND-NAME))
+    ((:FULL :SHORT)
+     (FUNCALL STANDARD-OUTPUT ':STRING-OUT "Search backward for a single character.")
+     (COND ((EQ TYPE ':FULL)
+	    (FUNCALL STANDARD-OUTPUT ':STRING-OUT "
+Special characters:
+C-A	Do Reverse String Search (see below).
+C-B     Search forward from the beginning of the buffer.
+C-E     Search backwards from the end of the buffer.
+C-F	Put the line containing the search object at the top of the screen
+C-R	Repeat the last search.
+C-S	Repeat the last search.
+
+Reverse String search, which you get into from C-A, reads in a string and searches for it.
+")
+	    (FUNCALL STANDARD-OUTPUT ':STRING-OUT *STRING-SEARCH-OPTION-DOCUMENTATION*))))))
 
 (DEFUN CHAR-SEARCH-INTERNAL (REVERSEP)
   (UNWIND-PROTECT
-    (PROG (XCHAR CHAR UCHAR BJP ZJP TOP-P STRING BP FAILED-P
-	   (ORIG-PT (COPY-BP (POINT))) (ARG *NUMERIC-ARG*))
+    (PROG (XCHAR CHAR UCHAR BJP ZJP TOP-P STRING BP FAILED-P QUOTE-P
+	   (ORIG-PT (COPY-BP (POINT))) (ARG *NUMERIC-ARG*)
+	   (FCN 'SEARCH))
 	(AND (MINUSP ARG) (SETQ REVERSEP (NOT REVERSEP) ARG (- ARG)))
      LOOP (COND ((OR FAILED-P			;Force redisplay on failing search
 		     (NULL (SETQ XCHAR (FUNCALL STANDARD-INPUT ':TYI-NO-HANG))))
-		 (TYPEIN-LINE-WITH-REDISPLAY "")
+		 (TYPEIN-LINE-WITH-REDISPLAY "~:|")
 		 (AND BJP (TYPEIN-LINE-MORE "Begin "))
 		 (AND ZJP (TYPEIN-LINE-MORE "End "))
 		 (AND TOP-P
 		      (TYPEIN-LINE-MORE "Top Line "))
 		 (AND REVERSEP (TYPEIN-LINE-MORE "Reverse "))
+		 (AND QUOTE-P (TYPEIN-LINE-MORE "Quoted-ascii "))
 		 (TYPEIN-LINE-MORE "Search: ")))
 	  (COND ((NOT FAILED-P)
 		 (SETQ CHAR (OR XCHAR
 				(TYPEIN-LINE-ACTIVATE
 				  (FUNCALL STANDARD-INPUT ':TYI))))
 		 (SETQ UCHAR (CHAR-UPCASE CHAR))
-		 (COND ((= UCHAR #/A)
+		 (COND (QUOTE-P
+			(AND (LDB-TEST %%KBD-CONTROL-META CHAR)
+			     (SETQ CHAR (LOGAND CHAR 37)))
+			(SETQ STRING CHAR)
+			(SEARCH-RING-PUSH CHAR FCN))
+		       ((= UCHAR #/A)
 			(RETURN (COM-STRING-SEARCH-INTERNAL REVERSEP BJP ZJP TOP-P)))
 		       ((AND (= UCHAR #/R) (NOT REVERSEP))
 			(SETQ REVERSEP (NOT REVERSEP))
@@ -59,17 +116,22 @@ C-S	Ditto." (KM)
 			(GO LOOP))
 		       ((= UCHAR #/G)
 			(BEEP)
+			(FUNCALL *TYPEIN-WINDOW* ':MAKE-COMPLETE)
 			(GO QUIT))
 		       ((OR (= UCHAR #/S)
 			    (AND REVERSEP (= UCHAR #/R)))
 			(OR *SEARCH-RING* (BARF))
-			(SETQ STRING (CAR *SEARCH-RING*)))
+			(SETQ STRING (CAAR *SEARCH-RING*)
+			      FCN (CADAR *SEARCH-RING*)))
+		       ((= UCHAR #/Q)		;Funny ascii compatibility
+			(SETQ QUOTE-P T)
+			(GO LOOP))
 		       ((> CHAR 220)		;Random control character
 			(BEEP)
 			(GO LOOP))
 		       (T
 			(SETQ STRING CHAR)
-			(SEARCH-RING-PUSH CHAR)))))
+			(SEARCH-RING-PUSH CHAR FCN)))))
 	  (AND (OR (NULL XCHAR) FAILED-P)
 	       (IF (NUMBERP STRING)
 		   (TYPEIN-LINE-MORE "~C" STRING)
@@ -79,7 +141,7 @@ C-S	Ditto." (KM)
 			     (BP (COND (BJP (INTERVAL-FIRST-BP *INTERVAL*))
 				       (ZJP (INTERVAL-LAST-BP *INTERVAL*))
 				       (T (POINT)))
-				 (SEARCH BP STRING REVERSEP)))
+				 (FUNCALL FCN BP STRING REVERSEP)))
 			    ((OR ( I ARG) (NULL BP))
 			     BP))))
 	  (COND (BP
@@ -94,34 +156,50 @@ C-S	Ditto." (KM)
 	 (RETURN DIS-BPS))
     (FUNCALL *MODE-LINE-WINDOW* ':DONE-WITH-MODE-LINE-WINDOW)))
 
-(DEFCOM COM-STRING-SEARCH "Search for a specified string." (KM)
+(DEFCOM COM-STRING-SEARCH
+	(LAMBDA (COMMAND CHAR TYPE)
+	  (DOC-STRING-SEARCH COMMAND TYPE "Search for a specified string.")) (KM)
     (COM-STRING-SEARCH-INTERNAL NIL NIL NIL NIL))
 
-(DEFCOM COM-REVERSE-STRING-SEARCH "Search backward for a specified string." (KM)
+(DEFCOM COM-REVERSE-STRING-SEARCH
+	(LAMBDA (COMMAND CHAR TYPE)
+	  (DOC-STRING-SEARCH COMMAND TYPE "Search backward for a specified string.")) (KM)
     (COM-STRING-SEARCH-INTERNAL T NIL NIL NIL))
+
+(DEFUN DOC-STRING-SEARCH (COMMAND TYPE SHORT-STRING)
+  (SELECTQ TYPE
+    (:NAME (GET COMMAND 'COMMAND-NAME))
+    ((:SHORT :FULL)
+     (FUNCALL STANDARD-OUTPUT ':STRING-OUT SHORT-STRING)
+     (COND ((EQ TYPE ':FULL)
+	    (FUNCALL STANDARD-OUTPUT ':FRESH-LINE)
+	    (FUNCALL STANDARD-OUTPUT ':STRING-OUT *STRING-SEARCH-OPTION-DOCUMENTATION*))))))
 
 ;; A special hack is needed to stop an altmode that follows a S from searching.
 ;; That is what HACK1 and HACK2 are for.
 (DEFUN COM-STRING-SEARCH-INTERNAL (REVERSEP BJP ZJP TOP-P &AUX TEM)
   (UNWIND-PROTECT
-    (PROG ((STRING (MAKE-ARRAY NIL ART-STRING 200 NIL '(0)))
-	   (ORIG-PT (COPY-BP (POINT)))
-	   XCHAR CHAR WORD-P HACK1 HACK2 ECHOED-P FAILED-P)
+    (PROG ((STRING (MAKE-ARRAY 10 ':TYPE 'ART-STRING ':LEADER-LIST '(0)))
+	   (ORIG-PT (COPY-BP (POINT))) (FCN 'SEARCH)
+	   XCHAR CHAR HACK1 HACK2 ECHOED-P FAILED-P)
        REDIS (COND ((NULL (SETQ XCHAR (AND (NOT ECHOED-P)
 					   (FUNCALL STANDARD-INPUT ':TYI-NO-HANG))))
 		    (SETQ ECHOED-P T)			;Started to echo now
-		    (TYPEIN-LINE-WITH-REDISPLAY "")
+		    (TYPEIN-LINE-WITH-REDISPLAY "~:|")
 		    (AND BJP (TYPEIN-LINE-MORE "Begin "))
 		    (AND ZJP (TYPEIN-LINE-MORE "End "))
 		    (AND TOP-P (TYPEIN-LINE-MORE "Top Line "))
 		    (AND REVERSEP (TYPEIN-LINE-MORE "Reverse "))
-		    (TYPEIN-LINE-MORE (IF WORD-P "Word search: " "String search: "))
+		    (TYPEIN-LINE-MORE (SELECTQ FCN
+					(SEARCH "String search: ")
+					(WORD-SEARCH "Word search: ")
+					(DELIMITED-SEARCH "Delimited search: ")))
 		    (TYPEIN-LINE-MORE "~A" STRING)))
 	     (AND FAILED-P (GO FAILED))
 	     (GO LOP1)
         LOOP (SETQ XCHAR (AND (NOT ECHOED-P)
 			      (FUNCALL STANDARD-INPUT ':TYI-NO-HANG)))
-	LOP1 (SETQ CHAR (OR XCHAR (TYPEIN-LINE-ACTIVATE (TYI-WITH-SCROLLING))))
+	LOP1 (SETQ CHAR (OR XCHAR (TYPEIN-LINE-ACTIVATE (TYI-WITH-SCROLLING-AND-MOUSING))))
              (SETQ HACK2 HACK1 HACK1 NIL)
 	     (COND ((BIT-TEST 400 CHAR)
 		    (SETQ CHAR (CHAR-UPCASE (LOGAND 377 CHAR)))
@@ -132,29 +210,42 @@ C-S	Ditto." (KM)
 			      (GO REDIS))
 			 (#/F (SETQ *CENTERING-FRACTION* 0.0s0 TOP-P T)
 			      (GO REDIS))
-                         (#/G (TYPEIN-LINE "")
+                         (#/G (FUNCALL *TYPEIN-WINDOW* ':MAKE-COMPLETE)
                               (BARF))
-                         (#/D (SETQ TEM (SEARCH-RING-POP))
+                         (#/D (MULTIPLE-VALUE (TEM FCN)
+				(SEARCH-RING-POP))
 			      (COND ((NUMBERP TEM)
-				     (SETQ STRING (MAKE-ARRAY NIL ART-STRING
-							      200 NIL '(1)))
+				     (SETQ STRING (MAKE-ARRAY 10 ':TYPE 'ART-STRING
+							      ':LEADER-LIST '(1)))
 				     (ASET TEM STRING 0))
 				    (T (SETQ STRING TEM)))
 			      (GO REDIS))
                          (#/L (GO REDIS))
-                         (#/Q (TYPEIN-LINE-ACTIVATE
-			       (SETQ CHAR (LOGAND 377 (FUNCALL STANDARD-INPUT ':TYI))))
+                         (#/M (IF (NOT (WINDOW-MARK-P *WINDOW*))
+				  (BEEP)
+				  (REGION (BP1 BP2)
+				    (APPEND-TO-ARRAY STRING (STRING-INTERVAL BP1 BP2 T)))
+				  (SETF (WINDOW-MARK-P *WINDOW*) NIL)
+				  (MUST-REDISPLAY *WINDOW* DIS-MARK-GOES)
+				  (REDISPLAY *WINDOW* ':NONE))
+			      (GO REDIS))
+			 (#/Q (TYPEIN-LINE-ACTIVATE
+			       (SETQ CHAR (FUNCALL STANDARD-INPUT ':TYI)))
+			      (SETQ CHAR (LOGAND (IF (LDB-TEST %%KBD-CONTROL CHAR)
+						     37 377)
+						 CHAR))
 			      (GO NORMAL))
                          (#/R (SETQ REVERSEP (NOT REVERSEP))
 			      (GO REDIS))
-                         (#/S (LET ((TEM (FUNCALL (IF WORD-P #'WORD-SEARCH #'SEARCH )
+                         (#/S (AND (EQUAL "" STRING)
+				   *SEARCH-RING*
+				   (SETQ STRING (CAAR *SEARCH-RING*)
+					 FCN (CADAR *SEARCH-RING*)))
+			      (LET ((TEM (FUNCALL FCN
                                                   (COND (ZJP (INTERVAL-LAST-BP *INTERVAL*))
                                                         (BJP (INTERVAL-FIRST-BP *INTERVAL*))
                                                         (T (POINT)))
-                                                  (COND ((AND (EQUAL "" STRING)
-                                                              *SEARCH-RING*)
-                                                         (CAR *SEARCH-RING*))
-                                                        (T STRING))
+						  STRING
                                                   REVERSEP)))
                                 (COND ((NULL TEM)
                                        ;; Next line commented out for Emacs compatibility
@@ -162,7 +253,7 @@ C-S	Ditto." (KM)
 				       ;; Comment this BARF instead to stay in search if fail
 				       ;; But don't forget to update search default ring
 				       (OR (EQUAL "" STRING)
-					   (SEARCH-RING-PUSH STRING))
+					   (SEARCH-RING-PUSH STRING FCN))
 				       (GO FAILED)
                                        )
 				      (T (MOVE-BP (POINT) TEM)
@@ -179,13 +270,14 @@ C-S	Ditto." (KM)
 				  (GO REDIS)))
                          (#/U (STORE-ARRAY-LEADER 0 STRING 0)
                               (GO REDIS))
-                         (#/W (SETQ WORD-P T)
+                         (#/V (SETQ FCN 'DELIMITED-SEARCH)
+			      (GO REDIS))
+			 (#/W (SETQ FCN 'WORD-SEARCH)
                               (GO REDIS))
-                         (#/Y (SETQ TEM (CAR *SEARCH-RING*))
+                         (#/Y (SETQ TEM (CAAR *SEARCH-RING*))
 			      (IF (NUMBERP TEM)
-				  (ARRAY-PUSH STRING CHAR)
-				  (DOTIMES (I (STRING-LENGTH TEM))
-				    (ARRAY-PUSH STRING (AREF TEM I))))
+				  (ARRAY-PUSH-EXTEND STRING TEM)
+				  (APPEND-TO-ARRAY STRING TEM))
 			      (GO REDIS))
 			 (OTHERWISE (BEEP)
                                     (GO REDIS))))
@@ -196,17 +288,17 @@ C-S	Ditto." (KM)
 		   ((= CHAR #\CLEAR-INPUT)
 		    (STORE-ARRAY-LEADER 0 STRING 0)
 		    (GO REDIS))
-		   ((= CHAR #/)
+		   ((OR (= CHAR #/) (= CHAR #\END))
 		    (OR XCHAR
 			(TYPEIN-LINE-MORE "~C" CHAR))
 		    (OR (EQUAL "" STRING)
-			(SEARCH-RING-PUSH STRING))
+			(SEARCH-RING-PUSH STRING FCN))
 		    (OR HACK2
-		        (DO ((FCN (IF WORD-P #'WORD-SEARCH #'SEARCH))
-			     (ARG (ABS *NUMERIC-ARG*) (1- ARG))
+		        (DO ((ARG (ABS *NUMERIC-ARG*) (1- ARG))
 			     (KEY (COND ((AND (EQUAL "" STRING)
 					      *SEARCH-RING*)
-					 (CAR *SEARCH-RING*))
+					 (SETQ FCN (CADAR *SEARCH-RING*))
+					 (CAAR *SEARCH-RING*))
 					(T STRING)))
 			     (BP (COND (ZJP (INTERVAL-LAST-BP *INTERVAL*))
 				       (BJP (INTERVAL-FIRST-BP *INTERVAL*))
@@ -217,7 +309,7 @@ C-S	Ditto." (KM)
 		    (MAYBE-PUSH-POINT ORIG-PT)
 		    (RETURN DIS-BPS)))
 	     (SETQ CHAR (LOGAND 377 CHAR))
-      NORMAL (ARRAY-PUSH STRING CHAR)
+      NORMAL (ARRAY-PUSH-EXTEND STRING CHAR)
              (IF XCHAR
 		 (GO REDIS)
 		 (SETQ ECHOED-P T)			;Started to echo
@@ -359,7 +451,8 @@ previous search string is used again." (KM)
 	    (TYI-WITH-SCROLLING T))
 	  (SETQ XCHAR (CHAR-UPCASE CHAR))
 	  (COND ((NOT (OR (LDB-TEST %%KBD-CONTROL-META CHAR) (LDB-TEST %%KBD-MOUSE CHAR)
-			  (= CHAR #/) (= CHAR #\RUBOUT)))
+			  (= CHAR #/) (= CHAR #\END) (= CHAR #\RUBOUT)
+			  (= CHAR #\ABORT)))
 		 (GO NORMAL))
 		((MEMQ XCHAR '(#/S #/R))
 		 (PUSH-ISEARCH-STATUS)
@@ -371,7 +464,7 @@ previous search string is used again." (KM)
 		      (SETQ MUST-REDIS T)
 		      (ASET ':REVERSE *IS-OPERATION* P))
 		     ((ZEROP (AREF *IS-POINTER* P))
-		      (LET ((STRING (STRING (SEARCH-RING-POP))))
+		      (LET ((STRING (STRING (OR (CAAR *SEARCH-RING*) (BARF)))))
 			(COPY-ARRAY-CONTENTS STRING *IS-STRING*)
 			(ASET (ARRAY-ACTIVE-LENGTH STRING) *IS-POINTER* P))
 		      (SETQ MUST-REDIS T))))
@@ -379,9 +472,10 @@ previous search string is used again." (KM)
 		((= XCHAR #/Q)
 		 (SETQ CHAR (LOGAND 377 (FUNCALL STANDARD-INPUT ':TYI)))
 		 (GO NORMAL))
-		((= XCHAR #/G)
+		((OR (= XCHAR #/G) (= CHAR #\ABORT))
 		 (BEEP)
-		 (COND ((OR SUPPRESSED-REDISPLAY (NEQ (AREF *IS-STATUS* P) T))
+		 (COND ((AND (OR SUPPRESSED-REDISPLAY (NEQ (AREF *IS-STATUS* P) T))
+			     (PLUSP P))
 			;; G in other than a successful search
 			;; rubs out until it becomes successful.
 			(SETQ P (DO ((P (1- P) (1- P)))
@@ -392,7 +486,7 @@ previous search string is used again." (KM)
 			(MOVE-BP BP (AREF *IS-BP* 0))
 			(TYPEIN-LINE "")
 			(RETURN))))
-		((= CHAR #/)
+		((OR (= CHAR #/) (= CHAR #\END))
 		 (AND (ZEROP P)
 		      (RETURN (COM-STRING-SEARCH-INTERNAL REVERSE-P NIL NIL NIL)))
 		 (SETQ INPUT-DONE T)
@@ -416,10 +510,11 @@ previous search string is used again." (KM)
           ;; Normal chars to be searched for come here.
    NORMAL (OR MUST-REDIS (TYPEIN-LINE-MORE "~C" CHAR))
           (PUSH-ISEARCH-STATUS)
-          (AND (= (AREF *IS-POINTER* P) (STRING-LENGTH *IS-STRING*))
-               (ADJUST-ARRAY-SIZE *IS-STRING* (+ 100 (STRING-LENGTH *IS-STRING*))))
-          (ASET CHAR *IS-STRING* (AREF *IS-POINTER* P))
-          (ASET (1+ (AREF *IS-POINTER* P)) *IS-POINTER* P)
+          (LET ((IDX (AREF *IS-POINTER* P)))
+	    (AND ( IDX (ARRAY-LENGTH *IS-STRING*))
+		 (ADJUST-ARRAY-SIZE *IS-STRING* (+ IDX 100)))
+	    (ASET CHAR *IS-STRING* IDX)
+	    (ASET (1+ IDX) *IS-POINTER* P))
           (ASET ':NORMAL *IS-OPERATION* P)
           ;; Come here after possibly processing input to update the search tables
           ;; to search for a while.  First, if necessary and not suppressed
@@ -433,7 +528,7 @@ previous search string is used again." (KM)
           ;; Now do some work for a while, then go back to CHECK-FOR-INPUT.
           (COND (MUST-REDIS
                  (SETQ MUST-REDIS NIL)
-		 (TYPEIN-LINE "")
+		 (TYPEIN-LINE "~:|")
                  (OR (AREF *IS-STATUS* P1) (TYPEIN-LINE-MORE "Failing "))
                  (AND (AREF *IS-REVERSE-P* P) (TYPEIN-LINE-MORE "Reverse "))
                  (TYPEIN-LINE-MORE "I-Search: ")
@@ -499,7 +594,8 @@ previous search string is used again." (KM)
                 ;; If there is nothing left to do, and terminator seen, exit.
                 (INPUT-DONE
                  (SEARCH-RING-PUSH
-		   (SUBSTRING *IS-STRING* 0 (ARRAY-ACTIVE-LENGTH *IS-STRING*)))
+		   (SUBSTRING *IS-STRING* 0 (ARRAY-ACTIVE-LENGTH *IS-STRING*))
+		   'SEARCH)
                  (TYPEIN-LINE-MORE "")
 		 (MAYBE-PUSH-POINT ORIG-PT)
 		 (SELECT-WINDOW *WINDOW*)
@@ -512,18 +608,45 @@ previous search string is used again." (KM)
    (FUNCALL *MODE-LINE-WINDOW* ':DONE-WITH-MODE-LINE-WINDOW))
   DIS-BPS)
 
+;;; If there is a region, use it
+(DEFMACRO WITH-QUERY-REPLACE-INTERVAL ((REGION-P-VAR) &BODY BODY)
+  `(MULTIPLE-VALUE-BIND (*INTERVAL* ,REGION-P-VAR)
+       (QUERY-REPLACE-INTERVAL)
+     (UNWIND-PROTECT
+       (PROGN . ,BODY)
+       (COND (,REGION-P-VAR
+	      (FLUSH-BP (INTERVAL-FIRST-BP *INTERVAL*))
+	      (FLUSH-BP (INTERVAL-LAST-BP *INTERVAL*)))))))
+
+(DEFUN QUERY-REPLACE-INTERVAL ()
+  (DECLARE (RETURN-LIST *INTERVAL* REGION-P))
+  (IF (NOT (WINDOW-MARK-P *WINDOW*))
+      *INTERVAL*
+      (LET ((POINT (POINT)) (MARK (MARK)))
+	(AND (BP-< MARK POINT) (SWAP-BPS POINT MARK))
+	(SETF (WINDOW-MARK-P *WINDOW*) NIL)
+	(MUST-REDISPLAY *WINDOW* DIS-MARK-GOES)
+	(VALUES (CREATE-INTERVAL (COPY-BP POINT ':NORMAL) (COPY-BP MARK ':MOVES))
+		T))))
+
 (DEFCOM COM-REPLACE-STRING "Replace all occurrences of a given string with another.
 Prompts for two string: to replace all FOO's with BAR's, type FOO and BAR.
 With no numeric arg, all occurrences after point are replaced.
 With numeric arg, that many occurrences are replaced.
 If *CASE-REPLACE-P* is nonnull, BAR's initial will be capitalized
 if FOO's initial had been (supply it in lower case)." ()
-  (LET ((FROM (TYPEIN-LINE-READLINE "Replace all occurrences of:")))
-    (AND (ZEROP (STRING-LENGTH FROM))
-	 (BARF "The string may not be null."))
-    (LET ((TO (TYPEIN-LINE-READLINE "Replace all occurrences of /"~A/" with:" FROM)))
-      (REPLACE-STRING (POINT) FROM TO (AND *NUMERIC-ARG-P*
-					   *NUMERIC-ARG*))))
+  (WITH-QUERY-REPLACE-INTERVAL (REGION-P)
+    (LET ((FROM (TYPEIN-LINE-READLINE "Replace all occurrences ~:[in the region ~]of:"
+				      (NOT REGION-P))))
+      (AND (ZEROP (STRING-LENGTH FROM))
+	   (BARF "The string may not be null."))
+    (LET ((TO (TEMP-KILL-RING FROM
+		 (TYPEIN-LINE-READLINE
+		   "Replace all occurrences ~:[in the region ~]of /"~A/" with:"
+		   (NOT REGION-P) FROM))))
+      (TYPEIN-LINE "~D. replacement~:P."
+		   (REPLACE-STRING (POINT) FROM TO (AND *NUMERIC-ARG-P*
+							*NUMERIC-ARG*))))))
   DIS-TEXT)
 
 (DEFCOM COM-QUERY-REPLACE "Replace string, asking about each occurrence.
@@ -543,11 +666,11 @@ If *CASE-REPLACE-P* is nonnull, BAR's initial will be capitalized
 if FOO's initial had been.
 If you give a numeric argument, it will not consider FOOs that are not
 bounded on both sides by delimiter characters." ()
-  (MULTIPLE-VALUE-BIND (FROM TO)
-      (QUERY-REPLACE-STRINGS)
-    (QUERY-REPLACE (POINT) FROM TO *NUMERIC-ARG-P*))
+  (WITH-QUERY-REPLACE-INTERVAL (REGION-P)
+    (MULTIPLE-VALUE-BIND (FROM TO)
+	(QUERY-REPLACE-STRINGS REGION-P)
+      (QUERY-REPLACE (POINT) FROM TO *NUMERIC-ARG-P*)))
   DIS-TEXT)
-
 
 (DEFCOM COM-ATOM-QUERY-REPLACE "Query replaces delimited atoms.
 See Query Replace for documentation of the various options." ()
@@ -555,13 +678,15 @@ See Query Replace for documentation of the various options." ()
     (LET ((*NUMERIC-ARG-P* T))
       (COM-QUERY-REPLACE))))
 
-(DEFUN QUERY-REPLACE-STRINGS (&OPTIONAL (TYPE "replace") RETURN-EMPTY &AUX FROM TO)
-  (SETQ FROM (TYPEIN-LINE-READLINE "Query-~A some occurrences of:" TYPE))
+(DEFUN QUERY-REPLACE-STRINGS (REGION-P &OPTIONAL (TYPE "replace") RETURN-EMPTY &AUX FROM TO)
+  (SETQ FROM (TYPEIN-LINE-READLINE "Query-~A some occurrences ~:[in the region ~]of:"
+				   TYPE (NOT REGION-P)))
   (COND ((NOT (ZEROP (STRING-LENGTH FROM)))
 	 (TEMP-KILL-RING FROM
-	   (SETQ TO (TYPEIN-LINE-READLINE "Query-~A some occurrences of /"~A/" with:"
-					  TYPE FROM)))
-	 (MVRETURN FROM TO))
+	   (SETQ TO (TYPEIN-LINE-READLINE
+		      "Query-~A some occurrences ~:[in the region ~]of /"~A/" with:"
+		      TYPE (NOT REGION-P) FROM)))
+	 (VALUES FROM TO))
 	((NOT RETURN-EMPTY)
 	 (BARF "The string may not be null."))
 	(T NIL)))
@@ -570,16 +695,26 @@ See Query Replace for documentation of the various options." ()
 (DEFVAR *QUERY-TO*)
 
 ;;; This is the normal form of query replace
-(DEFUN QUERY-REPLACE (BP *QUERY-FROM* *QUERY-TO* &OPTIONAL BREAKS)
+(DEFUN QUERY-REPLACE (BP *QUERY-FROM* *QUERY-TO* &OPTIONAL BREAKS
+						 &AUX (*CASE-REPLACE-P* *CASE-REPLACE-P*))
+  ;;If from isn't all lowercase, user probably has something specific in mind
+  (AND (DO ((I 0 (1+ I))
+	    (LEN (STRING-LENGTH *QUERY-FROM*)))
+	   (( I LEN))
+	 (AND (CHAR-UPPERCASE-P (AREF *QUERY-FROM* I))
+	      (RETURN T)))
+       (SETQ *CASE-REPLACE-P* NIL))
   (QUERY-REPLACE-INTERNAL BP *QUERY-FROM* *QUERY-TO* #'QUERY-REPLACE-SEARCH BREAKS))
 
 (DEFUN QUERY-REPLACE-SEARCH (BP QUERY-FROM IGNORE &AUX BP1)
   (AND (SETQ BP1 (SEARCH BP QUERY-FROM))
-       (MVRETURN BP1 (FORWARD-CHAR BP1 (- (STRING-LENGTH QUERY-FROM))))))
+       (VALUES BP1 (FORWARD-CHAR BP1 (- (STRING-LENGTH QUERY-FROM))))))
 
 (DEFMACRO QREP ()
   `(COND ((NOT FLAG-2)
-	  (MOVE-BP BP (CASE-REPLACE BP1 BP *QUERY-TO*))
+	  (UNDO-SAVE BP1 BP2 T "Replace")
+	  (MOVE-BP BP2 (CASE-REPLACE BP1 BP2 *QUERY-TO*))
+	  (MOVE-BP BP BP2)
 	  (MUST-REDISPLAY *WINDOW* DIS-TEXT))))
 
 ;;; General query replace.  Note: BP itself is moved around.  It is usually POINT.
@@ -588,24 +723,27 @@ See Query Replace for documentation of the various options." ()
 ;;; the area of the thing found or NIL.
 ;;; FLAG-1 and FLAG-2 implement the hairy COMMA command.
 (DEFUN QUERY-REPLACE-INTERNAL (BP QUERY-FROM QUERY-TO FUNCTION BREAKS
-			       &AUX TEM BP1 DO-THE-REST CHAR UCHAR FLAG-1 FLAG-2)
+			       &AUX BP1 BP2 DO-THE-REST CHAR UCHAR FLAG-1 FLAG-2)
   (BIND-MODE-LINE ("Query Replacing " *QUERY-FROM* " => " *QUERY-TO*)
-    (SETQ BP1 (COPY-BP BP))
+    (SETQ BP1 (COPY-BP BP)
+	  BP2 (COPY-BP BP))
     (DO () (NIL)
       (SETQ FLAG-2 FLAG-1 FLAG-1 NIL)
       (COND ((NOT FLAG-2)
-	     (MULTIPLE-VALUE (TEM BP1)
-	       (FUNCALL FUNCTION BP QUERY-FROM QUERY-TO))
-	     (OR TEM (RETURN NIL))
-	     (MOVE-BP BP TEM)
-	     (MUST-REDISPLAY *WINDOW* DIS-BPS)))
+	     (MULTIPLE-VALUE (BP2 BP1)
+	       (FUNCALL FUNCTION BP2 QUERY-FROM QUERY-TO))
+	     (OR BP2 (RETURN NIL))))
       (COND ((OR FLAG-2
 		 (NOT BREAKS)			; If we don't care about breaks, go ahead.
 		 (AND				; Both beginning and end must be breaks.
-		   (OR (EQ BP (INTERVAL-LAST-BP *INTERVAL*))	; EOB counts as a break.
-		       (= (WORD-SYNTAX (BP-CHAR BP)) WORD-DELIMITER))
-		   (OR (EQ BP1 (INTERVAL-FIRST-BP *INTERVAL*))
+		   (OR (BP-= BP2 (INTERVAL-LAST-BP *INTERVAL*))	; EOB counts as a break.
+		       (= (WORD-SYNTAX (BP-CHAR BP2)) WORD-DELIMITER))
+		   (OR (BP-= BP1 (INTERVAL-FIRST-BP *INTERVAL*))
 		       (= (WORD-SYNTAX (BP-CHAR-BEFORE BP1)) WORD-DELIMITER))))
+	     ;; Move point after checking delimiters
+	     (COND ((NOT FLAG-2)
+		    (MOVE-BP BP BP2)
+		    (MUST-REDISPLAY *WINDOW* DIS-BPS)))
 	     ;; We want to offer this string for replacement.
 	     (COND (DO-THE-REST (QREP))
 		   (T
@@ -618,6 +756,7 @@ See Query Replace for documentation of the various options." ()
 			  (OR (NUMBERP CHAR) (GO GETCHAR))	;Ignore special request
 			  (SETQ UCHAR (CHAR-UPCASE CHAR))
 			  (COND ((= UCHAR #/^)
+				 (POINT-PDL-POP *WINDOW*)	;Already done once
 				 (MULTIPLE-VALUE-BIND (BP1 PLINE)
 				     (POINT-PDL-POP *WINDOW*)
 				   (MOVE-BP BP BP1)
@@ -630,6 +769,11 @@ See Query Replace for documentation of the various options." ()
 						 (IF (= UCHAR #\FF) DIS-ALL
 						     (COM-RECENTER-WINDOW)))
 				 (REDISPLAY *WINDOW* ':POINT)
+				 (GO GETCHAR))
+				((MEMQ UCHAR '(#/? #\HELP))
+				 (PRINT-DOC ':FULL *CURRENT-COMMAND*)
+				 (CHECK-FOR-TYPEOUT-WINDOW-TYPEOUT)
+				 (REDISPLAY-ALL-WINDOWS)
 				 (GO GETCHAR))))
 		    (SELECTQ UCHAR
 		      (#\SP (QREP))		;Space: Replace and continue.
@@ -637,7 +781,7 @@ See Query Replace for documentation of the various options." ()
 		      (#/,			;Comma:
 		       (QREP)
 		       (SETQ FLAG-1 T))
-		      (#/ (RETURN NIL))	;Altmode: Quit.
+		      ((#/ #\END) (RETURN NIL))	;Altmode: Quit.
 		      (#/. (QREP)		;Point: Replace and quit.
 		       (RETURN NIL))
 		      (#/R (CONTROL-R))	;C-R: Recurse.
@@ -654,24 +798,26 @@ See Query Replace for documentation of the various options." ()
 (DEFCOM COM-QUERY-EXCHANGE "Query replace two strings with one another at the same time.
 Argument means things must be surrounded by breaks.
 Negative argument means delimited atoms, rather than words." ()
-  (MULTIPLE-VALUE-BIND (FROM TO)
-      (QUERY-REPLACE-STRINGS "exchange")
-    (LET ((*MODE-WORD-SYNTAX-TABLE* (IF (AND *NUMERIC-ARG-P* (MINUSP *NUMERIC-ARG*))
-				   *ATOM-WORD-SYNTAX-TABLE* *MODE-WORD-SYNTAX-TABLE*)))
-      (QUERY-REPLACE-LIST (POINT) (LIST FROM TO) (LIST TO FROM)
-			  *NUMERIC-ARG-P*)))
+  (WITH-QUERY-REPLACE-INTERVAL (REGION-P)
+    (MULTIPLE-VALUE-BIND (FROM TO)
+	(QUERY-REPLACE-STRINGS REGION-P "exchange")
+      (LET ((*MODE-WORD-SYNTAX-TABLE* (IF (AND *NUMERIC-ARG-P* (MINUSP *NUMERIC-ARG*))
+					  *ATOM-WORD-SYNTAX-TABLE* *MODE-WORD-SYNTAX-TABLE*)))
+	(QUERY-REPLACE-LIST (POINT) (LIST FROM TO) (LIST TO FROM)
+			    *NUMERIC-ARG-P*))))
   DIS-TEXT)
 
 (DEFCOM COM-MULTIPLE-QUERY-REPLACE "Query replace two sets of strings at the same time.
 Strings are read in alternate mini-buffers, ended by a null string.
 Argument means things must be surrounded by breaks.
 Negative argument means delimited atoms, rather than words." ()
-  (LET ((*MODE-WORD-SYNTAX-TABLE* (IF (AND *NUMERIC-ARG-P* (MINUSP *NUMERIC-ARG*))
-				 *ATOM-WORD-SYNTAX-TABLE* *MODE-WORD-SYNTAX-TABLE*))
-	FROM-LIST TO-LIST)
-    (MULTIPLE-VALUE (FROM-LIST TO-LIST)
-      (MULTIPLE-QUERY-REPLACE-STRINGS))
-    (QUERY-REPLACE-LIST (POINT) FROM-LIST TO-LIST *NUMERIC-ARG-P*))
+  (WITH-QUERY-REPLACE-INTERVAL (REGION-P)
+    (LET ((*MODE-WORD-SYNTAX-TABLE* (IF (AND *NUMERIC-ARG-P* (MINUSP *NUMERIC-ARG*))
+					*ATOM-WORD-SYNTAX-TABLE* *MODE-WORD-SYNTAX-TABLE*))
+	  FROM-LIST TO-LIST)
+      (MULTIPLE-VALUE (FROM-LIST TO-LIST)
+	(MULTIPLE-QUERY-REPLACE-STRINGS REGION-P))
+      (QUERY-REPLACE-LIST (POINT) FROM-LIST TO-LIST *NUMERIC-ARG-P*)))
   DIS-TEXT)
 
 (LOCAL-DECLARE ((SPECIAL *BP* *STATE*))
@@ -682,17 +828,17 @@ Negative argument means delimited atoms, rather than words." ()
 (DEFUN QUERY-REPLACE-SEARCH-LIST (BP FROM-LIST TO-LIST &AUX TEM)
   (OR (BP-= BP *BP*) (SETQ *STATE* 0))		;If bp has moved, reset state
   (MULTIPLE-VALUE (*BP* TEM *STATE*)
-    (FSM-SEARCH BP FROM-LIST NIL NIL NIL *STATE*))
+    (FSM-SEARCH BP FROM-LIST NIL NIL NIL NIL *STATE*))
   (COND (*BP*
 	 (SETQ *QUERY-FROM* TEM
 	       *QUERY-TO* (NTH (FIND-POSITION-IN-LIST TEM FROM-LIST) TO-LIST))
-	 (MVRETURN *BP* (FORWARD-CHAR *BP* (- (STRING-LENGTH TEM)))))))
-)
+	 (VALUES *BP* (FORWARD-CHAR *BP* (- (STRING-LENGTH TEM)))))))
+);LOCAL-DECLARE
 
-(DEFUN MULTIPLE-QUERY-REPLACE-STRINGS (&AUX FROM-LIST TO-LIST)
+(DEFUN MULTIPLE-QUERY-REPLACE-STRINGS (REGION-P &AUX FROM-LIST TO-LIST)
   (DO ((FROM) (TO)) (NIL)
     (MULTIPLE-VALUE (FROM TO)
-      (QUERY-REPLACE-STRINGS "replace" T))
+      (QUERY-REPLACE-STRINGS REGION-P "replace" T))
     (OR FROM (RETURN (NREVERSE FROM-LIST) (NREVERSE TO-LIST)))
     (PUSH FROM FROM-LIST)
     (PUSH TO TO-LIST)))
@@ -700,6 +846,11 @@ Negative argument means delimited atoms, rather than words." ()
 ;;; Miscellaneous searching commands
 
 (DEFCOM COM-OCCUR "Display text lines that contain a given string.
+With an argument, show the next n lines containing the string.  If
+no argument is given, all lines are shown." ()
+  (COM-LIST-MATCHING-LINES))
+
+(DEFCOM COM-LIST-MATCHING-LINES "Display text lines that contain a given string.
 With an argument, show the next n lines containing the string.  If
 no argument is given, all lines are shown." ()
   (LET ((CNT (IF *NUMERIC-ARG-P* *NUMERIC-ARG* 7777777))
@@ -715,13 +866,17 @@ no argument is given, all lines are shown." ()
       (OR (SETQ BP (FUNCALL FUNCTION BP KEY REVERSE-P)) (RETURN NIL))
       (LET ((LINE (BP-LINE BP))
 	    (INDEX (BP-INDEX BP)))
-	(FUNCALL *TYPEOUT-WINDOW* ':ITEM 'BP (CREATE-BP LINE INDEX NIL *INTERVAL*) LINE))
+	(FUNCALL *TYPEOUT-WINDOW* ':ITEM 'BP (CREATE-BP LINE INDEX) "~A" LINE))
       (FUNCALL *TYPEOUT-WINDOW* ':TYO #\CR)
       (OR (SETQ BP (BEG-LINE BP 1)) (RETURN NIL)))
     (FUNCALL *TYPEOUT-WINDOW* ':LINE-OUT "Done."))
   DIS-NONE)
 
 (DEFCOM COM-KEEP-LINES "Delete all lines not containing the specified string.
+Covers from point to the end of the buffer" ()
+  (COM-DELETE-NON-MATCHING-LINES))
+
+(DEFCOM COM-DELETE-NON-MATCHING-LINES "Delete all lines not containing the specified string.
 Covers from point to the end of the buffer" ()
   (MULTIPLE-VALUE-BIND (FUNCTION KEY)
       (GET-EXTENDED-STRING-SEARCH-STRINGS NIL "Keep lines containing:"
@@ -736,6 +891,10 @@ Covers from point to the end of the buffer" ()
 
 (DEFCOM COM-FLUSH-LINES "Delete all lines containing the specified string.
 Covers from point to the end of the buffer" ()
+  (COM-DELETE-MATCHING-LINES))
+
+(DEFCOM COM-DELETE-MATCHING-LINES "Delete all lines containing the specified string.
+Covers from point to the end of the buffer" ()
   (MULTIPLE-VALUE-BIND (FUNCTION KEY)
       (GET-EXTENDED-STRING-SEARCH-STRINGS NIL "Flush lines containing:"
 					  *SEARCH-MINI-BUFFER-COMTAB*)
@@ -745,9 +904,12 @@ Covers from point to the end of the buffer" ()
 	(DELETE-INTERVAL (BEG-LINE BP 0) (SETQ BP (BEG-LINE BP 1))))))
   DIS-TEXT)
 
-(DEFCOM COM-HOW-MANY "Counts occurences of a substring, after point." ()
+(DEFCOM COM-HOW-MANY "Counts occurrences of a substring, after point." ()
+  (COM-COUNT-OCCURRENCES))
+
+(DEFCOM COM-COUNT-OCCURRENCES "Counts occurrences of a substring, after point." ()
   (MULTIPLE-VALUE-BIND (FUNCTION KEY REVERSE-P BJ-P)
-      (GET-EXTENDED-STRING-SEARCH-STRINGS NIL "How many occurences of:"
+      (GET-EXTENDED-STRING-SEARCH-STRINGS NIL "How many occurrences of:"
 					  *STRING-SEARCH-SINGLE-LINE-COMTAB*)
     (DO ((BP (COND ((NOT BJ-P) (POINT))
 		   ((NOT REVERSE-P) (INTERVAL-FIRST-BP *INTERVAL*))
@@ -755,7 +917,7 @@ Covers from point to the end of the buffer" ()
 	     (FUNCALL FUNCTION BP KEY REVERSE-P))
 	 (N 0 (1+ N)))
 	((NULL BP)
-	 (TYPEIN-LINE "~D. occurence~:P.~%" (1- N)))))
+	 (TYPEIN-LINE "~D. occurrence~:P.~%" (1- N)))))
   DIS-NONE)
 
 (DEFCOM COM-COUNT-LINES "Counts the number of lines in the buffer." ()

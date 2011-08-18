@@ -5,11 +5,11 @@
 
 ;;; Puts the PROMPT in the mode line, and gets a qreg name in the echo area.
 ;;; Returns a symbol in the utility-package.
-(DEFUN GET-Q-REG-NAME (PROMPT &AUX CHAR STR OLDP SYM XCHAR)
+(DEFUN GET-Q-REGISTER-NAME (PROMPT &AUX CHAR STR OLDP SYM XCHAR)
   (SETQ XCHAR (FUNCALL STANDARD-INPUT ':TYI-NO-HANG))
   (COND ((NULL XCHAR)
 	 (PROMPT-LINE "~A" PROMPT)
-	 (TYPEIN-LINE "Q-Reg: ")
+	 (TYPEIN-LINE "Q-Register: ")
 	 (TYPEIN-LINE-ACTIVATE
 	   (SETQ CHAR (FUNCALL STANDARD-INPUT ':TYI)))))
   (SETQ CHAR (CHAR-UPCASE (LDB %%CH-CHAR (OR XCHAR CHAR))))
@@ -23,11 +23,11 @@
 	(T (PUSH SYM *Q-REG-LIST*)))
   SYM)
 
-(DEFCOM COM-OPEN-GET-Q-REG "Insert text in a specified Q-reg, overwriting
+(DEFCOM COM-OPEN-GET-Q-REGISTER "Insert text in a specified Q-Register, overwriting
 blank lines the way Return does (calling the definition of Return).
 Leaves the point after, and the mark before, the text.
 With an argument, puts point before and mark after." ()
-  (LET ((QREG (GET-Q-REG-NAME "Get text from Q-Register.")))
+  (LET ((QREG (GET-Q-REGISTER-NAME "Get text from Q-Register.")))
     (LET ((POINT (POINT))
 	  (MARK (MARK))
 	  (THING (GET QREG 'TEXT)))
@@ -47,33 +47,33 @@ With an argument, puts point before and mark after." ()
 	  (SWAP-BPS POINT MARK))))
   DIS-TEXT)
 
-(DEFCOM COM-GET-Q-REG "Get contents of Q-reg (reads name from kbd).
+(DEFCOM COM-GET-Q-REGISTER "Get contents of Q-Register (reads name from kbd).
 Leaves the pointer before, and the mark after, the text.
 With argument, puts point after and mark before." ()
-  (LET ((QREG (GET-Q-REG-NAME "Get text from Q-Register.")))
+  (LET ((QREG (GET-Q-REGISTER-NAME "Get text from Q-Register.")))
     (LET ((THING (GET QREG 'TEXT)))
       (OR THING (BARF "The q-register ~A does not contain any text." QREG))
       (MOVE-BP (MARK) (INSERT-INTERVAL (POINT) THING))
       (SETQ *CURRENT-COMMAND-TYPE* 'YANK)
-      (AND *NUMERIC-ARG-P*
-	   (SWAP-BPS (POINT) (MARK)))))
+      (OR *NUMERIC-ARG-P*
+	  (SWAP-BPS (POINT) (MARK)))))
   DIS-TEXT)
 
-(DEFCOM COM-PUT-Q-REG "Put point to mark into q-reg (reads name from kbd).
+(DEFCOM COM-PUT-Q-REGISTER "Put point to mark into q-register (reads name from kbd).
 With an argument, the text is also deleted." ()
   (REGION (BP1 BP2)
-    (LET ((QREG (GET-Q-REG-NAME "Put text into Q-Register.")))
+    (LET ((QREG (GET-Q-REGISTER-NAME "Put text into Q-Register.")))
       (PUTPROP QREG (COPY-INTERVAL BP1 BP2 T) 'TEXT)
       (COND (*NUMERIC-ARG-P*
 	     (DELETE-INTERVAL (POINT) (MARK))
 	     DIS-TEXT)
 	    (T DIS-NONE)))))
 
-(DEFCOM COM-VIEW-Q-REGISTER "Display the contents of a q-reg (reads name from kbd)." (KM)
-  (VIEW-Q-REG (GET-Q-REG-NAME "View Q-Register."))
+(DEFCOM COM-VIEW-Q-REGISTER "Display the contents of a q-register (reads name from kbd)." (KM)
+  (VIEW-Q-REGISTER (GET-Q-REGISTER-NAME "View Q-Register."))
   DIS-NONE)
 
-(DEFUN VIEW-Q-REG (SYM)
+(DEFUN VIEW-Q-REGISTER (SYM)
   (LET ((TEXT (GET SYM 'TEXT)))
     (FORMAT T "~&~10,5,2A~A~%" SYM
 	    (COND ((NULL TEXT) "[EMPTY]")
@@ -81,23 +81,23 @@ With an argument, the text is also deleted." ()
 		      50.) TEXT)
 		  (T (NSUBSTRING TEXT 0 50.))))))
 
-(DEFCOM COM-LIST-Q-REGISTERS "List and display the contents of all defined q-regs." ()
+(DEFCOM COM-LIST-Q-REGISTERS "List and display the contents of all defined q-registers." ()
   (FORMAT T "List of all Q-registers:")
   (DO L *Q-REG-LIST* (CDR L) (NULL L)
-      (VIEW-Q-REG (CAR L)))
+      (VIEW-Q-REGISTER (CAR L)))
   (FORMAT T "Done.")
   DIS-NONE)
 
-(DEFCOM COM-KILL-Q-REGISTER "Kill a q-reg." ()
-  (LET ((Q-REG (GET-Q-REG-NAME "Kill Q-Register.")))
+(DEFCOM COM-KILL-Q-REGISTER "Kill a q-register." ()
+  (LET ((Q-REG (GET-Q-REGISTER-NAME "Kill Q-Register.")))
     (COND ((GET Q-REG 'TEXT)
 	   (SETQ *Q-REG-LIST* (DELQ Q-REG *Q-REG-LIST*))
 	   (REMPROP Q-REG 'TEXT))
 	  (T (BARF "The q-register ~S is not defined." Q-REG))))
   DIS-NONE)
 
-(DEFCOM COM-POINT-TO-Q-REG "Save the current location in a q-reg." ()
-  (LET ((Q-REG (GET-Q-REG-NAME "Point to Q-Register")))
+(DEFCOM COM-POINT-TO-Q-REGISTER "Save the current location in a q-register." ()
+  (LET ((Q-REG (GET-Q-REGISTER-NAME "Point to Q-Register")))
     (LET ((PT (GET Q-REG 'POINT)))
       (COND (PT
 	     (MOVE-BP (CAR PT) (POINT))
@@ -107,8 +107,8 @@ With an argument, the text is also deleted." ()
       (PUTPROP Q-REG PT 'POINT)))
   DIS-NONE)
 
-(DEFCOM COM-Q-REG-TO-POINT "Restore a saved point from a q-reg." (KM)
-  (LET ((Q-REG (GET-Q-REG-NAME "Q-Register to point")))
+(DEFCOM COM-Q-REGISTER-TO-POINT "Restore a saved point from a q-register." (KM)
+  (LET ((Q-REG (GET-Q-REGISTER-NAME "Q-Register to point")))
     (LET ((PT (GET Q-REG 'POINT)))
       (COND ((NULL PT)
 	     (BARF "The q-register ~A doesnt point anywhere." Q-REG))
@@ -134,6 +134,9 @@ If the mini buffer is empty, quit out of it." ()
 	 (DELETE-INTERVAL *INTERVAL*)
 	 DIS-TEXT)))
 
+(DEFCOM COM-RECURSIVE-EDIT-ABORT "Quit out of recursive edit right away" ()
+  (*THROW 'TOP-LEVEL T))
+
 (DEFVAR *MINI-BUFFER-COMMAND-IN-PROGRESS* NIL)
 
 (DEFUN EDIT-IN-MINI-BUFFER (&OPTIONAL (COMTAB *MINI-BUFFER-COMTAB*)
@@ -149,6 +152,8 @@ If the mini buffer is empty, quit out of it." ()
 	 (INSERT BP INITIAL-CONTENTS))
     (AND INITIAL-CHAR-POS
 	 (MOVE-BP BP (FORWARD-CHAR BP INITIAL-CHAR-POS))))
+  (AND *MINI-BUFFER-COMMAND-IN-PROGRESS*	;Recursive mini-buffers don't work
+       (BARF "Mini-buffer entered recursively"))
   (OR *MINI-BUFFER-COMMAND* 
       (MINI-BUFFER-RING-PUSH (SETQ *MINI-BUFFER-COMMAND*
 				   `((,*CURRENT-COMMAND* ,*NUMERIC-ARG-P* ,*NUMERIC-ARG*)))))
@@ -169,7 +174,9 @@ If the mini buffer is empty, quit out of it." ()
 		 (FUNCALL TYPEOUT-WINDOW ':SELECT)
 		 (SELECT-WINDOW *WINDOW*)))))))
 
-(DEFCOM COM-REPEAT-LAST-MINI-BUFFER-COMMAND "Repeat a recent mini-buffer command" ()
+(DEFCOM COM-REPEAT-LAST-MINI-BUFFER-COMMAND "Repeat a recent mini-buffer command.
+A numeric argument does the nth previous one.
+An argument of 0 lists which ones are remembered." ()
   (IF (NOT (ZEROP *NUMERIC-ARG*))
       (RE-EXECUTE-MINI-BUFFER-COMMAND (NTH (1- *NUMERIC-ARG*) *MINI-BUFFER-RING*))
       (FUNCALL *TYPEOUT-WINDOW* ':LINE-OUT "Recent mini-buffer commands:")
@@ -191,7 +198,8 @@ If the mini buffer is empty, quit out of it." ()
       DIS-NONE))
 
 (TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* :MINI-BUFFER-COMMAND "Re-execute"
-			  RE-EXECUTE-MINI-BUFFER-COMMAND T)
+			  RE-EXECUTE-MINI-BUFFER-COMMAND T
+			  "Re-execute this command.")
 
 (DEFUN RE-EXECUTE-MINI-BUFFER-COMMAND (*MINI-BUFFER-REPEATED-COMMAND*)
   (OR *MINI-BUFFER-REPEATED-COMMAND* (BARF "No previous command"))
@@ -221,8 +229,9 @@ If the mini buffer is empty, quit out of it." ()
   (AND INITIAL-COMPLETE
        (MULTIPLE-VALUE (CONTENTS NIL NIL NIL CHAR-POS)
 	 (COMPLETE-STRING "" *COMPLETING-ALIST* *COMPLETING-DELIMS* T 0)))
-  (EDIT-IN-MINI-BUFFER *COMPLETING-READER-COMTAB* CONTENTS CHAR-POS
-		       (AND PROMPT (NCONS PROMPT))))
+  (WITH-MINI-BUFFER-COMPLETION (*MINI-BUFFER-WINDOW*)
+    (EDIT-IN-MINI-BUFFER *COMPLETING-READER-COMTAB* CONTENTS CHAR-POS
+			 (AND PROMPT (NCONS PROMPT)))))
 
 ;; Note that WINDOW is a window system type window, not a ZWEI-WINDOW
 (DEFUN COMPLETING-READ (WINDOW *COMPLETING-ALIST*
@@ -277,7 +286,8 @@ If the mini buffer is empty, quit out of it." ()
 			  ;; If allowed one failure
 			  (NEQ *LAST-COMMAND-TYPE* 'FAILING-COMPLETION)
 			  (NUMBERP *LAST-COMMAND-CHAR*)
-			  (NOT (LDB-TEST %%KBD-CONTROL *LAST-COMMAND-CHAR*)))
+			  (NOT (LDB-TEST %%KBD-CONTROL
+					 (COMTAB-CHAR-INDIRECTION *LAST-COMMAND-CHAR*))))
 		     (SETQ COMPLETION (COMPLETE-LINE T NIL))
 		     (SETQ COMPLETION (IF (= (LENGTH COMPLETION) 1) (CAR COMPLETION)
 					  (ASSOC LINE COMPLETION)))
@@ -300,18 +310,41 @@ If the mini buffer is empty, quit out of it." ()
     (*THROW 'RETURN-FROM-COMMAND-LOOP VAL))
   DIS-TEXT)
 
+(DEFCOM COM-COMPLETE-AND-EXIT-IF-UNIQUE "Attempt to complete and return only if unique." ()
+  (LET ((*COMPLETING-IMPOSSIBLE-IS-OK-P* NIL))
+    (COM-COMPLETE-AND-EXIT)))
+
 (DEFCOM COM-LIST-COMPLETIONS "Give a menu of possible completions for string so far." ()
   (LET (POSS)
     (MULTIPLE-VALUE (NIL POSS)
-         (COMPLETE-STRING (BP-LINE (POINT)) *COMPLETING-ALIST* *COMPLETING-DELIMS*))
-   (OR POSS (BARF))
-   (AND *COMPLETING-HELP-MESSAGE* (FORMAT *TYPEOUT-WINDOW* "~&~A" *COMPLETING-HELP-MESSAGE*))
-   (FORMAT *TYPEOUT-WINDOW*
-	   "~&These are the possible completions of the text you have typed:~2%")
-   (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'COMPLETION
-	    (SORT (MAPCAR #'CAR POSS) #'STRING-LESSP))
-   (TERPRI *TYPEOUT-WINDOW*)
-   DIS-NONE))
+      (COMPLETE-STRING (BP-LINE (POINT)) *COMPLETING-ALIST* *COMPLETING-DELIMS*))
+    (OR POSS (BARF))
+    (AND *COMPLETING-HELP-MESSAGE* (FORMAT *TYPEOUT-WINDOW* "~&~A" *COMPLETING-HELP-MESSAGE*))
+    (LIST-COMPLETIONS-INTERNAL POSS))
+  DIS-NONE)
+
+(DEFUN LIST-COMPLETIONS-INTERNAL (POSS &AUX LEN)
+  (SETQ LEN (LENGTH POSS))
+  (COND ((ZEROP LEN)
+	 (FORMAT *TYPEOUT-WINDOW*
+		 "~&There are no possible completions of the text you have typed.~%"))
+	((= LEN 1)
+	 (FORMAT *TYPEOUT-WINDOW*
+		 "~&The only possible completion of the text you have typed is ")
+	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM 'COMPLETION (CAAR POSS))
+	 (FORMAT *TYPEOUT-WINDOW* ":~%")
+	 (COND (*COMPLETING-DOCUMENTER*
+		(TERPRI *TYPEOUT-WINDOW*)
+		(FUNCALL *COMPLETING-DOCUMENTER* (CAR POSS)))))
+	((OR (< LEN 50.)
+	     (LET ((QUERY-IO *TYPEOUT-WINDOW*))
+	       (FQUERY NIL "There are ~D possibilities, do you really want to see them all? "
+		       LEN)))
+	 (FORMAT *TYPEOUT-WINDOW*
+		 "~&These are the possible completions of the text you have typed:~2%")
+	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'COMPLETION
+		  (SORT (MAPCAR #'CAR POSS) #'STRING-LESSP))
+	 (TERPRI *TYPEOUT-WINDOW*))))
 
 (DEFCOM COM-COMPLETION-APROPOS "Do apropos within the completions of what has been typed." ()
   (LET ((LINE (BP-LINE (POINT)))
@@ -349,7 +382,8 @@ If the mini buffer is empty, quit out of it." ()
   (TERPRI *TYPEOUT-WINDOW*)
   DIS-NONE)
  
-(TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* COMPLETION "Select" SELECT-COMPLETION T)
+(TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* COMPLETION "Select" SELECT-COMPLETION T
+			  "Use this completion.")
 
 ;Called if the user mouses one of the completions
 (DEFUN SELECT-COMPLETION (STRING)
@@ -378,9 +412,14 @@ Also tell you what you are currently doing." ()
    (FORMAT T
 "You are typing to a mini-buffer, with the following commands redefined:
 Altmode causes as much of the string as can be determined to be inserted
-into the mini-buffer (this is called command completion).  Space and -
-are similar; they complete up to the next Space and - respectively.
-? lists all the strings that match what you have typed so far.
+into the mini-buffer (this is called command completion).  Space and )
+are similar; they complete up to the next Space or ) respectively.
+
+Control-? lists all the strings that complete what you have typed so far,
+without the rest of this HELP display.  Control-// lists all the strings
+that contain what you have typed anywhere within them.
+
+End will complete as much as possible and return if that gives a unique result.
 Return will complete as much as possible, and ")
    (FORMAT T
 	   (IF *COMPLETING-IMPOSSIBLE-IS-OK-P*
@@ -389,21 +428,8 @@ Return will complete as much as possible, and ")
 will return it."))
    (FORMAT T "~2%")
    (MULTIPLE-VALUE (NIL POSS)
-	 (COMPLETE-STRING (BP-LINE (POINT)) *COMPLETING-ALIST* *COMPLETING-DELIMS*))
-   (SELECTQ (LENGTH POSS)
-     (0 (FORMAT T "There are no possible completions of the text you have typed.~%"))
-     (1 (FORMAT T "The only possible completion of the text you have typed
-is ~A.~%" (CAAR POSS))
-	(COND (*COMPLETING-DOCUMENTER*
-	       (TERPRI T)
-	       (FUNCALL *COMPLETING-DOCUMENTER* (CAR POSS)))))
-     (OTHERWISE
-      (FORMAT T "These are the possible completions of the text you have typed:~2%")
-      (DO ((L POSS (CDR L))
-	   (FLAG 1 0))
-	  ((NULL L))
-	(FORMAT T "~[, ~]~A" FLAG (CAAR L)))
-      (TERPRI))))
+     (COMPLETE-STRING (BP-LINE (POINT)) *COMPLETING-ALIST* *COMPLETING-DELIMS*))
+   (LIST-COMPLETIONS-INTERNAL POSS))
    DIS-NONE)
 
 (DEFUN COMPLETE-LINE (FORWARD-OK MUST-COMPLETE &OPTIONAL INSERT &AUX NSTR POSS WINP LINE POINT
@@ -472,8 +498,8 @@ is ~A.~%" (CAAR POSS))
   (DO ((L ALIST (CDR L))
        (ALL-AMBIG))
       ((EQ L TAIL))
-    (DO NIL ((LISTP L)) (SETQ L (CAR L)))	;Indirect through multiple alists
-    (COND ((NULL (COMPLETE-CHUNK-COMPARE (CAAR L) NCHUNKS CHUNKS CHUNK-DELIMS TEMS
+    (COND ((NLISTP L))				;Indirect through multiple alists
+	  ((NULL (COMPLETE-CHUNK-COMPARE (CAAR L) NCHUNKS CHUNKS CHUNK-DELIMS TEMS
 					 (AND (NULL RETS) RCHUNKS)))
 	   (OR RETS (SETQ CHUNKS RCHUNKS))	;First winner determines case of result
 	   (PUSH (CAR L) RETS)		;add to list of partial matches
@@ -529,7 +555,7 @@ is ~A.~%" (CAAR POSS))
 	  (SETQ MAGIC-POS (STRING-LENGTH TEMS))))
   (AND COMPLETED-P (EQ TRUNC 'NOSPACE)
        (SETQ COMPLETED-P 'NOSPACE))
-  (MVRETURN TEMS (NREVERSE RETS) COMPLETED-P CHAR-POS MAGIC-POS))
+  (VALUES TEMS (NREVERSE RETS) COMPLETED-P CHAR-POS MAGIC-POS))
 
 ;;;Compare a STR with the given chunks and return NIL if it is a possible completion,
 ;;;else LESS or GREATER according as it is less or greater than the CHUNKS.
@@ -608,10 +634,10 @@ is ~A.~%" (CAAR POSS))
 	   (SETQ HI IDX))
 	  (T (SETQ HIHI IDX))))
   (SETQ ALIST (G-L-P ALIST))
-  (MVRETURN (NTHCDR LO ALIST) (NTHCDR (1+ HI) ALIST)))
+  (VALUES (NTHCDR LO ALIST) (NTHCDR (1+ HI) ALIST)))
 
 ;;; Sort an art-q array, such as can be passed to the completing reader
-;;; The second (1) element of the array leader is non-NIL if sorting is
+;;; The second (1) element of the array leader is NIL if sorting is
 ;;; required.
 (DEFUN SORT-COMPLETION-AARRAY (AARRAY)
   (COND ((NOT (ARRAY-LEADER AARRAY 1))	;If not sorted right now
@@ -621,79 +647,71 @@ is ~A.~%" (CAAR POSS))
 
 ;; Merge a sorted array ADDITIONAL-AARRAY of additional pairs into AARRAY.
 ;; Assuming that AARRAY was also sorted, the result is sorted.
-(DEFUN MERGE-COMPLETION-AARRAY (AARRAY ADDITIONAL-AARRAY &AUX NEW-AARRAY TEM TEM1)
-  ;; Make a new AARRAY big enough to hold both.
-  (SETQ NEW-AARRAY (MAKE-ARRAY NIL ART-Q-LIST
-			       (+ (ARRAY-ACTIVE-LENGTH AARRAY)
-				  (ARRAY-ACTIVE-LENGTH ADDITIONAL-AARRAY))
-			       NIL 2))
-  ;; Mark it empty.
-  (STORE-ARRAY-LEADER 0 NEW-AARRAY 0)
-  ;; Now merge the two inputs into it.
-  (DO ((OLD 0) (ADDED 0)
-       (OLD-MAX (ARRAY-ACTIVE-LENGTH AARRAY))
-       (ADDED-MAX (ARRAY-ACTIVE-LENGTH ADDITIONAL-AARRAY)))
-      ;; Done when both inputs are empty.
-      ((AND (= OLD OLD-MAX) (= ADDED ADDED-MAX)))
-    ;; Find which input aarray's next element is least.  Remove it
-    (COND ((OR (= ADDED ADDED-MAX)
-	       (AND (NOT (= OLD OLD-MAX))
-		    (STRING-LESSP (CAR (AREF AARRAY OLD))
-				  (CAR (AREF ADDITIONAL-AARRAY ADDED)))))
-	   (SETQ TEM (AREF AARRAY OLD))
-	   (SETQ OLD (1+ OLD)))
-	  (T (SETQ TEM (AREF ADDITIONAL-AARRAY ADDED))
-	     (SETQ ADDED (1+ ADDED))))
-    ;; and insert it into the new aarray.  But flush duplicate strings.
-    (IF (AND (NOT (ZEROP (ARRAY-ACTIVE-LENGTH NEW-AARRAY)))
-	     (STRING-EQUAL (CAR TEM)
-			   (CAR (SETQ TEM1 (AREF NEW-AARRAY
-						 (1- (ARRAY-ACTIVE-LENGTH NEW-AARRAY)))))))
-	(LET ((LIST (SI:ELIMINATE-DUPLICATES (NCONC (IF (LISTP (CDR TEM)) (CDR TEM)
-							(NCONS (CDR TEM)))
-						    (IF (LISTP (CDR TEM1)) (CDR TEM1)
-							(NCONS (CDR TEM1)))))))
-	  (SETF (CDR TEM1) (IF (CDR LIST) LIST (CAR LIST))))
-	(ARRAY-PUSH-EXTEND NEW-AARRAY TEM)))
-  (STORE-ARRAY-LEADER T NEW-AARRAY 1)
-  (STRUCTURE-FORWARD AARRAY NEW-AARRAY))
+(DEFUN MERGE-COMPLETION-AARRAY (AARRAY ADDITIONAL-AARRAY &AUX OLD-MAX ADDED-MAX NEW-AARRAY)
+  (IF (ZEROP (SETQ ADDED-MAX (ARRAY-ACTIVE-LENGTH ADDITIONAL-AARRAY)))
+      AARRAY
+      (IF (ZEROP (SETQ OLD-MAX (ARRAY-ACTIVE-LENGTH AARRAY)))
+	  (SETQ NEW-AARRAY ADDITIONAL-AARRAY)
+	  ;; Make a new AARRAY big enough to hold both.
+	  (SETQ NEW-AARRAY (MAKE-ARRAY (+ OLD-MAX ADDED-MAX)
+				       ':TYPE 'ART-Q-LIST
+				       ':LEADER-LENGTH 2
+				       ':LEADER-LIST '(0)))
+	  ;; Now merge the two inputs into it.
+	  (DO ((OLD 0) (ADDED 0)
+	       (OLD-ELEM) (ADDED-ELEM)
+	       (ELEM-TO-BE-ADDED)
+	       (LAST-ELEM-ADDED NIL ELEM-TO-BE-ADDED))
+	      ;; Done when both inputs are empty.
+	      ((AND (= OLD OLD-MAX) (= ADDED ADDED-MAX)))
+	    ;; Find which input aarray's next element is least.  Remove it
+	    (SETQ ADDED-ELEM (AND ( ADDED ADDED-MAX) (AREF ADDITIONAL-AARRAY ADDED))
+		  OLD-ELEM (AND ( OLD OLD-MAX) (AREF AARRAY OLD)))
+	    (IF (AND OLD-ELEM
+		     (OR (NULL ADDED-ELEM)
+			 (STRING-LESSP (CAR OLD-ELEM) (CAR ADDED-ELEM))))
+		(SETQ ELEM-TO-BE-ADDED OLD-ELEM
+		      OLD (1+ OLD))
+		(SETQ ELEM-TO-BE-ADDED ADDED-ELEM
+		      ADDED (1+ ADDED)))
+	    ;; and insert it into the new aarray.  But flush duplicate strings.
+	    (COND ((AND LAST-ELEM-ADDED
+			(%STRING-EQUAL (CAR ELEM-TO-BE-ADDED) 0
+				       (CAR LAST-ELEM-ADDED) 0 NIL))
+		   (SETF (CDR LAST-ELEM-ADDED)
+			 (MERGE-AND-ELIMINATE-DUPLICATES (CDR ELEM-TO-BE-ADDED)
+							 (CDR LAST-ELEM-ADDED))))
+		  ((ARRAY-PUSH NEW-AARRAY ELEM-TO-BE-ADDED))
+		  (T				;This ought to never happen
+		   (ARRAY-PUSH-EXTEND NEW-AARRAY ELEM-TO-BE-ADDED))))
+	  (STORE-ARRAY-LEADER T NEW-AARRAY 1))
+      (STRUCTURE-FORWARD AARRAY NEW-AARRAY)))
+
+(DEFUN MERGE-AND-ELIMINATE-DUPLICATES (L1 L2 &AUX LIST)
+  (SETQ LIST (IF (ATOM L1) (NCONS L1) (NREVERSE L1)))
+  (IF (ATOM L2)
+      (PUSH* L2 LIST)
+      (DOLIST (X L2)
+	(PUSH* X LIST)))
+  (SETQ LIST (NREVERSE LIST))
+  (IF (CDR LIST) LIST (CAR LIST)))
 
 ;;;Is this string in the completion list?
 (DEFUN STRING-IN-AARRAY-P (STRING AARRAY)
   (SETQ STRING (STRING STRING))
   (DO ((LO 0)
        (HI (ARRAY-ACTIVE-LENGTH AARRAY))
-       (IDX)
-       (INC))
+       IDX INC TEM)
       (NIL)
     (AND (ZEROP (SETQ INC (// (- HI LO) 2)))
 	 (RETURN NIL))
     (SETQ IDX (+ LO INC))
-    (SELECTQ (STRING-COMPARE STRING (CAR (AREF AARRAY IDX)))
-      (:EQUAL
-       (RETURN T))
-      (:GREATER
-       (SETQ LO IDX))
-      (OTHERWISE
-       (SETQ HI IDX)))))
-
-(DEFUN STRING-COMPARE (STR1 STR2)
-  (DO ((I 0 (1+ I))
-       (LEN1 (STRING-LENGTH STR1))
-       (LEN2 (STRING-LENGTH STR2))
-       (CH1)
-       (CH2))
-      (NIL)
-    (AND ( I LEN1)
-	 (RETURN (OR (IF ( I LEN2) ':EQUAL ':LESS))))
-    (AND ( I LEN2)
-	 (RETURN ':GREATER))
-    (SETQ CH1 (AREF STR1 I)
-	  CH2 (AREF STR2 I))
-    (AND (CHAR-LESSP CH1 CH2)
-	 (RETURN ':LESS))
-    (AND (CHAR-LESSP CH2 CH1)
-	 (RETURN ':GREATER))))
+    (COND ((ZEROP (SETQ TEM (STRING-COMPARE STRING (CAR (AREF AARRAY IDX)))))
+	   (RETURN T))
+	  ((PLUSP TEM)
+	   (SETQ LO IDX))
+	  (T
+	   (SETQ HI IDX)))))
 
 ;;; Variables.
 
@@ -737,11 +755,11 @@ With an argument, print out documentation as well." ()
 
 (DEFCOM COM-VARIABLE-APROPOS "List all variables whose names contain a given substring.
 With an argument, print documentation as well." ()
-  (MULTIPLE-VALUE-BIND (FUNCTION STR)
+  (MULTIPLE-VALUE-BIND (FUNCTION ARG STR)
       (GET-EXTENDED-SEARCH-STRINGS "Variable Apropos (substring):")
     (FORMAT T "~%ZWEI variables containing /"~A/":~2%" STR)
     (DO L *VARIABLE-ALIST* (CDR L) (NULL L)
-	(COND ((FUNCALL FUNCTION STR (CAAR L))
+	(COND ((FUNCALL FUNCTION ARG (CAAR L))
 	       (PRINT-VARIABLE (CDAR L))
 	       (AND *NUMERIC-ARG-P*
 		    (PRINT-VARIABLE-DOC (CDAR L))))))
@@ -759,7 +777,7 @@ and print documentation on it." ()
 		     (GET (CDR X) 'VARIABLE-DOCUMENTATION)))))
   DIS-NONE)
 
-(DEFCOM COM-VARIABLE-SET "Set a variable, checking type.
+(DEFCOM COM-SET-VARIABLE "Set a variable, checking type.
 Read the name of a variable (with completion), display current value
 and documentation, and read a new variable.  Some checking is done
 that the variable is the right type." ()
@@ -806,7 +824,7 @@ that the variable is the right type." ()
 		   (SMALL-FLOAT V)))
 		(:BOOLEAN
 		 (LET ((V (TYPEIN-LINE-READ "New value (T or NIL)")))
-		   (OR (EQ T V) (BARF "~S is neither T nor NIL." V))
+		   (OR (MEMQ V '(T NIL)) (BARF "~S is neither T nor NIL." V))
 		   V))
 		(:KEYWORD
 		 (LET ((V (TYPEIN-LINE-READ "New value (a symbol)")))
@@ -831,3 +849,4 @@ that the variable is the right type." ()
 	    (STRING (MAKE-ARRAY NIL 'ART-STRING 10. NIL '(0))))
 	   ((NULL VAL) STRING)
 	 (ARRAY-PUSH-EXTEND STRING (CAR VAL)))))))
+ 

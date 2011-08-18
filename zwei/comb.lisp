@@ -19,13 +19,36 @@ A numeric arg specifies the page: 0 for current, 1 for next,
 	(T
 	 (DOTIMES (I ARG)
 	   (SETQ BP (FORWARD-PAGE BP 1 T)))))
-  (MVRETURN BP (FORWARD-PAGE BP)))
+  (VALUES BP (FORWARD-PAGE BP)))
 
-;;; Make this a variable just in case someone wants to modify it
-(DEFVAR *MATCHING-DELIMITER-LIST*
-	'((#/( #/) FORWARD-SEXP) (#/" #/" FORWARD-WORD) (#/[ #/] FORWARD-SEXP)
-	  (#/{ #/} FORWARD-SEXP) (#/< #/> FORWARD-WORD) (#/* #/* FORWARD-WORD)
-	  (#/ #/ FORWARD-WORD)))
+(DEFCOM COM-FORWARD-OVER-MATCHING-DELIMITERS "Move over matching delimiters" (KM)
+  (LET ((POINT (POINT))
+	(CLOSE) (OPEN))
+    (DO ((L *MATCHING-DELIMITER-LIST* (CDR L))
+	 (CH (LDB %%KBD-CHAR *LAST-COMMAND-CHAR*)))
+	((NULL L))
+      (COND ((= CH (CADAR L))
+	     (SETQ CLOSE CH
+		   OPEN (CAAR L))
+	     (RETURN))))
+    (MOVE-BP POINT (OR (FORWARD-OVER-MATCHING-DELIMITERS POINT *NUMERIC-ARG* NIL 0 OPEN CLOSE)
+		       (BARF))))
+  DIS-BPS)
+
+(DEFCOM COM-BACKWARD-OVER-MATCHING-DELIMITERS "Move over matching delimiters" (KM)
+  (LET ((POINT (POINT))
+	(CLOSE) (OPEN))
+    (DO ((L *MATCHING-DELIMITER-LIST* (CDR L))
+	 (CH (LDB %%KBD-CHAR *LAST-COMMAND-CHAR*)))
+	((NULL L))
+      (COND ((= CH (CAAR L))
+	     (SETQ OPEN CH
+		   CLOSE (CADAR L))
+	     (RETURN))))
+    (MOVE-BP POINT (OR (FORWARD-OVER-MATCHING-DELIMITERS POINT (- *NUMERIC-ARG*)
+							 NIL 0 OPEN CLOSE)
+		       (BARF))))
+  DIS-BPS)
 
 (DEFCOM COM-MAKE-/(/) "Insert matching delimiters, putting point between them.
 With an argument, puts that many s-exprs within the new ()." ()
@@ -54,8 +77,8 @@ With an argument, puts that many s-exprs within the new ()." ()
 
 (DEFCOM COM-DELETE-/(/) "Delete both of the nth innermost pair of parens enclosing point." ()
   (LET ((POINT (POINT)))
-    (LET ((BP1 (OR (FORWARD-LIST POINT *NUMERIC-ARG* NIL 1) (BARF)))
-	  (BP2 (OR (FORWARD-LIST POINT (- *NUMERIC-ARG*) NIL 1) (BARF))))
+    (LET ((BP1 (OR (FORWARD-UP-LIST-OR-STRING POINT *NUMERIC-ARG*) (BARF)))
+	  (BP2 (OR (FORWARD-UP-LIST-OR-STRING POINT (- *NUMERIC-ARG*) NIL NIL) (BARF))))
       (DELETE-INTERVAL (FORWARD-CHAR BP1 -1) BP1)
       (DELETE-INTERVAL BP2 (FORWARD-CHAR BP2 1))
       DIS-TEXT)))
@@ -73,7 +96,12 @@ LISP-style indentation is inserted after the )." ()
 	     (RETURN T))))
     (LET ((BP (OR (IF CHAR (SEARCH (POINT) CHAR) (FORWARD-LIST POINT 1 NIL 1)) (BARF))))
       (MOVE-BP (POINT) BP)
-      (DELETE-BACKWARD-OVER *WHITESPACE-CHARS* (FORWARD-CHAR BP -1))
+      (LET* ((BP1 (FORWARD-CHAR BP -1))
+	     (BP2 (BACKWARD-OVER *WHITESPACE-CHARS* BP1)))
+	;; Flush whitespace before this point,
+	;; unless that would move us to the end of a comment.
+	(OR (MULTIPLE-VALUE-BIND (NIL NIL X) (LISP-BP-SYNTACTIC-CONTEXT BP2) X)
+	    (DELETE-INTERVAL BP2 BP1 T)))
       (LET ((ARG (1- *NUMERIC-ARG*)))
 	(AND (> ARG 0)
 	     (MOVE-BP (POINT) (OR (IF CHAR (SEARCH (POINT) CHAR ARG)
@@ -251,7 +279,8 @@ comment column." ()
 	   (INDENT-FOR-COMMENT (POINT) *NUMERIC-ARG* (NOT *NUMERIC-ARG-P*) *NUMERIC-ARG-P*))
   DIS-TEXT)
 
-(DEFUN INDENT-FOR-COMMENT (BP &OPTIONAL (TIMES 1) CREATE-P MOVE-TO-NEXT-P &AUX (UP-P 1))
+(DEFUN INDENT-FOR-COMMENT (BP &OPTIONAL (TIMES 1) CREATE-P MOVE-TO-NEXT-P BEG-LINE-NOT-SPECIAL
+			      &AUX (UP-P 1))
   (SETQ BP (COPY-BP BP ':MOVES))
   (AND (MINUSP TIMES)
        (SETQ UP-P -1 TIMES (MINUS TIMES)))
@@ -270,10 +299,12 @@ comment column." ()
 	   ;; A comment already exists.  Move BP to it.
 	   (MOVE-BP BP LINE START-START-INDEX)
 	   ;; Distinguish between ";", ";;" and ";;;" type comments.
-	   (COND ((AND (> LEN (1+ START-START-INDEX))
+	   (COND ((AND (ZEROP START-START-INDEX)	;At the beginning of the line stays
+		       (NOT BEG-LINE-NOT-SPECIAL)))
+		 ((AND (> LEN (1+ START-START-INDEX))
 		       (CHAR-EQUAL (AREF LINE (1+ START-START-INDEX))
 				   (SETQ CH (AREF LINE START-START-INDEX))))
-		  (COND ((OR ( LEN (+ START-START-INDEX 2))	; ";;;" doesnt move
+		  (COND ((OR ( LEN (+ START-START-INDEX 2))	; ";;;" doesn't move
 			     (NOT (CHAR-EQUAL CH (AREF LINE (+ START-START-INDEX 2)))))
 			 ;; It is a double semicolon, indent as code.
 			 (INDENT-LINE BP (INDENT-FOR-LISP BP)))))
@@ -294,7 +325,7 @@ comment column." ()
 
 ;; Internal function of above.
 (DEFUN INDENT-TO-COMMENT-COLUMN (BP)
-  (LET ((HERE (BP-INDENTATION BP))
+  (LET ((HERE (BP-VIRTUAL-INDENTATION BP))
 	(GOAL *COMMENT-COLUMN*))
     (COND (( HERE GOAL)
 	   (SETQ GOAL (FUNCALL *COMMENT-ROUND-FUNCTION* HERE))))
@@ -326,27 +357,25 @@ comment column." ()
 
 (DEFCOM COM-KILL-COMMENT "Delete any comment on the current line." ()
   (LET ((LEN (LINE-LENGTH (BP-LINE (POINT)))))
-    (KILL-COMMENT (BP-LINE (POINT)) NIL)
+    (KILL-COMMENT (BP-LINE (POINT)))
     (OR (= LEN (LINE-LENGTH (BP-LINE (POINT))))
 	(MOVE-BP (POINT) (END-LINE (POINT)))))
   DIS-TEXT)
 
 (DEFCOM COM-UNCOMMENT-REGION "Delete any comments within the region." ()
+  (REGION (BP1 BP2)
+    (UNDO-SAVE BP1 BP2 T "Uncomment region"))
   (REGION-LINES (START-LINE STOP-LINE)
     (DO ((LINE START-LINE (LINE-NEXT LINE)))
 	((EQ LINE STOP-LINE))
-      (KILL-COMMENT LINE T)
-      (SETQ *LAST-COMMAND-TYPE* 'KILL)))
+      (KILL-COMMENT LINE)))
   DIS-TEXT)
 
-;; Kill the comment on the line with BP.  APPEND-P = NIL means don't append to
-;; a previous kill.  T means do append, and append an additional CR.
-(DEFUN KILL-COMMENT (LINE APPEND-P &AUX START-INDEX)
-  (OR APPEND-P (SETQ *LAST-COMMAND-TYPE* NIL))
+;; Kill the comment on the line with BP.
+(DEFUN KILL-COMMENT (LINE &AUX START-INDEX)
   (AND (SETQ START-INDEX (FIND-COMMENT-START LINE T))
        (LET ((BP (CREATE-BP LINE START-INDEX)))
-	 (KILL-INTERVAL (BACKWARD-OVER *BLANKS* BP) (END-LINE BP) T)
-	 (AND APPEND-P (INSERT (INTERVAL-LAST-BP (CAR *KILL-RING*)) #\CR))))
+	 (KILL-INTERVAL (BACKWARD-OVER *BLANKS* BP) (END-LINE BP) T)))
   (SETQ *CURRENT-COMMAND-TYPE* 'KILL))
 
 (DEFCOM COM-DOWN-COMMENT-LINE "Move to the comment position in the next line.
@@ -388,10 +417,18 @@ on the current line." ()
 	 (LET ((*NUMERIC-ARG-P* NIL)
 	       (*NUMERIC-ARG* 1))
 	   (COM-INDENT-COMMENT-RELATIVE)))
-	(T
-	 (TYPEIN-LINE "Comment column = ~D"
-		      (SETQ *COMMENT-COLUMN* (BP-INDENTATION (POINT))))
-	 DIS-NONE)))
+	(T (REPORT-COLUMN-SETTING "Comment column"
+				  (SETQ *COMMENT-COLUMN* (BP-INDENTATION (POINT))))
+	   DIS-NONE)))
+
+(DEFUN REPORT-COLUMN-SETTING (NAME NPIXELS)
+  (COND ((NUMBERP NPIXELS)
+	 (TYPEIN-LINE "~A = ~D pixels" NAME NPIXELS)
+	 (LET ((FONT (CURRENT-FONT *WINDOW*)))
+	   (IF (NULL (FONT-CHAR-WIDTH-TABLE FONT))
+	       (TYPEIN-LINE-MORE " (~D characters)" (// NPIXELS (FONT-CHAR-WIDTH FONT))))))
+	(T (TYPEIN-LINE "~A disabled" NAME)))
+  NPIXELS)
 
 (DEFCOM COM-INDENT-NEW-COMMENT-LINE "Insert newline, then start new comment.
 If done when not in a comment, acts like COM-INDENT-NEW-LINE.  Otherwise,
@@ -403,12 +440,20 @@ the comment is ended." ()
       (FIND-COMMENT-START (BP-LINE PT)))
     (COND ((OR (NOT START) (< (BP-INDEX PT) START))
 	   (MUST-REDISPLAY *WINDOW* (KEY-EXECUTE #\CR))
-	   (IF *SPACE-INDENT-FLAG* (KEY-EXECUTE #\TAB) DIS-NONE))
+	   (COND ((PLUSP (STRING-LENGTH *FILL-PREFIX*))
+		  (INSERT-MOVING (POINT) *FILL-PREFIX*)
+		  DIS-TEXT)
+		 (*SPACE-INDENT-FLAG*
+		  (KEY-EXECUTE #\TAB))
+		 (T
+		  (DELETE-OVER *BLANKS* (POINT))
+		  DIS-TEXT)))
 	  (T
 	   (INSERT-MOVING PT *COMMENT-END*)
 	   (INSERT PT (SUBSTRING (BP-LINE PT) START END))
 	   (MUST-REDISPLAY *WINDOW* (KEY-EXECUTE #\CR))
-	   (COM-INDENT-FOR-COMMENT)))))
+	   (MOVE-BP PT (INDENT-FOR-COMMENT PT 1 NIL NIL T))
+	   DIS-TEXT))))
 
 (DEFCOM COM-END-COMMENT "Terminate comment on this line and move to the next.
 Terminates the comment if there is one on this line and moves to the next line
@@ -426,14 +471,14 @@ down.  Primarily useful when a comment terminator exists (TECO or MACSYMA mode).
 
 (DEFCOM COM-SET-FILL-COLUMN "Set the fill column from point's current hpos.
 With an argument, if it is less than 200., set fill column to that many characters;
-otherwise set it to that many pixels." ()
-  (LET ((COL (COND (*NUMERIC-ARG-P*
-		    (COND ((< *NUMERIC-ARG* 200.)
-			   (* *NUMERIC-ARG* (FONT-SPACE-WIDTH)))
-			  (T *NUMERIC-ARG*)))
-		   (T (BP-INDENTATION (POINT))))))
-    (TYPEIN-LINE "Fill Column = ~D. pixels." COL)
-    (SETQ *FILL-COLUMN* COL))
+otherwise set it to that many pixels." (KM)
+  (SETQ *FILL-COLUMN* 
+	(REPORT-COLUMN-SETTING "Fill column"
+			       (COND (*NUMERIC-ARG-P*
+				      (COND ((< *NUMERIC-ARG* 200.)
+					     (* *NUMERIC-ARG* (FONT-SPACE-WIDTH)))
+					    (T *NUMERIC-ARG*)))
+				     (T (BP-INDENTATION (POINT))))))
   DIS-NONE)
 
 (DEFCOM COM-FILL-PARAGRAPH "Fill (or adjust) this (or next) paragraph.
@@ -453,12 +498,14 @@ assumes that each non-blank line starts with the prefix (which is
 ignored for filling purposes).  To stop using a Fill Prefix, do
 a Set Fill Prefix at the beginning of a line." () 
   (SETQ *FILL-PREFIX* (SUBSTRING (BP-LINE (POINT)) 0 (BP-INDEX (POINT))))
+  (TYPEIN-LINE "Fill prefix = ~S" *FILL-PREFIX*)
   DIS-NONE)
 
 (DEFCOM COM-FILL-LONG-COMMENT "Fill this comment.
 Comment must begin at the start of the line" (KM)
   (LET ((BP1 (BACKWARD-OVER-COMMENT-LINES (POINT)))
-	BP2 LINE1 LINE2 (MINEND 177777) LINE3 NON-COMMENT-LINES)
+	BP2 LINE1 LINE2 (MINEND 177777) LINE3)
+    (SETQ BP1 (FORWARD-OVER-BLANK-OR-PAGE-LINES BP1))
     (SETQ BP2 (SKIP-OVER-BLANK-LINES-AND-COMMENTS BP1 T)
 	  LINE1 (BP-LINE BP1) LINE2 (BP-LINE BP2))
     (AND (EQ LINE1 LINE2) (BARF "No comment starting at beginning of line"))
@@ -469,14 +516,10 @@ Comment must begin at the start of the line" (KM)
 	(FIND-COMMENT-START LINE))
       (IF START
 	  (SETQ LINE3 LINE			;Remember a non-blank line
-		MINEND (MIN MINEND END))
-	  (PUSH LINE NON-COMMENT-LINES)))
+		MINEND (MIN MINEND END))))
     (OR LINE3 (BARF "No comment starting at beginning of line"))
     (LET ((*FILL-PREFIX* (SUBSTRING LINE3 0 MINEND)))
-      (FILL-INTERVAL BP1 (END-LINE BP2 -1) T)
-      (DOLIST (LINE NON-COMMENT-LINES)		;Now remove excess comments
-	(AND (STRING-EQUAL LINE *FILL-PREFIX*)
-	     (SETF (LINE-LENGTH LINE) 0)))))
+      (FILL-INTERVAL BP1 (END-LINE BP2 -1) T)))
   DIS-TEXT)
 
 (DEFCOM COM-DELETE-HORIZONTAL-SPACE "Delete any spaces or tabs around point.
@@ -614,10 +657,10 @@ many SPACEs in the current font." ()
     (LET ((FONT-SPACE-WIDTH (FONT-SPACE-WIDTH FONT)))
       (LET ((POS (BP-INDENTATION PT))
 	    (X (* 10 FONT-SPACE-WIDTH))
-	    (SPACE (DPB *FONT* %%CH-FONT #\SP)))
+	    (SPACE (IN-CURRENT-FONT #\SP)))
 	(DO L (// (- (* X (1+ (// POS X))) POS) FONT-SPACE-WIDTH) (1- L) ( L 0)
 	    (INSERT-MOVING PT SPACE)))))
-    DIS-TEXT)
+  DIS-TEXT)
 
 (DEFCOM COM-INSERT-TAB "Insert a Tab in the buffer at point." ()
   (DOTIMES (I *NUMERIC-ARG*) (INSERT-MOVING (POINT) #\TAB))
@@ -740,7 +783,7 @@ removing any previous indentation around point first." ()
 	     (RETURN-FROM LUPO))))
     (OR (FIND-BP-IN-WINDOW *WINDOW* LINE 0)
 	(FUNCALL *TYPEIN-WINDOW* ':LINE-OUT LINE))
-    (MOVE-BP PT (INDENT-LINE PT INDENTATION)))
+    (INDENT-TO PT INDENTATION))
   DIS-TEXT)
 
 (DEFCOM COM-INDENT-RELATIVE "Indent Relative to the previous line.
@@ -756,12 +799,13 @@ is done." ()
     (IF (OR *NUMERIC-ARG-P*
 	     (NULL (SETQ IND (INDENT-RELATIVE PT))))
 	 (COM-TAB-TO-TAB-STOP)
-	 (DELETE-BACKWARD-OVER *BLANKS* PT)
+	 (DELETE-AROUND *BLANKS* PT)
 	 (MOVE-BP PT (INDENT-TO PT IND))
 	 DIS-TEXT)))
 
 (DEFUN INDENT-RELATIVE (BP &OPTIONAL (RESTART-OK T) INDENT-TO-WORDS &AUX START DEST BP1 L)
   (SETQ BP1 (BACKWARD-OVER *BLANKS* BP)
+	BP (FORWARD-OVER *BLANKS* BP)
 	L (DO ((L (BP-LINE BP))
 	       (FIRST (BP-LINE (INTERVAL-FIRST-BP *INTERVAL*))))
 	      ((EQ L FIRST) NIL)
@@ -771,10 +815,10 @@ is done." ()
   (COND ((NULL L) NIL)
 	;; L is the previous non-blank line.
 	;; BP1 is at the beginning of the current line whitespace.
-	((OR (AND (SETQ START (INDENTATION-INDEX L (BP-INDENTATION BP)))
+	((OR (AND (SETQ START (INDENTATION-INDEX L (BP-INDENTATION BP) NIL NIL T))
 		  (< START (LINE-LENGTH L)))
 	     (AND RESTART-OK
-		  (SETQ START (INDENTATION-INDEX L (BP-INDENTATION BP1)))))
+		  (SETQ START (INDENTATION-INDEX L (BP-INDENTATION BP1) NIL NIL T))))
 	 (SETQ DEST (IF (AND INDENT-TO-WORDS (ZEROP START)) START
 			(STRING-SEARCH-SET *BLANKS* L START)))
 	 (MOVE-BP BP1 L (OR DEST (LINE-LENGTH L)))
@@ -807,6 +851,7 @@ is done." ()
 (DEFCOM COM-INDENT-DIFFERENTLY "Try to indent this line differently
 If called repeatedly, makes multiple attempts." ()
   (LET ((POINT (POINT)) IND)
+    (SETQ POINT (FORWARD-OVER *BLANKS* (BEG-LINE POINT)))
     (OR (EQ *LAST-COMMAND-TYPE* 'INDENT-DIFFERENTLY)
 	(SETQ *INDENT-DIFFERENTLY-REPETITION-LEVEL* 0
 	      *INDENT-DIFFERENTLY-POSSIBLE-INDENTATIONS* (LIST (BP-INDENTATION POINT))))
@@ -863,5 +908,5 @@ If called repeatedly, makes multiple attempts." ()
 				   (PUSH IND *INDENT-DIFFERENTLY-POSSIBLE-INDENTATIONS*))))
 	     (OR (PLUSP (SETQ TIMES (1- TIMES))) (RETURN T)))))
     (INDENT-LINE POINT IND)
-    (INDENT-BP-ADJUSTMENT POINT))
+    (INDENT-BP-ADJUSTMENT (POINT)))
   DIS-TEXT)

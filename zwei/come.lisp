@@ -1,6 +1,36 @@
 ;;; Zwei commands, see ZWEI;COMA for comments -*-Mode:LISP; Package:ZWEI-*-
 ;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 
+;;; Some random file viewing commands
+(DEFCOM COM-VIEW-DIRECTORY "List an ITS file directory." ()
+  (LET ((PATHNAME (READ-DIRECTORY-NAME "View directory" (DEFAULT-PATHNAME))))
+    (VIEW-DIRECTORY PATHNAME)))
+
+(DEFCOM COM-VIEW-LOGIN-DIRECTORY "List files in user's directory." ()
+  (VIEW-DIRECTORY (FUNCALL (FS:USER-HOMEDIR) ':NEW-PATHNAME ':NAME ':WILD
+							    ':TYPE ':WILD
+							    ':VERSION ':WILD)))
+
+(DEFCOM COM-VIEW-XGP-QUEUE "List XGP queue." ()
+  (VIEW-FILE "AI: XGP: FOO; .FILE. (DIR)")
+  DIS-NONE)
+
+(DEFCOM COM-VIEW-DOVER-QUEUE "List DOVER queue." ()
+  (PRESS:PRINT-DOVER-QUEUE)
+  DIS-NONE)
+
+(DEFCOM COM-VIEW-TTY-USERS "TTYF" ()
+  (VIEW-FILE "TTY: FOO; .FILE. (DIR)")
+  DIS-NONE)
+
+(DEFCOM COM-VIEW-MAIL "View any new mail." ()
+  (LET ((PATHNAME (FUNCALL (FS:USER-HOMEDIR) ':NEW-MAIL-PATHNAME)))
+    (COND ((PROBEF PATHNAME)
+	   (VIEW-FILE PATHNAME))
+	  (T
+	   (TYPEIN-LINE "No new mail"))))
+  DIS-NONE)
+
 ;;; Various Quantities.
 
 (DEFCOM COM-VARIOUS-QUANTITIES "Given characters with control/meta bits or non-letters, inserts them.
@@ -14,166 +44,178 @@ Second character following is quantity type:
   C character, W word, S sentence, P paragraph, L line, A atom, - S-expression,
   ( or ) list, D defun, L page separated by Ls, H buffer.
 Numeric arguments are obeyed.  ? for help." ()
-    (SELECT-WINDOW *WINDOW*)
-    (LET (CH MODE-NAME MODE QUANTITY)
-      (TYPEIN-LINE-ACTIVATE
-	(COND ((NOT NIL
-;		    (SUPPRESS-REDISPLAY)
-		    )
+  (SELECT-WINDOW *WINDOW*)
+  (PROG KLUDGE (CH MODE-NAME MODE QUANTITY)
+    (TYPEIN-LINE-ACTIVATE
+      (UNWIND-PROTECT
+	(COND ((NOT (SETQ CH (FUNCALL STANDARD-INPUT ':TYI-NO-HANG)))
 	       (TYPEIN-LINE "~:[~*~;~D ~]~:C: "
-			    *NUMERIC-ARG-P* *NUMERIC-ARG* *LAST-COMMAND-CHAR*)))
-	(SETQ CH (FUNCALL STANDARD-INPUT ':TYI))
-	(COND ((OR (LDB-TEST %%KBD-CONTROL-META CH)
-		   (MEMQ CH '(#/ #/ #/ #/ #\CR)))
-	       ;; If char has control/meta, or is alpha, beta, epsilon, or equiv, then
-	       ;; insert into buffer as a two character sequence in the standard way.
-	       (INSERT-MOVING (POINT) (FORMAT NIL "~C" CH))
-	       DIS-TEXT)
-	      ((OR (< (SETQ CH (CHAR-UPCASE CH)) #/?) (> CH #/Z))
-	       (COND ((AND ( CH #/0) ( CH #/7))
-		      (FUNCALL *TYPEIN-WINDOW* ':TYO CH)
-		      (SETQ CH (- CH #/0))
-		      (DO ((I 2 (1- I))
-			   (CH1))
-			  (( I 0))
-			  (SETQ CH1 (FUNCALL STANDARD-INPUT ':TYI))
-			  (COND ((AND ( CH1 #/0) ( CH1 #/7))
-				 (FUNCALL *TYPEIN-WINDOW* ':TYO CH1)
-				 (SETQ CH (+ (* CH 8) (- CH1 #/0))))
-				(T (OR (= CH1 #\SP)
-				       (FUNCALL STANDARD-INPUT ':UNTYI CH1))
-				   (RETURN NIL))))))
-	       (LET ((*LAST-COMMAND-CHAR* CH))
-		 (MULTIPLE-VALUE-CALL (COM-SELF-INSERT))))
-	      (T
-	       (PROG ()
-	        GET-A-MODE
-		  (SELECTQ CH
-		   (#/?
-		    (TYPEIN-LINE "~%Type strange character or rubout to be inserted, or octal escape, or
+			    *NUMERIC-ARG-P* *NUMERIC-ARG* *LAST-COMMAND-CHAR*)
+	       (SETQ CH (FUNCALL STANDARD-INPUT ':TYI))))
+	(FUNCALL *TYPEIN-WINDOW* ':MAKE-COMPLETE))	;Make C-Q Abort look right
+      (COND ((OR (LDB-TEST %%KBD-META CH)
+		 (MEMQ CH '(#/ #/ #/ #/ #\CR)))
+	     ;; If char has control/meta, or is alpha, beta, epsilon, or equiv, then
+	     ;; insert into buffer as a two character sequence in the standard way.
+	     ;; Changed by RMS:
+	     ;; IF I WANT to insert alpha-X, I can type that.  That is a useless feature.
+	     ;; If I want to insert an ASCII control-X,
+	     ;; because there are computers that care about such characters,
+	     ;; I don't want to have to figure out what its numeric code
+	     ;; or SAIL char set equivalent is.
+	     (SETQ CH (COMTAB-CHAR-INDIRECTION CH))	;This is for EMACS mode mostly
+	     (INSERT-MOVING (POINT) (FORMAT NIL "~C" CH))
+	     (RETURN-FROM KLUDGE DIS-TEXT))
+	    ((LDB-TEST %%KBD-CONTROL CH)
+	     (INSERT-MOVING (POINT) (LOGAND 77 (LDB %%CH-CHAR CH)))
+	     (RETURN-FROM KLUDGE DIS-TEXT))
+	    ((OR (< (SETQ CH (CHAR-UPCASE CH)) #/?) (> CH #/Z))
+	     (COND ((AND ( CH #/0) ( CH #/7))
+		    (FUNCALL *TYPEIN-WINDOW* ':TYO CH)
+		    (SETQ CH (- CH #/0))
+		    (DO ((I 2 (1- I))
+			 (CH1))
+			(( I 0))
+		      (SETQ CH1 (FUNCALL STANDARD-INPUT ':TYI))
+		      (COND ((AND ( CH1 #/0) ( CH1 #/7))
+			     (FUNCALL *TYPEIN-WINDOW* ':TYO CH1)
+			     (SETQ CH (+ (* CH 8) (- CH1 #/0))))
+			    (T (OR (= CH1 #\SP)
+				   (FUNCALL STANDARD-INPUT ':UNTYI CH1))
+			       (RETURN NIL))))))
+	     (LET ((*LAST-COMMAND-CHAR* CH))
+	       (MULTIPLE-VALUE-BIND (VAL1 VAL2 VAL3)
+		   (COM-SELF-INSERT)
+		 (RETURN-FROM KLUDGE VAL1 VAL2 VAL3))))
+	    (T
+	     (PROG ()
+		GET-A-MODE
+		   (SELECTQ CH
+		     (#/?
+		      (TYPEIN-LINE "~%Type strange character or rubout to be inserted, or octal escape, or
 F forward, B backward, D delete, R rubout, T twiddle, M mode, @ Mark, U uppercase, L lowercase,
 S save, C copy, Z reverse  ")
-		    (TYPEIN-LINE-MORE "~:[~*~;~D ~]~:C: "
-				 *NUMERIC-ARG-P* *NUMERIC-ARG* *LAST-COMMAND-CHAR*)
-		    (SETQ CH (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI)))
-		    (GO GET-A-MODE))
-		   (#/F
-		    (SETQ MODE-NAME "Forward"
-			  MODE 'COM-QUANTITY-FORWARD))
-		   (#/B
-		    (SETQ MODE-NAME "Backward"
-			  MODE 'COM-QUANTITY-BACKWARD))
-		   (#/D
-		    (SETQ MODE-NAME "Delete"
-			  MODE 'COM-QUANTITY-DELETE))
-		   (#/R
-		    (SETQ MODE-NAME "Rubout"
-			  MODE 'COM-QUANTITY-RUBOUT))
-		   (#/T
-		    (SETQ MODE-NAME "Twiddle"
-			  MODE 'COM-QUANTITY-TWIDDLE))
-		   (#/@
-		    (SETQ MODE-NAME "Mark"
-			  MODE 'COM-QUANTITY-MARK))
-		   (#/M
-		    (SETQ MODE-NAME "Mode"
-			  MODE 'QUANTITY-MODE-SET))
-		   (#/U
-		    (SETQ MODE-NAME "Uppercase"
-			  MODE 'COM-QUANTITY-UPPERCASE))
-		   (#/L
-		    (SETQ MODE-NAME "Lowercase"
-			  MODE 'COM-QUANTITY-LOWERCASE))
-		   (#/S
-		    (SETQ MODE-NAME "Save"
-			  MODE 'COM-QUANTITY-SAVE))
-		   (#/C
-		    (SETQ MODE-NAME "Copy"
-			  MODE 'COM-QUANTITY-COPY))
-		   (#/Z
-		    (SETQ MODE-NAME "Reverse"
-			  MODE 'COM-QUANTITY-REVERSE))
-		   (OTHERWISE
-		    (BARF "Invalid quantity operation")))
-		  (TYPEIN-LINE "")
-	       GET-A-QUANTITY
-		  (TYPEIN-LINE "~A~:[~*~; ~R~] "
-			       MODE-NAME *NUMERIC-ARG-P* *NUMERIC-ARG*)
-		  (SETQ CH (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI)))
-		  (SELECTQ CH
-		   (#/?
-		    (TYPEIN-LINE "Type quantity name: C character, W word, S sentence, P paragraph, A atom, L line, -
+		      (TYPEIN-LINE-MORE "~:[~*~;~D ~]~:C: "
+					*NUMERIC-ARG-P* *NUMERIC-ARG* *LAST-COMMAND-CHAR*)
+		      (SETQ CH (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI)))
+		      (GO GET-A-MODE))
+		     (#/F
+		      (SETQ MODE-NAME "Forward"
+			    MODE 'COM-QUANTITY-FORWARD))
+		     (#/B
+		      (SETQ MODE-NAME "Backward"
+			    MODE 'COM-QUANTITY-BACKWARD))
+		     (#/D
+		      (SETQ MODE-NAME "Delete"
+			    MODE 'COM-QUANTITY-DELETE))
+		     (#/R
+		      (SETQ MODE-NAME "Rubout"
+			    MODE 'COM-QUANTITY-RUBOUT))
+		     (#/T
+		      (SETQ MODE-NAME "Twiddle"
+			    MODE 'COM-QUANTITY-TWIDDLE))
+		     (#/@
+		      (SETQ MODE-NAME "Mark"
+			    MODE 'COM-QUANTITY-MARK))
+		     (#/M
+		      (SETQ MODE-NAME "Mode"
+			    MODE 'QUANTITY-MODE-SET))
+		     (#/U
+		      (SETQ MODE-NAME "Uppercase"
+			    MODE 'COM-QUANTITY-UPPERCASE))
+		     (#/L
+		      (SETQ MODE-NAME "Lowercase"
+			    MODE 'COM-QUANTITY-LOWERCASE))
+		     (#/S
+		      (SETQ MODE-NAME "Save"
+			    MODE 'COM-QUANTITY-SAVE))
+		     (#/C
+		      (SETQ MODE-NAME "Copy"
+			    MODE 'COM-QUANTITY-COPY))
+		     (#/Z
+		      (SETQ MODE-NAME "Reverse"
+			    MODE 'COM-QUANTITY-REVERSE))
+		     (OTHERWISE
+		      (BARF "Invalid quantity operation")))
+		   (TYPEIN-LINE "")
+		GET-A-QUANTITY
+		   (TYPEIN-LINE "~A~:[~*~; ~R~] "
+				MODE-NAME *NUMERIC-ARG-P* *NUMERIC-ARG*)
+		   (SETQ CH (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI)))
+		   (SELECTQ CH
+		     (#/?
+		      (TYPEIN-LINE "Type quantity name: C character, W word, S sentence, P paragraph, A atom, L line, -
 S-expression, ( or ) list, D defun, Form page, H buffer~%")
-		    (GO GET-A-QUANTITY))
-		   (#/C
-		    (SETQ MODE-NAME "Character"
-			  QUANTITY 'FORWARD-CHAR))
-		   (#/W
-		    (SETQ MODE-NAME "Word"
-			  QUANTITY 'FORWARD-WORD))
-		   (#/A
-		    (SETQ MODE-NAME "Atom"
-			  QUANTITY 'FORWARD-ATOM))
-		   (#/S
-		    (SETQ MODE-NAME "Sentence"
-			  QUANTITY 'FORWARD-SENTENCE))
-		   (#/P
-		    (SETQ MODE-NAME "Paragraph"
-			  QUANTITY 'FORWARD-PARAGRAPH))
-		   (#/L
-		    (SETQ MODE-NAME "Line"
-			  QUANTITY 'FORWARD-LINE))
-		   (#/-
-		    (SETQ MODE-NAME "S-Expression"
-			  QUANTITY 'FORWARD-SEXP))
-		   ((#/( #/))
-		    (SETQ MODE-NAME "List"
-			  QUANTITY 'FORWARD-LIST))
-		   (#/D
-		    (SETQ MODE-NAME "Defun"
-			  QUANTITY 'FORWARD-DEFUN))
-		   (#\FF
-		    (SETQ MODE-NAME "Page"
-			  QUANTITY 'FORWARD-PAGE))
-		   (#/H
-		    (SETQ MODE-NAME "Buffer"
-			  QUANTITY 'FORWARD-BUFFER))
-		   (OTHERWISE
-		    (BARF "Invalid quantity type")))
-		  (TYPEIN-LINE-MORE "~A~P" MODE-NAME *NUMERIC-ARG*)
-		  )
-	       (COND ((EQ MODE 'QUANTITY-MODE-SET)
-		      (QUANTITY-MODE-SET QUANTITY MODE-NAME)
-		      DIS-NONE)
-		     (T
-		      (LET ((*QUANTITY-MODE* QUANTITY))
-			   (FUNCALL MODE)))))))))
+		      (GO GET-A-QUANTITY))
+		     (#/C
+		      (SETQ MODE-NAME "Character"
+			    QUANTITY 'FORWARD-CHAR))
+		     (#/W
+		      (SETQ MODE-NAME "Word"
+			    QUANTITY 'FORWARD-WORD))
+		     (#/A
+		      (SETQ MODE-NAME "Atom"
+			    QUANTITY 'FORWARD-ATOM))
+		     (#/S
+		      (SETQ MODE-NAME "Sentence"
+			    QUANTITY 'FORWARD-SENTENCE))
+		     (#/P
+		      (SETQ MODE-NAME "Paragraph"
+			    QUANTITY 'FORWARD-PARAGRAPH))
+		     (#/L
+		      (SETQ MODE-NAME "Line"
+			    QUANTITY 'FORWARD-LINE))
+		     (#/-
+		      (SETQ MODE-NAME "S-Expression"
+			    QUANTITY 'FORWARD-SEXP))
+		     ((#/( #/))
+		      (SETQ MODE-NAME "List"
+			    QUANTITY 'FORWARD-LIST))
+		     (#/D
+		      (SETQ MODE-NAME "Defun"
+			    QUANTITY 'FORWARD-DEFUN))
+		     (#\FF
+		      (SETQ MODE-NAME "Page"
+			    QUANTITY 'FORWARD-PAGE))
+		     (#/H
+		      (SETQ MODE-NAME "Buffer"
+			    QUANTITY 'FORWARD-BUFFER))
+		     (OTHERWISE
+		      (BARF "Invalid quantity type")))
+		   (TYPEIN-LINE-MORE "~A~P" MODE-NAME *NUMERIC-ARG*)
+		   )
+	     (COND ((EQ MODE 'QUANTITY-MODE-SET)
+		    (QUANTITY-MODE-SET QUANTITY MODE-NAME)
+		    (RETURN-FROM KLUDGE DIS-NONE))
+		   (T
+		    (LET ((*QUANTITY-MODE* QUANTITY))
+		      (RETURN-FROM KLUDGE (FUNCALL MODE))))))))))
 
 (DEFCOM COM-QUANTITY-FORWARD "Move forward according to the current quantity mode." (KM)
-    (MOVE-BP (POINT) (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF)))
-    DIS-BPS)
+  (MOVE-BP (POINT) (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF)))
+  DIS-BPS)
 
 (DEFCOM COM-QUANTITY-BACKWARD "Move backward according to the current quantity mode." (KM)
-    (MOVE-BP (POINT) (OR (FUNCALL *QUANTITY-MODE* (POINT) (- *NUMERIC-ARG*)) (BARF)))
-    DIS-BPS)
+  (MOVE-BP (POINT) (OR (FUNCALL *QUANTITY-MODE* (POINT) (- *NUMERIC-ARG*)) (BARF)))
+  DIS-BPS)
 
 (DEFCOM COM-QUANTITY-DELETE "Kill forward according to the current quantity mode." ()
-    (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
-    (KILL-INTERVAL (POINT)
-		   (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*)
-		       (BARF))
-		   NIL
-		   T)
-    DIS-TEXT)
+  (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
+  (KILL-INTERVAL (POINT)
+		 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*)
+		     (BARF))
+		 NIL
+		 T)
+  DIS-TEXT)
 
 (DEFCOM COM-QUANTITY-RUBOUT "Kill backward according to the current quantity mode." ()
-    (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
-    (KILL-INTERVAL (POINT)
-		   (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*)
-		       (BARF))
-		   NIL
-		   NIL)
-    DIS-TEXT)
+  (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
+  (KILL-INTERVAL (POINT)
+		 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*)
+		     (BARF))
+		 NIL
+		 NIL)
+  DIS-TEXT)
 
 (DEFCOM COM-QUANTITY-TWIDDLE "Exchange things according to the current quantity mode." ()
   (EXCHANGE-SUBR *QUANTITY-MODE* *NUMERIC-ARG*)
@@ -196,77 +238,77 @@ S-expression, ( or ) list, D defun, Form page, H buffer~%")
   DIS-BPS)
 
 (DEFCOM COM-QUANTITY-UPPERCASE "Uppercase according to the current quantity mode." ()
-   (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
-     (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
-       (UNDO-SAVE BP1 BP2 NIL "Upcase")
-       (UPCASE-INTERVAL BP1 BP2)
-       (AND (PLUSP *NUMERIC-ARG*) (MOVE-BP (POINT) BP1))))
-   DIS-TEXT)
+  (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
+    (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
+      (UNDO-SAVE BP1 BP2 NIL "Upcase")
+      (UPCASE-INTERVAL BP1 BP2)
+      (AND (PLUSP *NUMERIC-ARG*) (MOVE-BP (POINT) BP1))))
+  DIS-TEXT)
 
 (DEFCOM COM-QUANTITY-LOWERCASE "Lowercase according to the current quantity mode." ()
-   (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
-     (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
-       (UNDO-SAVE BP1 BP2 NIL "Downcase")
-       (DOWNCASE-INTERVAL BP1 BP2)
-       (AND (PLUSP *NUMERIC-ARG*) (MOVE-BP (POINT) BP1))))
-   DIS-TEXT)
+  (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
+    (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
+      (UNDO-SAVE BP1 BP2 NIL "Downcase")
+      (DOWNCASE-INTERVAL BP1 BP2)
+      (AND (PLUSP *NUMERIC-ARG*) (MOVE-BP (POINT) BP1))))
+  DIS-TEXT)
 
 (DEFCOM COM-QUANTITY-SAVE "Save on kill ring according to the current quantity mode." ()
-   (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
-     (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
-       (KILL-RING-PUSH (COPY-INTERVAL BP1 BP2))
-       (MOVE-BP (POINT) BP1)))
-   DIS-TEXT)
+  (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
+    (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
+      (KILL-RING-PUSH (COPY-INTERVAL BP1 BP2))
+      (MOVE-BP (POINT) BP1)))
+  DIS-TEXT)
 
 (DEFCOM COM-QUANTITY-COPY "Insert a copy according to the current quantity mode." ()
-   (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
-     (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
-       (MOVE-BP (POINT)
-		(INSERT-INTERVAL BP2 (COPY-INTERVAL BP1 BP2)))))
-   DIS-TEXT)
+  (LET ((BP1 (OR (FUNCALL *QUANTITY-MODE* (POINT) *NUMERIC-ARG*) (BARF))))
+    (LET ((BP2 (OR (FUNCALL *QUANTITY-MODE* BP1 (- *NUMERIC-ARG*)) (BARF))))
+      (MOVE-BP (POINT)
+	       (INSERT-INTERVAL BP2 (COPY-INTERVAL BP1 BP2)))))
+  DIS-TEXT)
 
 (DEFUN QUANTITY-MODE-SET (QUANTITY MODE-NAME)
-    (SETQ *QUANTITY-MODE* QUANTITY)
-    (COND ((NULL *QUANTITY-MODE-SAVE*)
-	   (SETQ *QUANTITY-MODE-SAVE* (MAKE-ARRAY NIL 'ART-Q 5))
-	   (ASET (COMMAND-LOOKUP 506 *COMTAB*) *QUANTITY-MODE-SAVE* 0)
-	   (ASET (COMMAND-LOOKUP 502 *COMTAB*) *QUANTITY-MODE-SAVE* 1)
-	   (ASET (COMMAND-LOOKUP 504 *COMTAB*) *QUANTITY-MODE-SAVE* 2)
-	   (ASET (COMMAND-LOOKUP 207 *COMTAB*) *QUANTITY-MODE-SAVE* 3)
-	   (ASET (COMMAND-LOOKUP 524 *COMTAB*) *QUANTITY-MODE-SAVE* 4)))
-    (COND ((EQ QUANTITY 'FORWARD-CHAR)
-	   (SETQ *MODE-QUANTITY-NAME* NIL)
-	   (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 0) 506 *COMTAB*)
-	   (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 1) 502 *COMTAB*)
-	   (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 2) 504 *COMTAB*)
-	   (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 3) 207 *COMTAB*)
-	   (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 4) 524 *COMTAB*))
-	  (T
-	   (SETQ *MODE-QUANTITY-NAME* MODE-NAME)
-	   (COMMAND-STORE 'COM-QUANTITY-FORWARD 506 *COMTAB*)
-	   (COMMAND-STORE 'COM-QUANTITY-BACKWARD 502 *COMTAB*)
-	   (COMMAND-STORE 'COM-QUANTITY-DELETE 504 *COMTAB*)
-	   (COMMAND-STORE 'COM-QUANTITY-RUBOUT 207 *COMTAB*)
-	   (COMMAND-STORE 'COM-QUANTITY-TWIDDLE 524 *COMTAB*))))
+  (SETQ *QUANTITY-MODE* QUANTITY)
+  (COND ((NULL *QUANTITY-MODE-SAVE*)
+	 (SETQ *QUANTITY-MODE-SAVE* (MAKE-ARRAY NIL 'ART-Q 5))
+	 (ASET (COMMAND-LOOKUP 506 *COMTAB*) *QUANTITY-MODE-SAVE* 0)
+	 (ASET (COMMAND-LOOKUP 502 *COMTAB*) *QUANTITY-MODE-SAVE* 1)
+	 (ASET (COMMAND-LOOKUP 504 *COMTAB*) *QUANTITY-MODE-SAVE* 2)
+	 (ASET (COMMAND-LOOKUP 207 *COMTAB*) *QUANTITY-MODE-SAVE* 3)
+	 (ASET (COMMAND-LOOKUP 524 *COMTAB*) *QUANTITY-MODE-SAVE* 4)))
+  (COND ((EQ QUANTITY 'FORWARD-CHAR)
+	 (SETQ *MODE-QUANTITY-NAME* NIL)
+	 (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 0) 506 *COMTAB*)
+	 (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 1) 502 *COMTAB*)
+	 (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 2) 504 *COMTAB*)
+	 (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 3) 207 *COMTAB*)
+	 (COMMAND-STORE (AREF *QUANTITY-MODE-SAVE* 4) 524 *COMTAB*))
+	(T
+	 (SETQ *MODE-QUANTITY-NAME* MODE-NAME)
+	 (COMMAND-STORE 'COM-QUANTITY-FORWARD 506 *COMTAB*)
+	 (COMMAND-STORE 'COM-QUANTITY-BACKWARD 502 *COMTAB*)
+	 (COMMAND-STORE 'COM-QUANTITY-DELETE 504 *COMTAB*)
+	 (COMMAND-STORE 'COM-QUANTITY-RUBOUT 207 *COMTAB*)
+	 (COMMAND-STORE 'COM-QUANTITY-TWIDDLE 524 *COMTAB*))))
 
 (DEFCOM COM-PREVIOUS-PAGE "Move to the previous page" (KM)
-    (MOVE-BP (POINT) (FORWARD-PAGE (POINT) (MINUS *NUMERIC-ARG*) T))
-    DIS-BPS)
+  (MOVE-BP (POINT) (FORWARD-PAGE (POINT) (MINUS *NUMERIC-ARG*) T))
+  DIS-BPS)
 
 (DEFCOM COM-NEXT-PAGE "Move to the next page" (KM)
-    (MOVE-BP (POINT) (FORWARD-PAGE (POINT) *NUMERIC-ARG* T))
-    DIS-BPS)
+  (MOVE-BP (POINT) (FORWARD-PAGE (POINT) *NUMERIC-ARG* T))
+  DIS-BPS)
 
 (DEFCOM COM-MARK-WHOLE "Put mark at beginning of buffer and point end,
 or with a numeric argument, vice versa" (SM)
-    (LET ((BP1 (POINT)) (BP2 (MARK)))
-     (AND *NUMERIC-ARG-P* (PSETQ BP1 BP2 BP2 BP1))
-     (MOVE-BP BP1 (INTERVAL-LAST-BP *INTERVAL*))
-     (MOVE-BP BP2 (INTERVAL-FIRST-BP *INTERVAL*)))
-    DIS-BPS)
+  (LET ((BP1 (POINT)) (BP2 (MARK)))
+    (AND *NUMERIC-ARG-P* (PSETQ BP1 BP2 BP2 BP1))
+    (MOVE-BP BP1 (INTERVAL-LAST-BP *INTERVAL*))
+    (MOVE-BP BP2 (INTERVAL-FIRST-BP *INTERVAL*)))
+  DIS-BPS)
 
 (DEFCOM COM-MARK-DEFUN "Put point and mark around current defun." ()
-  (LET ((INT (DEFUN-INTERVAL (POINT) *NUMERIC-ARG* NIL T T))) ;including previous blank line
+  (LET ((INT (DEFUN-INTERVAL (POINT) *NUMERIC-ARG* NIL T T)))	;including previous blank line
     (OR INT (BARF))
     (SETF (WINDOW-MARK-P *WINDOW*) T)
     (SETQ *MARK-STAYS* T)
@@ -300,37 +342,51 @@ the current position still visible." (KM)
 		 ((BP-< START-BP (SETQ TOP-BP (MULTIPLE-VALUE-BIND (LINE INDEX)
 						  (PUT-POINT-AT-PLINE SHEET (BP-LINE POINT)
 						     (BP-INDEX POINT) (1- N-PLINES)
-						     START-BP
+						     (INTERVAL-FIRST-BP *INTERVAL*)
 						     (INTERVAL-LAST-BP *INTERVAL*))
 						(CREATE-BP LINE INDEX))))
 		  ;; If displaying from the start of the defun would push point off
 		  ;; the bottom, complain, and bring in as much as possible anyway.
 		  (BEEP))
 		 (T
+		  (AND (BP-= (WINDOW-START-BP *WINDOW*) START-BP)
+		       (SETQ START-BP (INTERVAL-FIRST-BP (DEFUN-INTERVAL (POINT) 1 T NIL))))
 		  (SETQ TOP-BP START-BP)))
 	   (RECENTER-WINDOW *WINDOW* ':START TOP-BP))
 	  (T (BARF "no defun here")))
     DIS-NONE))
 
 (DEFCOM COM-UPCASE-DIGIT "Up-shift the previous digit on this or the previous line." ()
-    (LET ((BP (COPY-BP (POINT))))
-     (RCHARMAP (BP (BEG-LINE (POINT) -1 T) NIL)
+  (LET ((BP (COPY-BP (POINT))))
+    (RCHARMAP (BP (BEG-LINE (POINT) -1 T) NIL)
       (COND ((MEMQ (RCHARMAP-CH-CHAR) '(#/0 #/1 #/2 #/3 #/4 #/5 #/6 #/7 #/8 #/9))
-	     (RCHARMAP-SET-CHAR (LOGXOR (RCHARMAP-CHAR) 20))
+	     (RCHARMAP-SET-CHAR (LET* ((CHAR (RCHARMAP-CHAR))
+				       (FONT (LDB %%CH-FONT CHAR))
+				       (CH-CHAR (LDB %%CH-CHAR CHAR)))
+				  (DPB FONT %%CH-FONT (SHIFT-CHARACTER CH-CHAR)))) 
 	     (RCHARMAP-RETURN NIL)))))
-    DIS-TEXT)
+  DIS-TEXT)
+
+(DEFUN SHIFT-CHARACTER (CHAR)
+  (IF ( (LDB 0003 (%UNIBUS-READ 764102)) 1)	;Last character new keyboard?
+      (DOTIMES (I 100)
+	(AND (= CHAR (AREF SI:KBD-TRANSLATE-TABLE 0 I))
+	     (RETURN (AREF SI:KBD-TRANSLATE-TABLE 1 I))))
+      (DOTIMES (I 200)
+	(AND (= CHAR (AREF SI:KBD-NEW-TABLE 0 I))
+	     (RETURN (AREF SI:KBD-NEW-TABLE 1 I))))))
 
 (LOCAL-DECLARE ((SPECIAL STREAM ARRAY UNRCHF OPS))
 (DEFUN MAKE-RECORDING-STREAM (STREAM LENGTH &AUX ARRAY UNRCHF OPS)
-    (SETQ ARRAY (MAKE-ARRAY NIL 'ART-Q LENGTH NIL '(0 0)))
-    (STORE-ARRAY-LEADER LENGTH ARRAY 0)
-    (SETQ OPS (APPEND (FUNCALL STREAM ':WHICH-OPERATIONS) NIL))
-    (MAPC (FUNCTION (LAMBDA (X) (SETQ OPS (DELQ X OPS))))
-	  '(:TYI :UNTYI :PLAYBACK :RECORD       ; Operations I want.
-	    :LINE-IN))                          ; Operations for default handler.
-    (SETQ OPS `(:TYI :UNTYI :PLAYBACK :RECORD . ,OPS))
-    (CLOSURE '(STREAM ARRAY UNRCHF OPS)
-	     #'RECORDING-STREAM))
+  (SETQ ARRAY (MAKE-ARRAY NIL 'ART-Q LENGTH NIL '(0 0)))
+  (STORE-ARRAY-LEADER LENGTH ARRAY 0)
+  (SETQ OPS (APPEND (FUNCALL STREAM ':WHICH-OPERATIONS) NIL))
+  (MAPC (FUNCTION (LAMBDA (X) (SETQ OPS (DELQ X OPS))))
+	'(:TYI :UNTYI :PLAYBACK :RECORD		; Operations I want.
+	       :LINE-IN))			; Operations for default handler.
+  (SETQ OPS `(:TYI :UNTYI :PLAYBACK :RECORD . ,OPS))
+  (CLOSURE '(STREAM ARRAY UNRCHF OPS)
+	   #'RECORDING-STREAM))
 
 (DEFSELECT (RECORDING-STREAM RECORDING-STREAM-DEFAULT-HANDLER T)
   ((:TYI :ANY-TYI :MOUSE-OR-KBD-TYI
@@ -340,7 +396,7 @@ the current position still visible." (KM)
 	 (T (MULTIPLE-VALUE-BIND (CHAR TEM)
 		(FUNCALL STREAM SI:**DEFSELECT-OP**)
 	      (RECORDING-STREAM ':RECORD CHAR)
-	      (MVRETURN CHAR TEM)))))
+	      (VALUES CHAR TEM)))))
   (:LISTEN ()
    (OR UNRCHF (FUNCALL STREAM ':LISTEN)))
   (:WHICH-OPERATIONS ()
@@ -349,10 +405,10 @@ the current position still visible." (KM)
    (SETQ UNRCHF CH))
   (:RECORD (CH)
    (LET ((PTR (ARRAY-LEADER ARRAY 1)))
-	(COND ((NUMBERP CH)
-	       (SETQ PTR (\ (1+ PTR) (ARRAY-LEADER ARRAY 0)))
-	       (STORE-ARRAY-LEADER PTR ARRAY 1)
-	       (ASET CH ARRAY PTR)))))
+     (COND ((NUMBERP CH)
+	    (SETQ PTR (\ (1+ PTR) (ARRAY-LEADER ARRAY 0)))
+	    (STORE-ARRAY-LEADER PTR ARRAY 1)
+	    (ASET CH ARRAY PTR)))))
   (:PLAYBACK ()
    ARRAY))
 
@@ -383,6 +439,12 @@ Prints out descriptions of the last sixty characters typed on the keyboard." (KM
 (DEFCOM COM-QUIT "Return from the top-level edit" ()
   (*THROW 'EXIT-TOP-LEVEL NIL))
 
+(DEFCOM COM-ABORT-AT-TOP-LEVEL
+	"Noop.  Notifys user that you are at top level and can't abort"
+	()
+  (BARF "Already at top level.")
+  DIS-NONE)
+
 (DEFVAR *INSIDE-BREAK* NIL)
 (DEFCOM COM-BREAK "Enter a lisp break loop" ()
   (UNWIND-PROTECT
@@ -403,20 +465,21 @@ Prints out descriptions of the last sixty characters typed on the keyboard." (KM
 ;that you are using only one fixed width font.
 
 (DEFUN INITIALIZE-TAB-STOP-BUFFER ()
-    (SETQ *TAB-STOP-BUFFER* (CREATE-INTERVAL NIL NIL T))
-    (INSERT (INTERVAL-FIRST-BP *TAB-STOP-BUFFER*)
-	      "                                                                                          
+  (SETQ *TAB-STOP-BUFFER* (CREATE-INTERVAL NIL NIL T))
+  (INSERT (INTERVAL-FIRST-BP *TAB-STOP-BUFFER*)
+	  "                                                                                          
         :       :       :       :       :       :       :       :       :       :       :       :")
-    NIL)
+  NIL)
 
 (DEFCOM COM-EDIT-TAB-STOPS "Edit the tab-stop buffer." ()
-    (RECURSIVE-EDIT *TAB-STOP-BUFFER* "Edit tab stops")
-    DIS-ALL)
+  (RECURSIVE-EDIT *TAB-STOP-BUFFER* "Edit tab stops")
+  DIS-ALL)
 
 (DEFCOM COM-TAB-TO-TAB-STOP "Tab to fixed column as specified by the tab-stop buffer." ()
-  (LET ((GOAL (BP-VIRTUAL-INDENTATION (POINT)))
-	(L2 (LINE-NEXT (BP-LINE (INTERVAL-FIRST-BP *TAB-STOP-BUFFER*))))
-	(CHAR-POS))
+  (LET* ((POINT (POINT))
+	 (GOAL (BP-VIRTUAL-INDENTATION POINT))
+	 (L2 (LINE-NEXT (BP-LINE (INTERVAL-FIRST-BP *TAB-STOP-BUFFER*))))
+	 (CHAR-POS))
     (MULTIPLE-VALUE (NIL CHAR-POS)
       (TV:SHEET-STRING-LENGTH (WINDOW-SHEET *WINDOW*) L2 0 NIL GOAL))
     (AND CHAR-POS
@@ -429,9 +492,10 @@ Prints out descriptions of the last sixty characters typed on the keyboard." (KM
 				     (INSERT (END-LINE BP -1) "        ")
 				     (SETQ I (1- I))
 				     CP)))))
-	 (IF (CHAR-EQUAL (AREF L2 GOAL) #/:)
-	     (INDENT-TO (POINT) (BP-VIRTUAL-INDENTATION (CREATE-BP L2 GOAL)))
-	     (INSERT-MOVING (POINT) (NSUBSTRING (LINE-PREVIOUS L2) CHAR-POS GOAL)))))
+	 (IF (NOT (CHAR-EQUAL (AREF L2 GOAL) #/:))
+	     (INSERT-MOVING POINT (NSUBSTRING (LINE-PREVIOUS L2) CHAR-POS GOAL))
+	     (DELETE-AROUND *BLANKS* POINT)
+	     (INDENT-TO POINT (BP-VIRTUAL-INDENTATION (CREATE-BP L2 GOAL))))))
   DIS-TEXT)
 
 (DEFCOM COM-COMPILE-AND-EXIT "Compile the buffer and return from top-level" ()
@@ -449,31 +513,31 @@ Prints out descriptions of the last sixty characters typed on the keyboard." (KM
 (DEFCOM COM-GRIND-DEFINITION "Grind the definition of a function into the buffer.
 Reads the name of the function from the mini-buffer and inserts its ground definition
 at point." ()
-    (LET ((SYMBOL (TYPEIN-LINE-READ "Name of function:")))
-      (SI:GRIND-1 SYMBOL 90. (INTERVAL-STREAM (POINT) (POINT) T) T))
-    DIS-TEXT)
+  (LET ((SYMBOL (TYPEIN-LINE-READ "Name of function:")))
+    (SI:GRIND-1 SYMBOL 90. (INTERVAL-STREAM-INTO-BP (POINT)) T))
+  DIS-TEXT)
 
 (DEFCOM COM-GRIND-S-EXPRESSION "Grind the evaluation of a form into the buffer.
 Reads a form from the mini-buffer, evals it and inserts the result, ground, at
 point." ()
-    (LET ((TEM (EVAL (TYPEIN-LINE-READ "Lisp form:"))))
-      (GRIND-INTO-BP (POINT) TEM))
-    DIS-TEXT)
+  (LET ((TEM (EVAL (TYPEIN-LINE-MULTI-LINE-READ "Lisp form: (end with END)"))))
+    (GRIND-INTO-BP (POINT) TEM))
+  DIS-TEXT)
 
 (DEFCOM COM-DOWN-INDENTED-LINE "Move to the next line and past any indentation." (KM)
-    (LET ((POINT (POINT)) (EOL))
-      (COND ((AND (NOT *NUMERIC-ARG-P*)
-		  (BP-= (SETQ EOL (END-LINE POINT))
-			(INTERVAL-LAST-BP *INTERVAL*)))
-	     (MOVE-BP POINT (INSERT-MOVING EOL #\CR))
-	     DIS-TEXT)
-	    (T
-	     (MOVE-BP POINT (FORWARD-OVER *BLANKS* (FORWARD-LINE POINT *NUMERIC-ARG* T)))
-	     DIS-BPS))))
+  (LET ((POINT (POINT)) (EOL))
+    (COND ((AND (NOT *NUMERIC-ARG-P*)
+		(BP-= (SETQ EOL (END-LINE POINT))
+		      (INTERVAL-LAST-BP *INTERVAL*)))
+	   (MOVE-BP POINT (INSERT-MOVING EOL #\CR))
+	   DIS-TEXT)
+	  (T
+	   (MOVE-BP POINT (FORWARD-OVER *BLANKS* (FORWARD-LINE POINT *NUMERIC-ARG* T)))
+	   DIS-BPS))))
 
 (DEFCOM COM-UP-INDENTED-LINE "Move to previous line and after any indentation." (KM)
-    (MOVE-BP (POINT) (FORWARD-OVER *BLANKS* (FORWARD-LINE (POINT) (- *NUMERIC-ARG*) T)))
-    DIS-BPS)
+  (MOVE-BP (POINT) (FORWARD-OVER *BLANKS* (FORWARD-LINE (POINT) (- *NUMERIC-ARG*) T)))
+  DIS-BPS)
 
 (DEFCOM COM-TEXT-JUSTIFIER-CHANGE-FONT-WORD "Puts the previous word in a different font (R).
 The font to change to is specified with a numeric argument.
@@ -483,8 +547,8 @@ A negative arg means move last font change back one word." ()
       (LET ((BP1 (OR (FORWARD-WORD (POINT) -1) (BARF)))	;Positive explicit arg,
 	    BP2)
 	(SETQ BP2 (FORWARD-WORD BP1 1 T))		;Surround previous word
-	(INSERT BP2 "*")
-	(INSERT-MOVING BP1 #/)
+	(MOVE-BP (POINT) (INSERT BP2 "*"))
+	(SETQ BP1 (INSERT BP1 #/))
 	(INSERT BP1 (+ *NUMERIC-ARG* #/0)))		;With indicated font change
       (MULTIPLE-VALUE-BIND (BP1 BP2 TYPE)
 	  (FIND-FONT-CHANGE (POINT) (INTERVAL-FIRST-BP *INTERVAL*) T)
@@ -495,11 +559,12 @@ A negative arg means move last font change back one word." ()
 	  (MULTIPLE-VALUE (BP4 BP5 NTYPE)
 	    (FIND-FONT-CHANGE BP3 BP1 NIL))		;If moving over another one
 	  (OR (MINUSP *NUMERIC-ARG*)
+	      (NULL NTYPE)
 	      (SETQ TYPE NTYPE))
 	  (OR (COND (BP4
 		     (DELETE-INTERVAL BP4 BP5 T)	;flush it
 		     (CHAR-EQUAL (AREF TYPE 1) #/*)))
-	      (INSERT BP3 TYPE)))))			;Put in one moved unless was *
+	      (MOVE-BP (POINT) (INSERT BP3 TYPE))))))	;Put in one moved unless was *
   DIS-TEXT)
 
 (DEFCOM COM-TEXT-JUSTIFIER-CHANGE-FONT-REGION "Puts the region in a different font (R).
@@ -532,7 +597,7 @@ A negative arg removes font changes in or next to region." ()
 	     (SETQ BP2 BP1
 		   BP1 (FORWARD-CHAR BP2 -2))
 	     (SETQ BP2 (FORWARD-CHAR BP1 2)))
-	 (MVRETURN BP1 BP2 (STRING-INTERVAL BP1 BP2 T)))))
+	 (VALUES BP1 BP2 (STRING-INTERVAL BP1 BP2 T)))))
 
 (DEFCOM COM-TEXT-JUSTIFIER-UNDERLINE-WORD " Puts underlines around the previous word (R).
 If there is an underline begin or end near that word, it is moved forward one word.
@@ -540,21 +605,22 @@ An argument specifies the number of words, and the direction: positive means for
 *TEXT-JUSTIFIER-UNDERLINE-BEGIN* is the character that begins underlines and
 *TEXT-JUSTIFIER-UNDERLINE-END* is the character that ends it." ()
   (LET ((LIST (LIST *TEXT-JUSTIFIER-UNDERLINE-BEGIN* *TEXT-JUSTIFIER-UNDERLINE-END*))
-	(BP (FORWARD-TO-WORD (POINT)))
+	(BP (FORWARD-TO-WORD (POINT) 1 T))
 	BP1 TYPE)
-    (SETQ BP1 (FORWARD-WORD (FORWARD-WORD BP1 -2 T)))
+    (SETQ BP1 (FORWARD-WORD (FORWARD-WORD BP -2 T)))
     (MULTIPLE-VALUE (BP TYPE)
-      (SEARCH-SET BP1 LIST T NIL BP))
+      (SEARCH-SET BP LIST T NIL BP1))
     (IF (NULL BP)
 	(LET ((ARG (IF *NUMERIC-ARG-P* *NUMERIC-ARG* -1)))
-	     (LET ((BP2 (OR (FORWARD-WORD BP1 ARG) (BARF))))
-	       (COND ((MINUSP ARG)
-		      (SETQ BP1 (FORWARD-WORD BP2 (- ARG)))
-		      (INSERT BP1 *TEXT-JUSTIFIER-UNDERLINE-END*)
-		      (INSERT BP2 *TEXT-JUSTIFIER-UNDERLINE-BEGIN*))
-		     (T
-		      (INSERT BP2 *TEXT-JUSTIFIER-UNDERLINE-END*)
-		      (INSERT BP1 *TEXT-JUSTIFIER-UNDERLINE-BEGIN*)))))
+	  (SETQ BP1 (POINT))
+	  (LET ((BP2 (OR (FORWARD-WORD BP1 ARG) (BARF))))
+	    (COND ((MINUSP ARG)
+		   (MOVE-BP BP1 (FORWARD-WORD BP2 (- ARG)))
+		   (INSERT-MOVING BP1 *TEXT-JUSTIFIER-UNDERLINE-END*)
+		   (INSERT BP2 *TEXT-JUSTIFIER-UNDERLINE-BEGIN*))
+		  (T
+		   (INSERT BP2 *TEXT-JUSTIFIER-UNDERLINE-END*)
+		   (INSERT BP1 *TEXT-JUSTIFIER-UNDERLINE-BEGIN*)))))
 	(DELETE-INTERVAL BP (FORWARD-CHAR BP) T)
 	(SETQ BP1 (IF (MINUSP *NUMERIC-ARG*)
 		      (FORWARD-WORD (FORWARD-WORD BP (1- *NUMERIC-ARG*) T))
@@ -567,7 +633,7 @@ An argument specifies the number of words, and the direction: positive means for
 	      (LET ((BP3 (IF (MINUSP *NUMERIC-ARG*)
 			     (FORWARD-WORD (FORWARD-WORD BP (1- *NUMERIC-ARG*)))
 			     (FORWARD-WORD BP *NUMERIC-ARG*))))
-		(INSERT BP3 TYPE))))))
+		(MOVE-BP (POINT) (INSERT BP3 TYPE)))))))
   DIS-TEXT)
 
 (DEFCOM COM-TEXT-JUSTIFIER-UNDERLINE-REGION "Puts underlines a la R around the region.
@@ -585,4 +651,19 @@ A negative argument removes underlines in or next to region.
 	    (DELETE-INTERVAL (FORWARD-CHAR BP -1) BP T))
 	  (INSERT BP2 *TEXT-JUSTIFIER-UNDERLINE-END*)
 	  (INSERT BP1 *TEXT-JUSTIFIER-UNDERLINE-BEGIN*))))
+  DIS-TEXT)
+
+(DEFCOM COM-COPY-FROM-PREVIOUS-LINE "Copy characters from the last non-blank line.
+Argument is the number of characters" ()
+  (LET* ((POINT (POINT))
+	 (BP (DO ((BP (BEG-LINE POINT -1) (BEG-LINE BP -1))
+		  (LIM (BP-LINE (INTERVAL-FIRST-BP *INTERVAL*)))
+		  (LINE)
+		  (IDX (BP-INDEX POINT)))
+		 ((EQ (SETQ LINE (BP-LINE BP)) LIM)
+		  (BARF))
+	       (AND (NOT (LINE-BLANK-P LINE))
+		    (> (LINE-LENGTH LINE) IDX)
+		    (RETURN (CREATE-BP LINE IDX))))))
+    (INSERT-INTERVAL-MOVING POINT (COPY-INTERVAL BP (FORWARD-CHAR BP *NUMERIC-ARG*))))
   DIS-TEXT)

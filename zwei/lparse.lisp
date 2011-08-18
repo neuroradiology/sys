@@ -22,9 +22,8 @@
 ;; LISP-FIND-COMMENT-START-AND-END which does that
 ;;   and also says where the comment starter ends.
 
-;; If this variable is T, LISP-PARSE-FROM-DEFUN assumes that the
+;; If *LISP-PARSE-PREPARSED-FLAG* is T, LISP-PARSE-FROM-DEFUN assumes that the
 ;; lines all already have memoized parsings which are consistent and accurate.
-(DEFVAR *LISP-PARSE-PREPARSED-FLAG*)
 
 ;; LISP-PARSE-LINE.
 ;; Scan a line, parsing as Lisp code to learn the information
@@ -102,8 +101,9 @@
 ;; Returns the proper START-IN-STRING for parsing LINE.
 (DEFUN LISP-PARSE-FROM-DEFUN (LINE &OPTIONAL DEFUN-BEG &AUX TEM)
   (COND (*LISP-PARSE-PREPARSED-FLAG*
-	  (SETQ TEM (GET (LOCF (LINE-CONTENTS-PLIST LINE)) 'LISP-PARSE-LINE))
-	  (AND (LISTP TEM) (CADDR TEM)))
+	  (AND (SETQ LINE (LINE-PREVIOUS LINE))
+	       (LISTP (SETQ TEM (GET (LOCF (LINE-CONTENTS-PLIST LINE)) 'LISP-PARSE-LINE)))
+	       (CADDDR TEM)))
 	(T
 	  (OR DEFUN-BEG (SETQ DEFUN-BEG (FORWARD-DEFUN (BEG-OF-LINE LINE) -1 T)))
 	  (DO ((LINE1 (BP-LINE DEFUN-BEG) (LINE-NEXT LINE1))
@@ -271,6 +271,8 @@
 		     (LIST-ALPHABETIC)
 		     (LIST-SLASH
 		      (CHARMAP-INCREMENT (IF FIXUP-P (COPY-BP LAST-BP) NIL)))
+		     (LIST-COLON
+		      (SETQ STATE 'NORMAL))
 		     (OTHERWISE
                       (IF ( LEVEL 0)
                           (IF ( (SETQ TIME (1+ TIME)) TIMES)
@@ -309,19 +311,22 @@
                                  (CHARMAP-RETURN (CHARMAP-BP-AFTER)))))
                       (SETQ STATE 'NORMAL))
 		     (LIST-OPEN
-		      (SETQ LEVEL (1+ LEVEL))))))))))
+		      (SETQ LEVEL (1+ LEVEL)))
+		     (LIST-COLON))))))))
          (T
 	  (LET ((STATE 'NORMAL)
                 (TIME 0)
 		NEW-LINE-FLAG
 		(FIRST-BP (OR STOP-BP (INTERVAL-FIRST-BP *INTERVAL*))))
-            (RCHARMAP-PER-LINE (BP FIRST-BP (IF (OR FIXUP-P
-						    (AND (OR (AND (EQ STATE 'ALPHABETIC) ( LEVEL 0))
-							     (AND (EQ STATE 'SKIP-LEADING-SINGLE-QUOTES)
-								  ( LEVEL 1)))
-							 (= (1- TIME) TIMES)))
-						(COPY-BP FIRST-BP)
-						NIL))
+            (RCHARMAP-PER-LINE (BP FIRST-BP
+				   (IF (OR FIXUP-P
+					   (AND (OR (AND (EQ STATE 'ALPHABETIC) ( LEVEL 0))
+						    (AND (EQ STATE
+							     'SKIP-LEADING-SINGLE-QUOTES)
+							 ( LEVEL 1)))
+						(= (1- TIME) TIMES)))
+				       (COPY-BP FIRST-BP)
+				       NIL))
 		     ;; Per-line forms.  Work like those for forward case.
 		     ((COND ((AND (NOT *FIRST-LINE-P*) (> LEVEL 0))
 			     (MULTIPLE-VALUE (LINE STRCH LEVEL)
@@ -355,7 +360,7 @@
                           (SELECT SYNTAX
                             (LIST-ALPHABETIC)
                             (LIST-SINGLE-QUOTE)
-                            (OTHERWISE
+			    (OTHERWISE
                              (IF ( LEVEL 0)
                                  (IF ( (SETQ TIME (1- TIME)) TIMES)
                                      (RCHARMAP-RETURN (RCHARMAP-BP-AFTER))))
@@ -390,7 +395,8 @@
 					  (COND (BACK-OVER-SINGLEQUOTES-P
 						 (BACKWARD-LEADING-SINGLE-QUOTES
 						   (RCHARMAP-BP-BEFORE) FIRST-BP))
-						(T (RCHARMAP-BP-BEFORE)))))))))))))))))))
+						(T (RCHARMAP-BP-BEFORE))))))))
+			    (LIST-COLON))))))))))))
 
 ;; After moving back past a sexp, move back past any singlequote-syntax chars
 ;; preceding the sexp.  We accept a BP to the beginning of the sexp,
@@ -424,6 +430,11 @@
 				    ;; If even # of slashes, the first singlequote counts.
 				    (T INDEX))))
 		     (T (RETURN INDEX))))))
+
+(DEFUN FORWARD-UP-LIST-OR-STRING (BP &OPTIONAL (TIMES 1) FIXUP-P (SINGLE-QUOTES-P T))
+  (IF (LISP-BP-SYNTACTIC-CONTEXT BP)
+      (FORWARD-UP-STRING BP (MINUSP TIMES))
+      (FORWARD-SEXP BP TIMES FIXUP-P 1 NIL SINGLE-QUOTES-P)))
 
 (DEFUN FORWARD-UP-STRING (BP ARG)
   (DO ((BP BP (SEARCH BP #/" ARG)))

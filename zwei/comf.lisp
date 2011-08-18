@@ -124,7 +124,9 @@ be for value, and to belong in the antecedent." ()
   (SETQ END-BP (FORWARD-SEXP BP))
   (DO ((BP (FORWARD-LIST BP 1 NIL -1 T) (FORWARD-SEXP BP))
        (I -1 (1+ I)))
-      ((BP-= BP END-BP) I)))
+      (NIL)
+    (AND (NULL BP) (RETURN NIL))
+    (AND (BP-= BP END-BP) (RETURN I))))
 
 ;;; This tries to find someplace that looks like it probably doesn't have enough parens
 ;;; It takes the first place that has a lesser indentation level than the given BP.
@@ -234,7 +236,7 @@ at the mark, else at point." ()
 	BP1 CH1 CH2 SYN1 SYN2)
     (SETQ BP (BACKWARD-OVER *BLANKS* BP)
 	  BP1 (FORWARD-OVER *BLANKS* BP)
-	  CH1 (BP-CH-CHAR (FORWARD-CHAR BP -1))
+	  CH1 (BP-CH-CHAR (OR (FORWARD-CHAR BP -1) (BARF)))
 	  CH2 (BP-CH-CHAR BP1)
 	  SYN1 (LIST-SYNTAX CH1)
 	  SYN2 (LIST-SYNTAX CH2))
@@ -264,7 +266,7 @@ at the mark, else at point." ()
   (LET ((BEG-BP (INTERVAL-FIRST-BP *INTERVAL*))
 	(END-BP (INTERVAL-LAST-BP *INTERVAL*))
 	(POINT (POINT))
-	(OLD-TICK (INTERVAL-TICK *INTERVAL*))
+	(OLD-TICK (NODE-TICK *INTERVAL*))
 	BEG-BP-1 END-BP-1 BP)
     (UNWIND-PROTECT
       (PROGN
@@ -289,252 +291,8 @@ at the mark, else at point." ()
       (COND (END-BP-1
 	     (DELETE-INTERVAL END-BP-1 END-BP T)
 	     (FLUSH-BP END-BP-1)))
-      (SETF (INTERVAL-TICK *INTERVAL*) OLD-TICK)))
+      (SETF (NODE-TICK *INTERVAL*) OLD-TICK)))
   DIS-BPS)
-
-(DEFCOM COM-DESCRIBE-CLASS "Describe the specified class." ()
-  (LET ((CLASS (COMPLETING-READ-FROM-MINI-BUFFER
-		 "Describe class:"
-		 (MAPCAR #'(LAMBDA (X)
-			     (SETQ X (<- X ':CLASS-SYMBOL))
-			     (CONS (FORMAT NIL "~S" X) X))
-			 (CONS OBJECT-CLASS (SI:ALL-SUBCLASSES-OF-CLASS OBJECT-CLASS)))
-		 NIL NIL "You are typing the name of a class, to be described.")))
-    (AND (ATOM CLASS) (BARF))
-    (DESCRIBE-CLASS-INTERNAL (CDR CLASS)))
-  DIS-NONE)
-
-(DEFUN DESCRIBE-CLASS-INTERNAL (CLASS)
-  (OR (AND (SYMBOLP CLASS) (BOUNDP CLASS)
-	   (ENTITYP (SETQ CLASS (SYMEVAL CLASS))))
-      (BARF "~S is not a class" CLASS))
-  (FORMAT *TYPEOUT-WINDOW* "~&Instance variables of ~A:~%"
-	  (SYMEVAL-IN-CLOSURE CLASS ':NAME))
-  (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST NIL (SYMEVAL-IN-CLOSURE CLASS 'SI:INSTANCE-PATTERN))
-  (DO ((SYM (SYMEVAL-IN-CLOSURE CLASS 'SI:CLASS-METHOD-SYMBOL))
-       (METHS NIL)
-       (CL)
-       (ML))
-      ((EQ SYM 'SI:UNCLAIMED-MESSAGE))
-    (SETQ CL (SYMEVAL SYM)
-	  ML (%MAKE-POINTER DTP-LIST (FSYMEVAL SYM)))
-    (FORMAT *TYPEOUT-WINDOW* "~2%Methods~:[ as a subclass~] of ~A:~%" (EQ CL CLASS)
-	    (SYMEVAL-IN-CLOSURE CL ':NAME))
-    (DO ((L ML (CDR L))
-	 (M)
-	 (LL NIL))
-	((NLISTP L)
-	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'FUNCTION-NAME (NREVERSE LL))
-	 (SETQ SYM L
-	       METHS (APPEND ML METHS))
-	 (RPLACD (LAST METHS) NIL))
-      (OR (ASSQ (CAR (SETQ M (CAR L))) METHS)
-	  (PUSH M LL))))
-  NIL)
-
-(DEFVAR *ALL-FLAVOR-NAMES-ALIST* NIL)
-(DEFVAR *LAST-ALL-FLAVOR-NAMES* NIL)
-
-(DEFCOM COM-DESCRIBE-FLAVOR "Describe the specified flavor." ()
-  (AND (NEQ *LAST-ALL-FLAVOR-NAMES* SI:*ALL-FLAVOR-NAMES*)
-       (SETQ *LAST-ALL-FLAVOR-NAMES* SI:*ALL-FLAVOR-NAMES*
-	     *ALL-FLAVOR-NAMES-ALIST* (MAPCAR #'(LAMBDA (X) (CONS (FORMAT NIL "~S" X) X))
-					      *LAST-ALL-FLAVOR-NAMES*)))
-  (LET ((FLAVOR (COMPLETING-READ-FROM-MINI-BUFFER
-		 "Describe flavor:"
-		 *ALL-FLAVOR-NAMES-ALIST*
-		 NIL NIL "You are typing the name of a flavor, to be described.")))
-    (AND (ATOM FLAVOR) (BARF))
-    (DESCRIBE-FLAVOR-INTERNAL (CDR FLAVOR)))
-  DIS-NONE)
-
-(DEFUN DESCRIBE-FLAVOR-INTERNAL (FLAVOR &AUX FL TEM)
-  (OR (SETQ FL (GET FLAVOR 'SI:FLAVOR))
-      (BARF "~S is not the name of a flavor" FLAVOR))
-  (COND ((SETQ TEM (SI:FLAVOR-DEPENDS-ON FL))
-	 (FORMAT *TYPEOUT-WINDOW* "~&Flavor ~S directly depends on flavor~P:~%"
-		 FLAVOR (LENGTH TEM))
-	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'FLAVOR-NAME TEM))
-	(T
-	 (FORMAT *TYPEOUT-WINDOW*
-		 "~&Flavor ~S does not directly depend on any other flavors~%"
-		 FLAVOR)))
-  (COND ((SETQ TEM (SI:FLAVOR-INCLUDES FL))
-	 (FORMAT *TYPEOUT-WINDOW* "~& and directly includes flavor~P:~%"
-		 (LENGTH TEM))
-	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'FLAVOR-NAME TEM)))
-  (COND ((SETQ TEM (SI:FLAVOR-DEPENDED-ON-BY FL))
-	 (FORMAT *TYPEOUT-WINDOW* "~& and is directly depended on by flavor~P:~%"
-		 (LENGTH TEM))
-	 (FUNCALL *TYPEOUT-WINDOW* ':ITEM-LIST 'FLAVOR-NAME TEM)))
-  (LOCAL-DECLARE ((SPECIAL LIV))		;For the REM-IF below
-    (LET ((LIV (SI:FLAVOR-LOCAL-INSTANCE-VARIABLES FL)))
-      (IF (NULL LIV)
-	  (FORMAT *TYPEOUT-WINDOW* "~&~S has no local instance variables~%" FLAVOR)
-	  (FORMAT *TYPEOUT-WINDOW* "~&Instance variable~P of ~S: ~{~S~^, ~}~%"
-		  (LENGTH LIV) FLAVOR LIV))
-      (AND (SETQ TEM (SI:FLAVOR-INSTANCE-SIZE FL))
-	   (FORMAT *TYPEOUT-WINDOW* "Flavor ~S has instance size ~D,
- with inherited instance variables: ~{~S~^, ~}~%"
-		   FLAVOR TEM
-		   (REM-IF #'(LAMBDA (X) (MEMQ X LIV))
-			   (SI:FLAVOR-ALL-INSTANCE-VARIABLES FL))))))
-  (SI:MAP-OVER-COMPONENT-FLAVORS 0 T NIL #'DESCRIBE-FLAVOR-1 FLAVOR (LIST NIL NIL) FLAVOR)
-  (DO ((PLIST (SI:FLAVOR-PLIST FL) (CDDR PLIST))
-       (FLAG NIL))
-      ((NULL PLIST))
-    (COND ((NOT (MEMQ (CAR PLIST) '(:DEFAULT-INIT-PLIST
-				     :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES)))
-	   (COND ((NOT FLAG)
-		  (FORMAT *TYPEOUT-WINDOW* "Random properties:~%")
-		  (SETQ FLAG T)))
-	   (FORMAT *TYPEOUT-WINDOW* "~5X~S:	~S~%" (CAR PLIST) (CADR PLIST)))))
-  NIL)
-
-(DEFUN DESCRIBE-FLAVOR-1 (FL STATE TOP-FLAVOR-NAME &AUX (FLAVOR-FLAG NIL))
-  (COND ((NOT (MEMQ FL (SECOND STATE)))
-	 (DO ((METHS (SI:FLAVOR-METHOD-TABLE FL) (CDR METHS))
-	      (METH)
-	      (ELEM)
-	      (MSG)
-	      (MSG-FLAG NIL NIL)
-	      (TEM))
-	     ((NULL METHS))
-	   (SETQ METH (CAR METHS) MSG (FIRST METH) METH (CDDDR METH))
-	   (OR (SETQ ELEM (ASSQ MSG (FIRST STATE)))
-	       (PUSH (SETQ ELEM (LIST MSG NIL NIL NIL NIL)) (FIRST STATE)))
-	   (COND ((AND (SETQ TEM (ASSQ ':BEFORE METH)) (NOT (MEMQ TEM (SECOND ELEM))))
-		  (MULTIPLE-VALUE (FLAVOR-FLAG MSG-FLAG)
-		    (DESCRIBE-FLAVOR-PRINT-MSG FL MSG (CADR TEM) "before"
-					       MSG-FLAG FLAVOR-FLAG TOP-FLAVOR-NAME))
-		  (PUSH TEM (SECOND ELEM))))
-	   (COND ((AND (SETQ TEM (ASSQ 'NIL METH)) (NULL (THIRD ELEM)))
-		  (MULTIPLE-VALUE (FLAVOR-FLAG MSG-FLAG)
-		    (DESCRIBE-FLAVOR-PRINT-MSG FL MSG (CADR TEM) "primary"
-					       MSG-FLAG FLAVOR-FLAG TOP-FLAVOR-NAME))
-		  (SETF (THIRD ELEM) TEM)))
-	   (COND ((AND (SETQ TEM (ASSQ ':AFTER METH)) (NOT (MEMQ TEM (FOURTH ELEM))))
-		  (MULTIPLE-VALUE (FLAVOR-FLAG MSG-FLAG)
-		    (DESCRIBE-FLAVOR-PRINT-MSG FL MSG (CADR TEM) "after"
-					       MSG-FLAG FLAVOR-FLAG TOP-FLAVOR-NAME))
-		  (PUSH TEM (FOURTH ELEM))))
-	   (COND ((AND (SETQ TEM (ASSQ ':WRAPPER METH)) (NOT (MEMQ TEM (FIFTH ELEM))))
-		  (MULTIPLE-VALUE (FLAVOR-FLAG MSG-FLAG)
-		    (DESCRIBE-FLAVOR-PRINT-MSG FL MSG (CADR TEM) "wrapper"
-					       MSG-FLAG FLAVOR-FLAG TOP-FLAVOR-NAME))
-		  (PUSH TEM (FIFTH ELEM))))
-	   (AND MSG-FLAG (TERPRI *TYPEOUT-WINDOW*)))
-	 (SETQ FLAVOR-FLAG (DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST
-			     FL (SI:FLAVOR-GETTABLE-INSTANCE-VARIABLES FL)
-			     "automatically-generated methods to get instance variable" ""
-			     FLAVOR-FLAG TOP-FLAVOR-NAME))
-	 (SETQ FLAVOR-FLAG (DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST
-			     FL (SI:FLAVOR-SETTABLE-INSTANCE-VARIABLES FL)
-			     "automatically-generated methods to set instance variable" ""
-			     FLAVOR-FLAG TOP-FLAVOR-NAME))
-	 (SETQ FLAVOR-FLAG (DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST
-			     FL (SI:FLAVOR-INITABLE-INSTANCE-VARIABLES FL)
-			     "instance variable" " that may be set by initialization"
-			     FLAVOR-FLAG TOP-FLAVOR-NAME))
-	 (SETQ FLAVOR-FLAG (DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST
-			     FL (SI:FLAVOR-INIT-KEYWORDS FL)
-			     "keyword" " in the :INIT message"
-			     FLAVOR-FLAG TOP-FLAVOR-NAME))
-	 (SETQ FLAVOR-FLAG (DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST
-			     FL (GET (LOCF (SI:FLAVOR-PLIST FL))
-				     ':OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES)
-			     "macros to access variable" ""
-			     FLAVOR-FLAG TOP-FLAVOR-NAME))
-	 (LET ((DEFAULT-PLIST (GET (LOCF (SI:FLAVOR-PLIST FL)) ':DEFAULT-INIT-PLIST)))
-	   (COND (DEFAULT-PLIST
-		  (DESCRIBE-FLAVOR-PRINT-FLAVOR-NAME FL FLAVOR-FLAG TOP-FLAVOR-NAME)
-		  (FORMAT *TYPEOUT-WINDOW* " Plus default init plist: ")
-		  (DO ((L DEFAULT-PLIST (CDDR L))
-		       (FLAG T NIL))
-		      ((NULL L))
-		    (FORMAT *TYPEOUT-WINDOW* "~:[, ~]~S ~S" FLAG (CAR L) (CADR L)))
-		  (TERPRI *TYPEOUT-WINDOW*))))
-	 (PUSH FL (SECOND STATE))))
-  STATE)
-
-(DEFUN DESCRIBE-FLAVOR-PRINT-FLAVOR-NAME (FL FLAG TOP-FLAVOR-NAME &AUX FLAVOR-NAME)
-  (COND ((NOT FLAG)				;If not already printed
-	 (SETQ FLAVOR-NAME (SI:FLAVOR-NAME FL))
-	 (FORMAT *TYPEOUT-WINDOW* "Method(s) ~:[inherited from~;of~] ~S:~%"
-		 (EQ FLAVOR-NAME TOP-FLAVOR-NAME) FLAVOR-NAME)))
-  T)						;New value of flag
-
-(DEFUN DESCRIBE-FLAVOR-PRINT-MSG (FL MSG FUNCTION TYPE MSG-FLAG FLAVOR-FLAG TOP-FLAVOR-NAME)
-  (DESCRIBE-FLAVOR-PRINT-FLAVOR-NAME FL FLAVOR-FLAG TOP-FLAVOR-NAME)
-  (OR MSG-FLAG (FORMAT *TYPEOUT-WINDOW* "   :~A " MSG))
-  (FUNCALL *TYPEOUT-WINDOW* ':ITEM 'FUNCTION-NAME FUNCTION TYPE)
-  (FUNCALL *TYPEOUT-WINDOW* ':TYO #\SP)
-  (MVRETURN T T))				;New values for the flags
-
-(DEFUN DESCRIBE-FLAVOR-PRINT-MISCELLANEOUS-LIST (FL LIST STR1 STR2 FLAG TOP-FLAVOR-NAME)
-  (COND (LIST					;If there is something there
-	 (DESCRIBE-FLAVOR-PRINT-FLAVOR-NAME FL FLAG TOP-FLAVOR-NAME)
-	 (FORMAT *TYPEOUT-WINDOW* " Plus ~A~P~A: ~{~:S~^, ~}~%" STR1 (LENGTH LIST) STR2 LIST)
-	 T)))					;New value of the flag
-
-(TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* FLAVOR-NAME "Edit" EDIT-DEFINITION T)
-
-
-(TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* FLAVOR-NAME "Describe"
-			  DESCRIBE-FLAVOR-INTERNAL)
-
-;;;Multics EMACS compatible macro commands
-(DEFCOM COM-START-KBD-MACRO "Begin defining a keyboard macro" ()
-  (OR (MEMQ ':MACRO-PUSH (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
-      (BARF "This stream doesnt support macros"))
-  (FUNCALL STANDARD-INPUT ':MACRO-PUSH (+ 2 *NUMERIC-ARG-N-DIGITS*))
-  DIS-NONE)
-
-(DEFCOM COM-END-KBD-MACRO "Terminate the definition of a keyboard macro" ()
-  (OR (MEMQ ':MACRO-POP (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
-      (BARF "This stream doesnt support macros"))
-  (*CATCH 'MACRO-LOOP				;In case no macro running
-     (FUNCALL STANDARD-INPUT ':MACRO-POP (+ 2 *NUMERIC-ARG-N-DIGITS*)
-	                                 (AND (NOT (ZEROP *NUMERIC-ARG*)) *NUMERIC-ARG*)))
-  DIS-NONE)
-
-(DEFCOM COM-CALL-LAST-KBD-MACRO "Repeat the last keyboard macro" ()
-  (OR (MEMQ ':MACRO-EXECUTE (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
-      (BARF "This stream doesnt support macros"))
-  (FUNCALL STANDARD-INPUT ':MACRO-EXECUTE NIL (AND (NOT (ZEROP *NUMERIC-ARG*)) *NUMERIC-ARG*))
-  DIS-NONE)
-
-(DEFCOM COM-KBD-MACRO-QUERY "Interactive keyboard macro" ()
-  (OR (MEMQ ':MACRO-QUERY (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
-      (BARF "This stream doesnt support macros"))
-  (FUNCALL STANDARD-INPUT ':MACRO-QUERY)
-  DIS-NONE)
-
-(DEFCOM COM-VIEW-KBD-MACRO "Typeout the specified keyboard macro.
-The macro should be a /"permanent/" macro, that has a name.
-The name of the macro is read from the mini-buffer, just cr means the last
-one defined, which can also be temporary." ()
-  (OR (MEMQ ':MACRO-PREVIOUS-ARRAY (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
-      (BARF "This stream does not support macros"))
-  (LET ((PACKAGE SI:PKG-USER-PACKAGE)
-	NAME MAC)
-    (SETQ NAME (TYPEIN-LINE-READ "Name of macro to view (CR for last macro defined):"))
-    (COND ((EQ NAME '*EOF*)
-	   (SETQ MAC (FUNCALL STANDARD-INPUT ':MACRO-PREVIOUS-ARRAY)))
-	  ((NOT (SETQ MAC (GET NAME 'MACRO-STREAM-MACRO)))
-	   (BARF "~A is not a defined macro." NAME)))
-    (DO ((I 0 (1+ I))
-	 (LEN (MACRO-LENGTH MAC))
-	 (CH))
-	((> I LEN))
-      (FORMAT T (SELECTQ (SETQ CH (AREF MAC I))
-		  (*MOUSE* "Mouse command ~*")
-		  (*SPACE* "Macro query ~*")
-		  (*RUN* "Repeat ~*")
-		  (NIL "Input ~*")
-		  (OTHERWISE "~:C "))
-	      CH)))
-  DIS-NONE)
 
 (DEFCOM COM-DECLARE-SPECIAL "Add the nth previous word to the last special declaration" ()
   (ATOM-WORD-SYNTAX-BIND
@@ -589,7 +347,7 @@ one defined, which can also be temporary." ()
 (DEFVAR *LAST-PATTERN-BP* NIL)
 (DEFVAR *LAST-PATTERN-RESTART-LIST*)
 
-(DEFCOM COM-FIND-PATTERN "Move to next occurence of the given pattern.
+(DEFCOM COM-FIND-PATTERN "Move to next occurrence of the given pattern.
 The pattern must be a list, ** matches any one thing, ... any number of things.
 A numeric argument repeats the last search." ()
   (LET (FORM RESTART BP)
@@ -672,7 +430,7 @@ A numeric argument repeats the last search." ()
 	   (COND (VAL
 		  (PUSH (CDR LIST) RESTART-LIST)
 		  (RETURN NIL))))))
-  (MVRETURN VAL RESTART-LIST))
+  (VALUES VAL RESTART-LIST))
 
 ;;; Simple minded pattern matcher
 ;;; ** matches an arbitrary frob, ... an arbitrary number (possibly 0) of frobs
@@ -695,12 +453,14 @@ A numeric argument repeats the last search." ()
 
 (DEFCOM COM-UNDO "Undo the last undoable command" ()
   (OR (BOUNDP '*UNDO-START-BP*) (BARF "Nothing to undo"))
-  (OR (EQ (BP-INTERVAL *UNDO-START-BP*) *INTERVAL*) (BARF "No longer in the same buffer"))
+  (OR (EQ (BP-TOP-LEVEL-NODE *UNDO-START-BP*)
+	  (BP-TOP-LEVEL-NODE (INTERVAL-FIRST-BP *INTERVAL*)))
+      (BARF "No longer in the same buffer"))
+  (TYPEIN-LINE "")
   (LET ((POINT (POINT)) (MARK (MARK))
 	(OLD *UNDO-OLD-INTERVAL*)
 	(NAME *UNDO-TYPE*))
-    (TYPEIN-LINE "Undo ~A? " NAME)
-    (COND ((TYPEIN-LINE-ACTIVATE (Y-OR-N-P NIL *TYPEIN-WINDOW*))
+    (COND ((FQUERY '(:SELECT T) "Undo ~A? " NAME)
 	   (MOVE-BP MARK *UNDO-START-BP*)
 	   (MOVE-BP POINT *UNDO-END-BP*)
 	   (UNDO-SAVE MARK POINT T "Undo")
@@ -708,3 +468,272 @@ A numeric argument repeats the last search." ()
 	   (INSERT-INTERVAL-MOVING POINT OLD)
 	   (TYPEIN-LINE "~A undone." NAME))))
   DIS-TEXT)
+
+(DEFCOM COM-EXECUTE-COMMAND-INTO-BUFFER "Direct typeout from a command into the buffer" ()
+  (LET* ((*TYPEOUT-WINDOW* (MAKE-INTERVAL-TYPEOUT-STREAM))
+	 (STANDARD-OUTPUT *TYPEOUT-WINDOW*))
+    (PROMPT-LINE "Key: ")
+    (PROCESS-COMMAND-CHAR (PROMPT-LINE-ACTIVATE (FUNCALL STANDARD-INPUT ':TYI)))
+    (MOVE-BP (MARK) (POINT))
+    (MOVE-BP (POINT) (FUNCALL *TYPEOUT-WINDOW* ':READ-BP))
+    (SETQ *CURRENT-COMMAND-TYPE* 'YANK))
+  DIS-TEXT)
+
+(DEFCOM COM-INSERT-DATE "Print the curent date into the buffer.
+Calls TIME:PRINT-CURRENT-TIME, or if given an argument TIME:PRINT-CURRENT-DATE" ()
+  (LET ((STREAM (INTERVAL-STREAM (POINT) (POINT) T)))
+    (FUNCALL (IF *NUMERIC-ARG-P* #'TIME:PRINT-CURRENT-DATE #'TIME:PRINT-CURRENT-TIME)
+	     STREAM)
+    (MOVE-BP (MARK) (POINT))
+    (MOVE-BP (POINT) (FUNCALL STREAM ':READ-BP)))
+  DIS-TEXT)
+
+(DEFCOM COM-COUNT-LINES-REGION "Print the number of lines in the region in the echo area." ()
+  (REGION (BP1 BP2)
+    (TYPEIN-LINE "~D line~:P.  " (1- (COUNT-LINES BP1 BP2 T))))
+  DIS-NONE)
+
+(DEFCOM COM-WHERE-AM-I "Print various things about where the point is.
+Print the X and Y positions, the octal code for the following character,
+the current line number and its percentage of the total file size.
+If there is a region, the number of lines in it is printed.
+Fast Where Am I prints a subset of this information faster." (KM)
+  (REDISPLAY *WINDOW* ':POINT NIL NIL T)
+  (LET ((POINT (POINT))
+	(FIRST-BP (INTERVAL-FIRST-BP *INTERVAL*))
+	(LAST-BP (INTERVAL-LAST-BP *INTERVAL*)))
+    (LET ((POINT-LINES (1- (COUNT-LINES FIRST-BP POINT)))
+	  (INTERVAL-LINES (1- (COUNT-LINES FIRST-BP LAST-BP)))
+	  (AT-END-P (BP-= (INTERVAL-LAST-BP *INTERVAL*) POINT))
+	  (BP-IND (BP-INDENTATION POINT))
+	  (SW (FONT-SPACE-WIDTH)))
+      (TYPEIN-LINE "X=[~D. chars|~D. pixels|~:[~S~;~D.~] columns] ~
+			Y=~D.~@[ Char=~O~] Line=~D.(~D%)"
+		   (BP-INDEX POINT)
+		   BP-IND
+		   (ZEROP (\ BP-IND SW))
+		   (IF (ZEROP (\ BP-IND SW))
+		       (// BP-IND SW)
+		       (// (FLOAT BP-IND) SW))
+		   (FIND-BP-IN-WINDOW *WINDOW* POINT)
+		   (AND (NOT AT-END-P) (BP-CHAR POINT))
+		   POINT-LINES
+		   (IF (ZEROP INTERVAL-LINES)
+		       0
+		       (// (* 100. POINT-LINES) INTERVAL-LINES)))))
+  (AND (WINDOW-MARK-P *WINDOW*)
+       (REGION (BP1 BP2)
+	 (TYPEIN-LINE-MORE ", Region has ~D line~:P.  " (1- (COUNT-LINES BP1 BP2 T)))))
+  DIS-NONE)
+
+(DEFCOM COM-FAST-WHERE-AM-I "Quickly print various things about where the point is.
+Print the X and Y positions, and the octal code for the following character.
+If there is a region, the number of lines in it is printed.
+Where Am I prints the same things and more." (KM)
+  (REDISPLAY *WINDOW* ':POINT NIL NIL T)
+  (LET ((POINT (POINT)))
+    (LET ((AT-END-P (BP-= (INTERVAL-LAST-BP *INTERVAL*) POINT))
+	  (BP-IND (BP-INDENTATION POINT))
+	  (SW (FONT-SPACE-WIDTH)))
+      (TYPEIN-LINE "X=[~D. chars|~D. pixels|~:[~S~;~D.~] columns] Y=~D.~@[ Char=~O~]"
+		   (BP-INDEX POINT)
+		   BP-IND
+		   (ZEROP (\ BP-IND SW))
+		   (IF (ZEROP (\ BP-IND SW))
+		       (// BP-IND SW)
+		       (// (FLOAT BP-IND) SW))
+		   (FIND-BP-IN-WINDOW *WINDOW* POINT)
+		   (AND (NOT AT-END-P) (BP-CHAR POINT)))))
+  (AND (WINDOW-MARK-P *WINDOW*)
+       (REGION (BP1 BP2)
+	 (TYPEIN-LINE-MORE ", Region has ~D line~:P.  " (1- (COUNT-LINES BP1 BP2 T)))))
+  DIS-NONE)
+
+(DEFCOM COM-ARGLIST "Print the argument list of the specified function.
+Reads the name of the function from the mini-buffer (the top of the kill
+ring has the /"current/" function from the buffer) and prints the arglist
+in the echo area." ()
+  (LET ((NAME (READ-FUNCTION-NAME "Arglist" (RELEVANT-FUNCTION-NAME (POINT)) T)))
+    (PRINT-ARGLIST NAME))
+  DIS-NONE)
+
+(DEFCOM COM-QUICK-ARGLIST "Print the argument list of the function to left of cursor." ()
+  (QUICK-ARGLIST)
+  DIS-NONE)
+
+(DEFUN QUICK-ARGLIST (&OPTIONAL (STREAM *TYPEIN-WINDOW*))
+  (IF *NUMERIC-ARG-P*
+      (LET ((NAME (READ-FUNCTION-NAME "Arglist" (RELEVANT-FUNCTION-NAME (POINT)) T)))
+	(PRINT-ARGLIST NAME STREAM))
+      (LET ((SYMBOL (RELEVANT-FUNCTION-NAME (POINT))))
+	(COND ((COND ((MEMQ SYMBOL '(FUNCALL FUNCALL-SELF <-))
+		      (SETQ SYMBOL (RELEVANT-METHOD-NAME (POINT)
+							 (IF (EQ SYMBOL 'FUNCALL-SELF) 1 2))))
+		     ((EQ SYMBOL 'DEFMETHOD)
+		      (LET ((METHOD-SYMBOL (RELEVANT-DEFMETHOD-METHOD-NAME (POINT))))
+			(COND (METHOD-SYMBOL
+			       (SETQ SYMBOL METHOD-SYMBOL)
+			       T)))))
+	       (MULTIPLE-VALUE-BIND (ARGLIST NAME RETLIST)
+		   (METHOD-ARGLIST SYMBOL)
+		 (COND ((EQ STREAM *TYPEIN-WINDOW*)
+			(TYPEIN-LINE "")
+			(FUNCALL STREAM ':TYPEOUT-STAYS)))
+		 (FORMAT STREAM "~S: ~:A~@[  ~:A~]"
+			 (OR NAME SYMBOL) ARGLIST RETLIST)))
+	      ((AND SYMBOL (FDEFINEDP SYMBOL))
+	       (PRINT-ARGLIST SYMBOL STREAM))
+	      ((BARF))))))	;Looked hard but couldn't find a defined function
+
+(DEFUN PRINT-ARGLIST (SYMBOL &OPTIONAL (STREAM *TYPEIN-WINDOW*))
+  (COND ((EQ STREAM *TYPEIN-WINDOW*)
+	 (TYPEIN-LINE "")
+	 (FUNCALL STREAM ':TYPEOUT-STAYS)))
+  (MULTIPLE-VALUE-BIND (ARGLIST RETURNS TYPE)
+      (ARGLIST SYMBOL)
+    (FORMAT STREAM "~S~@[ (~A)~]: " SYMBOL TYPE)
+    (IF (OR (LISTP ARGLIST) (NULL ARGLIST))
+	(PRINT-ARGLIST-INTERNAL ARGLIST STREAM)
+	(PRINC "??" STREAM))
+    (AND RETURNS (FORMAT STREAM "  ~:A" RETURNS))))
+
+;; This prints an arglist in a convenient form, ie:
+;; (si:first &special si:second &local &optional (si:third (quote si:default)))
+;; prints: (first &special si:second &local &optional (third 'si:default))
+(DEFUN PRINT-ARGLIST-INTERNAL (LIST STREAM &AUX SPECIAL)
+  (FUNCALL STREAM ':TYO #/()
+  (DO ((L LIST (CDR L)))
+      ((NULL L)
+       (FUNCALL STREAM ':TYO #/)))
+    (COND ((SYMBOLP L)
+	   (FUNCALL STREAM ':STRING-OUT ". ")
+	   (FUNCALL (IF SPECIAL #'PRIN1 #'PRINC) L STREAM)
+	   (FUNCALL STREAM ':TYO #/))
+	   (RETURN NIL)))
+    (SELECTQ (CAR L)
+      (&SPECIAL (SETQ SPECIAL T))
+      (&LOCAL (SETQ SPECIAL NIL)))
+    (COND ((OR (NLISTP (CAR L))			;If the element is a symbol
+	       (NLISTP (CDAR L))		;Or if it's not a list with exactly two elmts.
+	       (NOT (NULL (CDDAR L))))
+	   (FUNCALL (IF SPECIAL #'PRIN1 #'PRINC) (CAR L) STREAM))	;Just print it.
+	  (T ;; This is the special case of an element with a default.
+	     (FUNCALL STREAM ':TYO #/()
+	     (FUNCALL (IF SPECIAL #'PRIN1 #'PRINC) (CAAR L) STREAM)
+	     (FUNCALL STREAM ':TYO #\SP)
+	     ;; If the default is quoted, print it nicely.
+	     (COND ((AND (LISTP (CADAR L))
+			 (EQ (CAADAR L) 'QUOTE))
+		    (FUNCALL STREAM ':TYO #/')
+		    (PRIN1 (CADR (CADAR L)) STREAM))
+		   (T (PRIN1 (CADAR L) STREAM)))
+	     (FUNCALL STREAM ':TYO #/))))
+    (AND (CDR L) (FUNCALL STREAM ':TYO #\SP))))
+
+(DEFCOM COM-BRIEF-DOCUMENTATION "Print brief documentation for the specified function.
+Reads the name of the function from the mini-buffer (the default is
+the /"current/" function from the buffer) and prints the first
+line of its documentation in the echo area." ()
+    (LET ((NAME (READ-FUNCTION-NAME "Brief Document" (RELEVANT-FUNCTION-NAME (POINT)) T)))
+      (LET ((DOC (FUNCTION-DOCUMENTATION NAME)))
+	(COND ((NULL DOC) (TYPEIN-LINE "~S is not documented" NAME))
+	      (T (TYPEIN-LINE "~S: ~A" NAME
+			      (NSUBSTRING DOC 0 (STRING-SEARCH-CHAR #\CR DOC)))))))
+    DIS-NONE)
+
+(DEFCOM COM-LONG-DOCUMENTATION "Print long documentation for the specified function.
+Reads the name of the function from the mini-buffer (the default is
+the /"current/" function from the buffer) and displays the
+function's arguments and documentation" ()
+    (LET ((NAME (READ-FUNCTION-NAME "Document" (RELEVANT-FUNCTION-NAME (POINT)) T)))
+      (LET ((DOC (FUNCTION-DOCUMENTATION NAME)))
+	(COND ((NULL DOC) (TYPEIN-LINE "~S is not documented" NAME))
+	      (T (PRINT-ARGLIST NAME)
+		 (FORMAT T "~%~A" DOC)))))
+    DIS-NONE)
+
+(DEFCOM COM-DESCRIBE-VARIABLE-AT-POINT "Print information about variable at or before cursor.
+The information printed is whether it is declared special, whether it has a value,
+and whether it has documentation put on by DEFVAR.  If none of these are present,
+looks for lookalike symbols in other packages." ()
+  (LET* ((BP1 (FORWARD-ATOM (FORWARD-CHAR (POINT) 1 T) -1 T))
+	 (BP2 (FORWARD-ATOM BP1)))
+    (IF (NULL BP2) (BARF))
+    (MULTIPLE-VALUE-BIND (VAR ERROR)
+	(CATCH-ERROR (WITH-INPUT-FROM-STRING (S (BP-LINE BP1) (BP-INDEX BP1) (BP-INDEX BP2))
+		       (READ S)))
+      (IF (OR ERROR (NOT (SYMBOLP VAR))) (BARF))
+      (TYPEIN-LINE "")				;Clear the echo area
+      (COND ((NOT (DESCRIBE-VARIABLE-INTERNAL VAR))
+	     (TYPEIN-LINE "~S is not a declared variable." VAR)
+	     (MAPC #'DESCRIBE-VARIABLE-INTERNAL
+		   (PACKAGE-LOOKALIKE-SYMBOLS VAR SI:PKG-GLOBAL-PACKAGE
+					      '(SPECIAL COMPILER:SYSTEM-CONSTANT
+						:VALUE-DOCUMENTATION)))))
+      DIS-NONE)))
+
+(DEFUN DESCRIBE-VARIABLE-INTERNAL (VAR)
+  (LET ((DECL (GETL VAR '(SPECIAL COMPILER:SYSTEM-CONSTANT)))
+	(BOUND (BOUNDP VAR))
+	(DOC (GET VAR ':VALUE-DOCUMENTATION)))
+    (COND ((OR DECL BOUND DOC)
+	   (TYPEIN-LINE-MORE "~&~S has ~:[no~;a~] value" VAR BOUND)
+	   (IF (EQ (CAR DECL) 'SPECIAL)
+	       (TYPEIN-LINE-MORE " and is declared special ~:[by file ~A~]"
+				 (EQ (CADR DECL) T) (CADR DECL)))
+	   (IF (EQ (CAR DECL) 'COMPILER:SYSTEM-CONSTANT)
+	       (TYPEIN-LINE-MORE " and is a system-constant"))
+	   (IF DOC
+	       (TYPEIN-LINE-MORE "~%~A" DOC))
+	   T))))
+
+(DEFCOM COM-TRACE "Trace or untrace a function.
+Reads the name of the function from the mini-buffer (the top of the kill
+ring has the /"current/" function from the buffer) then pops up a menu
+of trace options.  With an argument, omits menu step" ()
+  (LET ((FCN (READ-FUNCTION-NAME "Trace" (RELEVANT-FUNCTION-NAME (POINT)) T)))
+    (IF (NOT *NUMERIC-ARG-P*)
+	(TV:TRACE-VIA-MENUS FCN)
+	(EVAL (IF (ATOM FCN) `(TRACE (,FCN)) `(TRACE (:FUNCTION ,FCN))))))
+  DIS-NONE)
+
+(DEFCOM COM-WHERE-IS-SYMBOL "Show which packages contain the specified symbol." ()
+  (MULTIPLE-VALUE-BIND (SYMBOL NAME)
+      (READ-FUNCTION-NAME "Where is symbol" NIL NIL T)
+    (WHERE-IS (OR NAME SYMBOL)))
+  DIS-NONE)
+
+(DEFCOM COM-COUNT-LINES-PAGE "Type number of lines on this page.
+Also add, in parentheses, the number of lines on the page
+before point, and the number of lines after point." ()
+   (LET ((POINT (POINT)))
+     (LET ((N1 (1- (COUNT-LINES (FORWARD-PAGE POINT -1 T) POINT)))
+	   (N2 (1- (COUNT-LINES POINT (FORWARD-PAGE POINT 1 T)))))
+       (TYPEIN-LINE "Page has ~D (~D + ~D) lines" (+ N1 N2) N1 N2)))
+   DIS-NONE)
+
+(TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* FUNCTION-NAME "Disassemble" DO-DISASSEMBLE
+			  NIL "Disassemble this function.")
+
+(DEFCOM COM-DISASSEMBLE "Disassemble the specified function." ()
+  (DO-DISASSEMBLE (READ-FUNCTION-NAME "Disassemble" (RELEVANT-FUNCTION-NAME (POINT)) T))
+  DIS-NONE)
+
+(DEFCOM COM-QUICK-DISASSEMBLE "Disassemble the function to the left of the cursor." ()
+  (IF *NUMERIC-ARG-P*
+      (DO-DISASSEMBLE (READ-FUNCTION-NAME "Disassemble" (RELEVANT-FUNCTION-NAME (POINT)) T))
+      (DO-DISASSEMBLE (RELEVANT-FUNCTION-NAME (POINT))))
+  DIS-NONE)
+
+(DEFUN DO-DISASSEMBLE (SYMBOL &AUX FSPEC)
+  (COND ((FDEFINEDP SYMBOL)
+	 (SETQ FSPEC (FDEFINITION (SI:UNENCAPSULATE-FUNCTION-SPEC SYMBOL)))
+	 (COND ((OR (= (%DATA-TYPE FSPEC) DTP-FEF-POINTER)
+		    (AND (LISTP FSPEC)
+			 (EQ (CAR FSPEC) 'MACRO)
+			 (= (%DATA-TYPE (CDR FSPEC)) DTP-FEF-POINTER)))
+		(FORMAT T "~&~S:" SYMBOL)
+		(DISASSEMBLE SYMBOL))
+	       ((BARF "Can't find FEF for ~S" SYMBOL))))
+	((BARF)))
+  NIL)

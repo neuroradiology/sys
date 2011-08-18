@@ -5,8 +5,7 @@
 ;;; with the right streams set up.  
 
 (DEFVAR *COM-DOCUMENTATION-ALIST*
-	'((#/B . COM-EDITOR-HELP)
-	  (#/C . COM-SELF-DOCUMENT)
+	'((#/C . COM-SELF-DOCUMENT)
 	  (#/L . COM-WHAT-LOSSAGE)
 	  (#/D . COM-DESCRIBE-COMMAND)
 	  (#/A . COM-APROPOS)
@@ -28,13 +27,16 @@ More advanced options:
        (*IN-COM-DOC-P* T)
        (*REPEAT-DOC-P* NIL))
       (NIL)
-    (TYPEIN-LINE " Doc A,B,C,D,L,U,V,W,<space>,?: ")
+    (TYPEIN-LINE " Doc A,C,D~:[~;,L~]~:[~;,U~],V,W,<space>,?: "
+		 (MEMQ ':PLAYBACK (FUNCALL STANDARD-INPUT ':WHICH-OPERATIONS))
+		 (BOUNDP '*UNDO-START-BP*))
     (TYPEIN-LINE-ACTIVATE
       (SETQ CHAR (DO ((CHAR (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI))
 			    (CHAR-UPCASE (FUNCALL STANDARD-INPUT ':TYI))))
-		     ((MEMQ CHAR '(#/A #/B #/C #/D #/L #/U #/V #/W #\SP #/?)) CHAR)
+		     ((MEMQ CHAR '(#/A #/C #/D #/L #/U #/V #/W #\SP #/?)) CHAR)
 		   (AND (= CHAR #/G) (BARF))
 		   (BEEP))))
+    (FUNCALL *TYPEIN-WINDOW* ':MAKE-COMPLETE)
     (COND ((= CHAR #\SP)
 	   (SETQ *REPEAT-DOC-P* T)
 	   (SETQ CHAR *COM-DOC-LAST-CHAR*))
@@ -45,16 +47,10 @@ More advanced options:
 	(LET ((FUNCTION (CDR (ASSQ CHAR *COM-DOCUMENTATION-ALIST*))))
 	  (AND FUNCTION (RETURN (FUNCALL FUNCTION)))))))
 
-;;; Show user the basic documentation file.
-(DEFUN COM-EDITOR-HELP ()
-  (TYPEIN-LINE "Basic ZWEI Documentation. ")
-  (VIEW-FILE "AI: ZWEI; BASIC ZWEI")
-  DIS-NONE)
-
 (DEFCOM COM-DOCUMENT-CONTAINING-COMMAND "Print documentation on the command that you
 are in the middle of." ()
-  (FORMAT T "~%You are typing in the mini-buffer.  The command in progress is~%~A:~%"
-	  (COMMAND-NAME *MINI-BUFFER-COMMAND-IN-PROGRESS*))
+  (FORMAT T "~%You are typing in the mini-buffer.~@[  The command in progress is~%~A:~]~%"
+	  (COMMAND-NAME *MINI-BUFFER-COMMAND-IN-PROGRESS* T))
   (PRINT-DOC ':FULL *MINI-BUFFER-COMMAND-IN-PROGRESS*)
   (FUNCALL STANDARD-OUTPUT ':FRESH-LINE)
   DIS-NONE)
@@ -97,7 +93,10 @@ are in the middle of." ()
       (WITHOUT-IO-BUFFER-OUTPUT-FUNCTION
 	(SETQ CHAR (FUNCALL *TYPEIN-WINDOW* ':MOUSE-OR-KBD-TYI))))
     (TYPEIN-LINE-MORE "~:@C" CHAR)
-    (DOCUMENT-KEY CHAR *COMTAB*))
+    (FUNCALL *MODE-LINE-WINDOW* ':DONE-WITH-MODE-LINE-WINDOW)
+    (LET ((TERMINAL-IO *TYPEOUT-WINDOW*)
+	  (STANDARD-OUTPUT SI:SYN-TERMINAL-IO))
+      (DOCUMENT-KEY CHAR *COMTAB*)))
   DIS-NONE)
 
 ;;; Document the character CHAR in the given COMTAB, in the typeout area.
@@ -136,15 +135,10 @@ Type a subcommand to document (or * for all):~%")
 	       (SETQ PREFIX CHAR
 		     CHAR (WITHOUT-IO-BUFFER-OUTPUT-FUNCTION
 			      (FUNCALL STANDARD-INPUT ':TYI)))
-	       (FORMAT T "~:@C" PREFIX)
+	       (FORMAT T "~%~:@C" PREFIX)
 	       (COND ((= CHAR #/*)
 		      (FORMAT T " has these subcommands:~%")
-		      (DOTIMES (I 4)
-			(DOTIMES (J 220)
-			  (PRINT-SHORT-DOC-FOR-TABLE
-			    (DPB I %%KBD-CONTROL-META J)
-			    (GET-PREFIX-COMMAND-COMTAB TEM)
-			    3))))
+		      (DOCUMENT-PREFIX-CHAR-TABLE (GET-PREFIX-COMMAND-COMTAB TEM)))
 		     (T
 		      (FORMAT T " ~:@C" CHAR)
 		      (SETQ COMTAB (GET-PREFIX-COMMAND-COMTAB TEM))
@@ -153,9 +147,16 @@ Type a subcommand to document (or * for all):~%")
 	       (FORMAT T " is a menu command with the following subcommands:~%")
 	       (DO ((L (GET-MENU-COMMAND-COMMANDS TEM) (CDR L))
 		    (FLAG T NIL))
-		   ((NULL L))
+		   ((NULL L) (TERPRI))
 		 (FORMAT T "~:[, ~]~A" FLAG (CAAR L))))
 	      (T (FORMAT T " is garbage!?~%")))))
+
+(DEFUN DOCUMENT-PREFIX-CHAR-TABLE (COMTAB &AUX KBD)
+  (DO ((CT COMTAB (COMTAB-INDIRECT-TO CT)))
+      ((ARRAYP (SETQ KBD (COMTAB-KEYBOARD-ARRAY CT)))))
+  (DOTIMES (I (ARRAY-DIMENSION-N 2 KBD))
+    (DOTIMES (J (ARRAY-DIMENSION-N 1 KBD))
+      (PRINT-SHORT-DOC-FOR-TABLE (DPB I %%KBD-CONTROL-META J) COMTAB 3))))
 
 ;;; This prints the documentation on a command.  It is NOT given a command
 ;;; dispatch table, and so it cannot understand aliases nor command prefixes.
@@ -187,19 +188,21 @@ Type a subcommand to document (or * for all):~%")
 	((PREFIX-COMMAND-P COMMAND)
 	 (FORMAT T "The command is an escape-prefix for more commands.~%"))))
 
-(DEFUN COMMAND-NAME (COMMAND &AUX FN)
+(DEFUN COMMAND-NAME (COMMAND &OPTIONAL NO-ERROR-P &AUX FN)
   (CHECK-ARG COMMAND SYMBOLP "a symbol")
   (COND ((SETQ FN (GET COMMAND 'DOCUMENTATION-FUNCTION))
 	 (FUNCALL FN COMMAND NIL ':NAME))
 	((GET COMMAND 'COMMAND-NAME))
+	(NO-ERROR-P NIL)
 	(T (FERROR NIL "~S does not have a name" COMMAND))))
 
 (DEFCOM COM-LIST-COMMANDS "List all extended commands." ()
   (FORMAT T "~%   Extended commands:~2%")
   (DO L (EXTENDED-COMMAND-ALIST *COMTAB*) (CDR L) (NULL L)
-      (FORMAT T "~30,5,2A" (CAAR L))
-      (PRINT-DOC ':SHORT (CDAR L))
-      (FORMAT T "~&"))
+    (COND ((LISTP L)
+	   (FORMAT T "~30,5,2A" (CAAR L))
+	   (PRINT-DOC ':SHORT (CDAR L))
+	   (FORMAT T "~&"))))
   (FORMAT T "~%Done.~%")
   DIS-NONE)
 
@@ -215,12 +218,14 @@ must be matched by spaces in the command name." ()
 	       (FORMAT T "~30,5,2A" NAME)
 	       (PRINT-DOC ':SHORT (CDR X))
 	       (FORMAT T "~&")
-	       (AND (> (FIND-COMMAND-ON-KEYS (CDR X) 4 "  which can be invoked via: ") 0)
-		    (TERPRI))
-	       (AND (EXTENDED-COMMAND-P (CDR X))
-		    (> (FIND-COMMAND-ON-KEYS 'COM-EXTENDED-COMMAND 1
-					     "  which can be invoked via: ") 0)
-		    (FORMAT T " ~A~%" NAME))
+	       (COND ((> (FIND-COMMAND-ON-KEYS (CDR X) 4 "  which can be invoked via: ") 0)
+		      (TERPRI))
+		     ((EXTENDED-COMMAND-P (CDR X))
+		      (> (FIND-COMMAND-ON-KEYS 'COM-EXTENDED-COMMAND 1
+					       "  which can be invoked via: ") 0)
+		      (FORMAT T " ~A~%" NAME))
+		     (T
+		      (FORMAT T "  which is not on any key.~%")))
 	       ))))
     (FORMAT T "~%Done.~%"))
   DIS-NONE)
@@ -246,10 +251,16 @@ all characters that invoke the command."
 ;;; occurence of the key.
 (DEFUN FIND-COMMAND-ON-KEYS (COMMAND LIMIT MESSAGE
 			     &OPTIONAL (COMTAB *COMTAB*) (COUNT 0) (TAG 'TOP) PREFIX
-			     &AUX CHAR TEM)
+			     &AUX CHAR TEM KBD)
+  ;; Find the first COMTAB in this indirection chain that is not sparse.
+  ;; Use it to figure out the limits for the interation below.
+  (DO ((CT COMTAB (COMTAB-INDIRECT-TO CT)))
+      ((ARRAYP (SETQ KBD (COMTAB-KEYBOARD-ARRAY CT)))))
   (*CATCH TAG
-    (DOTIMES (I 4)
-      (DOTIMES (J 220)
+    (DOTIMES (I (ARRAY-DIMENSION-N 2 KBD))
+      (DOTIMES (J (ARRAY-DIMENSION-N 1 KBD))
+	;; For each possible pair of bucky bits and character code, look up this
+	;; keystroke in the COMTAB as a whole and see what is there.
 	(SETQ CHAR (DPB I %%KBD-CONTROL-META J))
 	(SETQ TEM (COMMAND-LOOKUP CHAR COMTAB T))
 	(COND ((AND TEM (SYMBOLP TEM))
@@ -295,19 +306,21 @@ all characters that invoke the command."
     (SETQ L (UNREACHABLE-COMMAND-LIST-INTERNAL (SYMEVAL COMTAB) L)))
   (SORT L #'STRING-LESSP))
 
-(DEFUN UNREACHABLE-COMMAND-LIST-INTERNAL (*COMTAB* L &AUX CHAR TEM)
-   (DOTIMES (I 4)
-     (DOTIMES (J 220)
-       (SETQ CHAR (DPB I %%KBD-CONTROL-META J))
-       (SETQ TEM (COMMAND-LOOKUP CHAR *COMTAB* T))
-       (COND ((AND TEM (SYMBOLP TEM))
-	      (SETQ L (DELQ TEM L)))
-	      ((PREFIX-COMMAND-P TEM)
-	       (SETQ L (UNREACHABLE-COMMAND-LIST-INTERNAL
-			 (GET-PREFIX-COMMAND-COMTAB TEM) L))))))
-   (DOLIST (C L)
-     (AND (EXTENDED-COMMAND-P C) (SETQ L (DELQ C L))))
-   L)
+(DEFUN UNREACHABLE-COMMAND-LIST-INTERNAL (*COMTAB* L &AUX CHAR TEM KBD)
+  (DO ((CT *COMTAB* (COMTAB-INDIRECT-TO CT)))
+      ((ARRAYP (SETQ KBD (COMTAB-KEYBOARD-ARRAY CT)))))
+  (DOTIMES (I (ARRAY-DIMENSION-N 2 KBD))
+    (DOTIMES (J (ARRAY-DIMENSION-N 1 KBD))
+      (SETQ CHAR (DPB I %%KBD-CONTROL-META J))
+      (SETQ TEM (COMMAND-LOOKUP CHAR *COMTAB* T))
+      (COND ((AND TEM (SYMBOLP TEM))
+	     (SETQ L (DELQ TEM L)))
+	    ((PREFIX-COMMAND-P TEM)
+	     (SETQ L (UNREACHABLE-COMMAND-LIST-INTERNAL
+		       (GET-PREFIX-COMMAND-COMTAB TEM) L))))))
+  (DOLIST (C L)
+    (AND (EXTENDED-COMMAND-P C) (SETQ L (DELQ C L))))
+  L)
 
 (DEFUN EXTENDED-COMMAND-P (SYMBOL)
   (DO-NAMED EXTENDED-COMMAND-P
@@ -359,5 +372,10 @@ need only type enough to be unique." ()
 		   INDENTATION CHAR))
 	  ((NOT (SYMBOLP X)))		;??
 	  (T
-	   (FORMAT T "~VX~:C is ~A:~%~VX" INDENTATION CHAR X (+ 5 INDENTATION))
+	   (FORMAT T "~VX~:C is ~A:~%~VX" INDENTATION CHAR (COMMAND-NAME X) (+ 5 INDENTATION))
 	   (PRINT-DOC ':SHORT X CHAR)))))
+
+(DEFCOM COM-DOCUMENT-CONTAINING-PREFIX-COMMAND "Document this command" ()
+  (LOCAL-DECLARE ((SPECIAL COMTAB))
+    (DOCUMENT-PREFIX-CHAR-TABLE COMTAB))
+  DIS-NONE)

@@ -106,17 +106,18 @@
 
 ;; This is the function for moving from BP forward or backward over lists
 ;; as opposed to sexps.  That is, atoms are ignored (treated like spaces).
+;; Also comments are not treated specially.
 ;; LEVEL can be positive to move up in the list structure.
 ;; To move down, supply DOWNP as T and make LEVEL minus the number of levels to move.
 ;; NO-UP-P means it is an error to move past an ) to a higher level
 (DEFUN FORWARD-LIST (BP &OPTIONAL (TIMES 1) FIXUP-P (LEVEL 0) DOWNP NO-UP-P
-                        &AUX (ORIGINAL-LEVEL LEVEL))
+                        &AUX (ORIGINAL-LEVEL LEVEL) (STATE 'NORMAL))
+  (AND (LISP-BP-SYNTACTIC-CONTEXT BP) (SETQ STATE 'STRING))
   (COND ((ZEROP TIMES) (COPY-BP BP))
 	((PLUSP TIMES)
-	 (LET ((STATE 'NORMAL)
-	       (TIME 0)
+	 (LET ((TIME 0)
 	       (LAST-BP (INTERVAL-LAST-BP *INTERVAL*)))
-	   (CHARMAP (BP LAST-BP (IF FIXUP-P LAST-BP NIL))
+	   (CHARMAP (BP LAST-BP (IF FIXUP-P (COPY-BP LAST-BP) NIL))
 	    RESTART
 	     (LET ((SYNTAX (LIST-SYNTAX (CHARMAP-CHAR))))
 	       (SELECTQ STATE
@@ -125,18 +126,18 @@
 		    (LIST-DOUBLE-QUOTE
 		     (SETQ STATE 'NORMAL))
 		    (LIST-SLASH
-		     (CHARMAP-INCREMENT (IF FIXUP-P LAST-BP NIL)))))
+		     (CHARMAP-INCREMENT (IF FIXUP-P (COPY-BP LAST-BP) NIL)))))
 		 (NORMAL
 		  (SELECT SYNTAX
 		    (LIST-SLASH
-		     (CHARMAP-INCREMENT (IF FIXUP-P LAST-BP NIL)))
+		     (CHARMAP-INCREMENT (IF FIXUP-P (COPY-BP LAST-BP) NIL)))
 		    (LIST-DOUBLE-QUOTE
 		     (SETQ STATE 'STRING))
 		    (LIST-CLOSE
 		     (SETQ LEVEL (1- LEVEL))
 		     (COND (DOWNP
 			    (COND ((< LEVEL ORIGINAL-LEVEL)
-				   (CHARMAP-RETURN (IF FIXUP-P LAST-BP NIL)))))
+				   (CHARMAP-RETURN (IF FIXUP-P (COPY-BP LAST-BP) NIL)))))
 			   ((AND NO-UP-P (< LEVEL 0))
 			    (CHARMAP-RETURN NIL))
 			   (( LEVEL 0)
@@ -147,31 +148,31 @@
 			    (IF ( (SETQ TIME (1+ TIME)) TIMES)
 				(CHARMAP-RETURN (CHARMAP-BP-AFTER)))))))))))))
 	(T
-	 (LET ((STATE 'NORMAL)
-	       (TIME 0)
+	 (LET ((TIME 0)
 	       (FIRST-BP (INTERVAL-FIRST-BP *INTERVAL*)))
-	   (RCHARMAP (BP FIRST-BP (IF FIXUP-P FIRST-BP NIL))
+	   (RCHARMAP (BP FIRST-BP (IF FIXUP-P (COPY-BP FIRST-BP) NIL))
 	    RESTART
-	     (LET ((SYNTAX (LIST-SYNTAX (RCHARMAP-CHAR))))
-	       (SELECTQ STATE
-		 (STRING
-		  (SELECT SYNTAX
-		    (LIST-DOUBLE-QUOTE
-		     (SETQ STATE 'NORMAL))))
-		 (NORMAL
-		  (SELECT SYNTAX
-		    (LIST-DOUBLE-QUOTE
-		     (SETQ STATE 'STRING))
-		    (LIST-CLOSE
-		     (AND ( (SETQ LEVEL (1+ LEVEL)) 0) DOWNP
-			  (IF ( (SETQ TIME (1- TIME)) TIMES)
-			      (RCHARMAP-RETURN (RCHARMAP-BP-BEFORE)))))
-		    (LIST-OPEN
-		     (SETQ LEVEL (1- LEVEL))
-		     (AND NO-UP-P (< LEVEL 0) (RCHARMAP-RETURN NIL))
-		     (AND ( LEVEL 0) (NOT DOWNP)
-			  (IF ( (SETQ TIME (1- TIME)) TIMES)
-			      (RCHARMAP-RETURN (RCHARMAP-BP-BEFORE))))))))))))))
+	     (OR (= (LIST-SYNTAX (RCHARMAP-CHAR-BEFORE)) LIST-SLASH)
+		 (LET ((SYNTAX (LIST-SYNTAX (RCHARMAP-CHAR))))
+		   (SELECTQ STATE
+		     (STRING
+		      (SELECT SYNTAX
+			(LIST-DOUBLE-QUOTE
+			 (SETQ STATE 'NORMAL))))
+		     (NORMAL
+		      (SELECT SYNTAX
+			(LIST-DOUBLE-QUOTE
+			 (SETQ STATE 'STRING))
+			(LIST-CLOSE
+			 (AND ( (SETQ LEVEL (1+ LEVEL)) 0) DOWNP
+			      (IF ( (SETQ TIME (1- TIME)) TIMES)
+				  (RCHARMAP-RETURN (RCHARMAP-BP-BEFORE)))))
+			(LIST-OPEN
+			 (SETQ LEVEL (1- LEVEL))
+			 (AND NO-UP-P (< LEVEL 0) (RCHARMAP-RETURN NIL))
+			 (AND ( LEVEL 0) (NOT DOWNP)
+			      (IF ( (SETQ TIME (1- TIME)) TIMES)
+				  (RCHARMAP-RETURN (RCHARMAP-BP-BEFORE)))))))))))))))
 
 ;Return true if the line starts a list which it doesn't end, i.e.
 ;contains an unmatched open paren
@@ -206,7 +207,7 @@
 	       (LAST-BP (INTERVAL-LAST-BP *INTERVAL*)))
 	   (CHARMAP (BP LAST-BP (IF (OR FIXUP-P
 					(AND STATE (= (1+ TIME) TIMES)))
-				    LAST-BP
+				    (COPY-BP LAST-BP)
 				    NIL))
 	     (LET ((SYNTAX (WORD-SYNTAX (CHARMAP-CHAR))))
 	       (SELECTQ STATE
@@ -227,7 +228,7 @@
 	       (FIRST-BP (INTERVAL-FIRST-BP *INTERVAL*)))
 	   (RCHARMAP (BP FIRST-BP (IF (OR FIXUP-P
 					  (AND STATE (= (1- TIME) TIMES)))
-				      FIRST-BP
+				      (COPY-BP FIRST-BP)
 				      NIL))
 	     (LET ((SYNTAX (WORD-SYNTAX (RCHARMAP-CHAR))))
 	       (SELECTQ STATE
@@ -251,8 +252,8 @@
              (COND ((> TIMES 1)
                     (SETQ BP (FORWARD-WORD BP (1- TIMES)))
                     (COND ((NULL BP)
-                           (*THROW 'LOSSAGE (IF FIXUP-P LAST-BP NIL))))))
-             (CHARMAP (BP LAST-BP (IF FIXUP-P LAST-BP NIL))
+                           (*THROW 'LOSSAGE (IF FIXUP-P (COPY-BP LAST-BP) NIL))))))
+             (CHARMAP (BP LAST-BP (IF FIXUP-P (COPY-BP LAST-BP) NIL))
 	       (LET ((SYNTAX (WORD-SYNTAX (CHARMAP-CHAR))))
                  (SELECT SYNTAX
                     (WORD-ALPHABETIC
@@ -262,8 +263,8 @@
              (COND ((< TIMES -1)
                     (SETQ BP (FORWARD-WORD BP (1+ TIMES)))
                     (COND ((NULL BP)
-                           (*THROW 'LOSSAGE (IF FIXUP-P FIRST-BP NIL))))))
-	     (RCHARMAP (BP FIRST-BP (IF FIXUP-P FIRST-BP NIL))
+                           (*THROW 'LOSSAGE (IF FIXUP-P (COPY-BP FIRST-BP) NIL))))))
+	     (RCHARMAP (BP FIRST-BP (IF FIXUP-P (COPY-BP FIRST-BP) NIL))
 	       (LET ((SYNTAX (WORD-SYNTAX (RCHARMAP-CHAR))))
                  (SELECT SYNTAX
                     (WORD-ALPHABETIC
@@ -341,7 +342,12 @@
   (COND ((NOT BACKWARD-P)			;Move to the beginning of a line
 	 (SETQ BP (BEG-LINE BP)))
 	((NOT (BEG-LINE-P BP))
-	 (SETQ BP (BEG-LINE BP 1 T))))
+	 (SETQ BP (BEG-LINE BP 1 T)))
+	(T
+	 (LET ((PREV-BP (BEG-LINE BP -1)))
+	   (AND PREV-BP (NOT (LINE-BLANK-P (BP-LINE PREV-BP)))
+		(BP-LOOKING-AT-LIST PREV-BP *PAGE-DELIMITER-LIST*)
+		(SETQ BP PREV-BP)))))
   (DO ((I 0 (1+ I)))
       ((OR (NULL BP) ( I TIMES)) BP)
     (SETQ BLANK-P T)
@@ -349,11 +355,7 @@
 		  (1+ FIRST-P)))
 	(NIL)
       (SETQ PREV-BLANK-P BLANK-P BLANK-P NIL)
-      (AND (SETQ BLANK-P (OR (LINE-BLANK-P (BP-LINE BP))
-			     (AND (NOT FILL-PREFIX-P)	;If no fill prefix
-				  (BP-LOOKING-AT-LIST BP *TEXT-JUSTIFIER-ESCAPE-LIST*)
-				  (OR (BP-LOOKING-AT-LIST BP *PARAGRAPH-DELIMITER-LIST*)
-				      (BP-LOOKING-AT-LIST BP *PAGE-DELIMITER-LIST*)))))
+      (AND (SETQ BLANK-P (BP-AT-PARAGRAPH-DELIMITER BP FILL-PREFIX-P))
 	   (NOT PREV-BLANK-P)
 	   (OR (> FIRST-P 1)
 	       (NOT BACKWARD-P))
@@ -369,24 +371,26 @@
 		      (BP-LOOKING-AT-LIST BP *PAGE-DELIMITER-LIST*))
 		  (NOT (BP-LOOKING-AT-LIST BP *TEXT-JUSTIFIER-ESCAPE-LIST*))
 		  (RETURN))))))
-  (COND (BP
-	 (AND BACKWARD-P BLANK-P (NOT PREV-BLANK-P)
-	      (SETQ BP (BEG-LINE BP 1 T)))
-	 (LET ((BP1 (BEG-LINE BP -1)))
-	   (AND BP1 (LINE-BLANK-P (BP-LINE BP1))
-		(SETQ BP BP1)))))
+  (AND BP BACKWARD-P (NOT (LINE-BLANK-P (BP-LINE BP)))
+       (OR (NOT (BP-LOOKING-AT-LIST BP *PARAGRAPH-DELIMITER-LIST*))
+	   (BP-LOOKING-AT-LIST BP *TEXT-JUSTIFIER-ESCAPE-LIST*))
+       (SETQ BP (BEG-LINE BP 1 T)))
   (OR BP
-      (COND ((NOT FIXUP-P) NIL)
-	    (BACKWARD-P (INTERVAL-FIRST-BP *INTERVAL*))
-	    (T (INTERVAL-LAST-BP *INTERVAL*)))))
+      (AND FIXUP-P
+	   (COPY-BP (IF BACKWARD-P (INTERVAL-FIRST-BP *INTERVAL*)
+			(INTERVAL-LAST-BP *INTERVAL*))))))
+
+(DEFUN BP-AT-PARAGRAPH-DELIMITER (BP &OPTIONAL FILL-PREFIX-P)
+  (OR (LINE-BLANK-P (BP-LINE BP))
+      (IF FILL-PREFIX-P
+	  (NOT (LOOKING-AT BP *FILL-PREFIX*))
+	  (AND (BP-LOOKING-AT-LIST BP *TEXT-JUSTIFIER-ESCAPE-LIST*)
+	       (OR (BP-LOOKING-AT-LIST BP *PARAGRAPH-DELIMITER-LIST*)
+		   (BP-LOOKING-AT-LIST BP *PAGE-DELIMITER-LIST*))))))
 
 (DEFUN FORWARD-OVER-BLANK-OR-TEXT-JUSTIFIER-LINES (BP)
   (DO ((BP BP (BEG-LINE BP 1)))
-      ((OR (NULL BP)
-	   (NOT (OR (LINE-BLANK-P (BP-LINE BP))
-		    (AND (BP-LOOKING-AT-LIST BP *TEXT-JUSTIFIER-ESCAPE-LIST*)
-			 (OR (BP-LOOKING-AT-LIST BP *PARAGRAPH-DELIMITER-LIST*)
-			     (BP-LOOKING-AT-LIST BP *PAGE-DELIMITER-LIST*))))))
+      ((OR (NULL BP) (NOT (BP-AT-PARAGRAPH-DELIMITER BP)))
        (OR BP (INTERVAL-LAST-BP *INTERVAL*)))))
 
 (DEFUN FORWARD-ATOM (BP &OPTIONAL (TIMES 1) FIXUP-P)
@@ -399,10 +403,11 @@
 	 (DO ((LAST-BP (INTERVAL-LAST-BP *INTERVAL*))
 	      (TIME 0 (1+ TIME))
 	      (STATE NIL)
+	      (FIRST-P T NIL)
 	      (CH))
-	     (( TIME TIMES) BP)
-	   (SETQ BP (FORWARD-OVER '(#\CR) BP))	;Skip initial blank lines
-	   (SETQ BP (CHARMAP (BP LAST-BP (AND (OR STATE FIXUP-P) LAST-BP))
+	     ((OR ( TIME TIMES) (NULL BP)) BP)
+	   (SETQ BP (FORWARD-OVER (IF FIRST-P '(#\CR) *WHITESPACE-CHARS*) BP))
+	   (SETQ BP (CHARMAP (BP LAST-BP (AND (OR STATE FIXUP-P) (COPY-BP LAST-BP)))
 		      (SETQ CH (CHARMAP-CH-CHAR))
 		      (AND STATE		;If special character last time...
 			   (COND ((OR (= CH #\CR)	;"<cr><cr>" ".<cr>" or ". <cr>" win
@@ -413,15 +418,11 @@
 									 -1)))))
 				 ((AND (EQ STATE 'DOT) (= CH #\SP))	;". "
 				  (SETQ STATE 'SP))
+				 ((AND (EQ STATE 'DOT) (MEMQ CH '(#/" #/' #/) #/]))))
 				 (T (SETQ STATE NIL))))
 		      (COND ((= CH #\CR)	;If at end of line, check for another
 			     (SETQ STATE 'CR))	;<cr> next time
 			    ((MEMQ CH '(#/. #/! #/?))
-			     ;;Skip over closing frobs that might contain the sentence
-			     (DO NIL
-				 ((NOT (MEMQ CH '(#/" #/' #/) #/]))))
-			       (CHARMAP-INCREMENT (AND FIXUP-P LAST-BP))
-			       (SETQ CH (CHARMAP-CH-CHAR)))
 			     (SETQ STATE 'DOT)))))))
 	(T
 	 (DO ((START-BP (INTERVAL-FIRST-BP *INTERVAL*))
@@ -432,12 +433,12 @@
 	     (( TIME TIMES) (FORWARD-OVER *WHITESPACE-CHARS* (FORWARD-CHAR BP NFROBS)))
 	   (SETQ BP (BACKWARD-OVER '(#\CR #\SP #/" #/' #/) #/]) BP)
 		 NFROBS 0)
-	   (SETQ BP (RCHARMAP (BP START-BP (AND FIXUP-P START-BP))
+	   (SETQ BP (RCHARMAP (BP START-BP (AND FIXUP-P (COPY-BP START-BP)))
 		      (SETQ CH (RCHARMAP-CH-CHAR))
 		      (COND ((MEMQ STATE '(CR SPSP))
 			     (DO NIL
 				 ((NOT (MEMQ CH '(#/" #/' #/) #/]))))
-			       (RCHARMAP-DECREMENT (AND FIXUP-P START-BP))
+			       (RCHARMAP-DECREMENT (AND FIXUP-P (COPY-BP START-BP)))
 			       (SETQ CH (RCHARMAP-CH-CHAR)
 				     NFROBS (1+ NFROBS)))
 			     (AND (OR (MEMQ CH '(#/. #/! #/?))
@@ -464,7 +465,7 @@
 	       (COND ((= (LIST-SYNTAX (BP-CHAR BP1)) LIST-OPEN)
 		      (GO BUFBEG1))
 		     (T (GO BUFBEG)))))
-	(OR (SETQ BP2 (FORWARD-SEXP BP1 TIMES))
+	(OR (SETQ BP2 (FORWARD-SEXP BP1))
 	    (IF (NOT FIXUP-P) (RETURN NIL)
 		(SETQ BP2 (BEG-LINE (BACKWARD-OVER-COMMENT-LINES (FORWARD-DEFUN BP1 1 T)
 								 TOP-BLANK-P)
@@ -479,14 +480,16 @@
 		    (GO FOUND))              ;At end of buffer, take previous
 	       (RETURN NIL)))
      BUFBEG1
-	(OR (SETQ BP2 (FORWARD-SEXP BP1 TIMES)) (RETURN NIL))
+	(OR (SETQ BP2 (FORWARD-SEXP BP1)) (RETURN NIL))
      FOUND
 	;; At this point, BP1 and BP2 surround a "defun".  Now we should grab any
 	;; comment lines and intervening blank lines before the beginning, and the
 	;; rest of the last line.
+	(AND (> TIMES 1)
+	     (SETQ BP2 (FORWARD-SEXP BP2 (1- TIMES) T)))
 	(SETQ SBP BP1)			;Save real starting line
      CONTIN
-	(AND COMMENTS-P (SETQ BP1 (BACKWARD-OVER-COMMENT-LINES BP1 TOP-BLANK-P)))
+	(AND COMMENTS-P (SETQ BP1 (BACKWARD-OVER-COMMENT-LINES BP1 TOP-BLANK-P NIL)))
 	(SETQ BP3 (FORWARD-OVER *BLANKS* BP2))
 	(AND BP3 (OR (= (LIST-SYNTAX (BP-CHAR BP3)) LIST-COMMENT)
 		     (= (BP-CH-CHAR BP3) #\CR))
@@ -512,9 +515,9 @@
 ;; It includes all blank lines at the beginning of the interval so
 ;; as not to leave them orphaned.
 ;; If there is List structure before the defun that encloses it, e.g.
-;; a LOCAL-DECLARE, it gets included.
+;; a LOCAL-DECLARE, it gets included unless UP-P is NIL.
 
-(DEFUN BACKWARD-OVER-COMMENT-LINES (BP &OPTIONAL (TOP-BLANK-P T)
+(DEFUN BACKWARD-OVER-COMMENT-LINES (BP &OPTIONAL (TOP-BLANK-P T) (UP-P T)
 				       &AUX (LAST-GOOD-LINE (BP-LINE BP)))
   (DO ((LINE (LINE-PREVIOUS (BP-LINE BP)) (LINE-PREVIOUS LINE)))
       ((NULL LINE)
@@ -522,7 +525,8 @@
     (SELECTQ (LINE-TYPE LINE)
 	(:BLANK)
 	(:COMMENT (SETQ LAST-GOOD-LINE LINE))
-	(:NORMAL (IF (LINE-OPENS-PARENS LINE) (SETQ LAST-GOOD-LINE LINE)
+	(:NORMAL (IF (AND UP-P (LINE-OPENS-PARENS LINE))
+		     (SETQ LAST-GOOD-LINE LINE)
 		     (RETURN)))
         (OTHERWISE (RETURN))))
   (COND ((EQ LAST-GOOD-LINE (BP-LINE (INTERVAL-FIRST-BP *INTERVAL*))))
@@ -544,9 +548,17 @@
 	 (SETQ BP (BEG-LINE BP 1))
 	 (OR BP (RETURN NIL))
 	 (SELECTQ (LINE-TYPE (BP-LINE BP))
-	   (:BLANK)
-	   (:COMMENT)
+	   ((:BLANK :COMMENT :FORM))
 	   (OTHERWISE (RETURN BP)))))
+  (OR BP (AND FIXUP-P (COPY-BP (INTERVAL-LAST-BP *INTERVAL*)))))
+
+(DEFUN FORWARD-OVER-BLANK-OR-PAGE-LINES (BP &OPTIONAL FIXUP-P)
+  (DO () (NIL)
+    (SETQ BP (BEG-LINE BP 1))
+    (OR BP (RETURN NIL))
+    (SELECTQ (LINE-TYPE (BP-LINE BP))
+      ((:BLANK :FORM))
+      (OTHERWISE (RETURN BP))))
   (OR BP (AND FIXUP-P (COPY-BP (INTERVAL-LAST-BP *INTERVAL*)))))
 
 (DEFUN BEG-LINE (BP &OPTIONAL (TIMES 0) FIXUP-P)
@@ -557,7 +569,8 @@
 	     (NIL) 
 	   (COND ((EQ LINE LAST-LINE)
 		  (RETURN (IF (OR ( I 0) FIXUP-P)
-			      (CREATE-BP LINE (IF ( I 0) 0 (LINE-LENGTH LINE)))
+			      (CREATE-BP LINE (IF ( I 0) 0
+						  (BP-INDEX (INTERVAL-LAST-BP *INTERVAL*))))
 			      NIL)))
 		 (( I 0)
 		  (RETURN (CREATE-BP LINE 0))))))
@@ -592,7 +605,8 @@
 	     (NIL)
 	   (COND ((EQ LINE FIRST-LINE)
 		  (RETURN (IF (OR ( I 0) FIXUP-P)
-			      (CREATE-BP LINE (LINE-LENGTH LINE))
+			      (CREATE-BP LINE (IF ( I 0) (LINE-LENGTH LINE)
+						  (BP-INDEX (INTERVAL-FIRST-BP *INTERVAL*))))
 			      NIL)))
 		 (( I 0)
 		  (RETURN (CREATE-BP LINE (LINE-LENGTH LINE)))))))))
@@ -615,3 +629,48 @@
 
 (DEFUN DELETE-AROUND (LIST BP)
   (DELETE-INTERVAL (BACKWARD-OVER LIST BP) (FORWARD-OVER LIST BP) T))
+
+;;; Make this a variable just in case someone wants to modify it
+(DEFVAR *MATCHING-DELIMITER-LIST*
+	'((#/( #/) FORWARD-SEXP) (#/" #/" FORWARD-WORD) (#/[ #/] FORWARD-SEXP)
+	  (#/{ #/} FORWARD-SEXP) (#/< #/> FORWARD-WORD) (#/* #/* FORWARD-SEXP)
+	  (#/ #/ FORWARD-WORD) (#/| #/| FORWARD-SEXP)))
+
+(DEFUN FORWARD-OVER-MATCHING-DELIMITERS (BP &OPTIONAL (TIMES 1) FIXUP-P (LEVEL 0) OPEN CLOSE)
+  (COND ((ZEROP TIMES) (COPY-BP BP))
+	((PLUSP TIMES)
+	 (LET ((TIME 0)
+	       (LAST-BP (INTERVAL-LAST-BP *INTERVAL*)))
+	   (CHARMAP (BP LAST-BP (IF FIXUP-P (COPY-BP LAST-BP) NIL))
+	     (LET ((CHAR (CHARMAP-CH-CHAR)))
+	       (COND ((NULL OPEN)
+		      (DO L *MATCHING-DELIMITER-LIST* (CDR L) (NULL L)
+			(COND ((= CHAR (CAAR L))
+			       (SETQ OPEN CHAR
+				     CLOSE (CADAR L)
+				     LEVEL 1)
+			       (RETURN)))))
+		     ((= CHAR CLOSE)
+		      (AND ( (SETQ LEVEL (1- LEVEL)) 0)
+			   ( (SETQ TIME (1+ TIME)) TIMES)
+			   (CHARMAP-RETURN (CHARMAP-BP-AFTER))))
+		     ((= CHAR OPEN)
+		      (SETQ LEVEL (1+ LEVEL))))))))
+	(T
+	 (LET ((TIME 0)
+	       (FIRST-BP (INTERVAL-FIRST-BP *INTERVAL*)))
+	   (RCHARMAP (BP FIRST-BP (IF FIXUP-P (COPY-BP FIRST-BP) NIL))
+	     (LET ((CHAR (RCHARMAP-CH-CHAR)))
+	       (COND ((NULL OPEN)
+		      (DO L *MATCHING-DELIMITER-LIST* (CDR L) (NULL L)
+			(COND ((= CHAR (CADAR L))
+			       (SETQ CLOSE CHAR
+				     CLOSE (CAAR L)
+				     LEVEL -1)
+			       (RETURN)))))
+		     ((= CHAR OPEN)
+		      (AND ( (SETQ LEVEL (1+ LEVEL)) 0)
+			   ( (SETQ TIME (1- TIMES)) TIMES)
+			   (RCHARMAP-RETURN (RCHARMAP-BP-BEFORE))))
+		     ((= CHAR CLOSE)
+		      (SETQ LEVEL (1- LEVEL))))))))))

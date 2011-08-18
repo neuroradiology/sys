@@ -1,10 +1,10 @@
 ;;; Macros for ZWEI.   -*- Mode:LISP; Package:ZWEI -*-
 ;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 
-(DEFMACRO CHARMAP ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) . BODY)
-    `(CHARMAP-PER-LINE (,FROM-BP-FORM ,TO-BP-FORM . ,RETURN-FORMS) (NIL) . ,BODY))
+(DEFMACRO CHARMAP ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) &BODY BODY)
+  `(CHARMAP-PER-LINE (,FROM-BP-FORM ,TO-BP-FORM . ,RETURN-FORMS) (NIL) . ,BODY))
 
-(DEFMACRO CHARMAP-PER-LINE ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) LINE-FORMS . BODY)
+(DEFMACRO CHARMAP-PER-LINE ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) LINE-FORMS &BODY BODY)
   `(LET ((*FROM-BP* ,FROM-BP-FORM)
          (*TO-BP* ,TO-BP-FORM))
      (DO-NAMED *CHARMAP*
@@ -48,7 +48,11 @@
   '(CREATE-BP LINE INDEX))
 
 (DEFMACRO CHARMAP-BP-AFTER ()
-  '(CREATE-BP LINE (1+ INDEX)))
+  '(COND ((AND (= INDEX *LAST-INDEX*)
+	       (NOT *THIS-IS-THE-LAST-LINE*))
+	  (CREATE-BP (LINE-NEXT LINE) 0))
+	 (T
+	  (CREATE-BP LINE (1+ INDEX)))))
 
 (DEFMACRO CHARMAP-INCREMENT RETURN-FORMS
   `(COND ((> (SETQ INDEX (1+ INDEX)) *LAST-INDEX*)
@@ -63,10 +67,10 @@
 (DEFMACRO CHARMAP-LINE ()
   'LINE)
 
-(DEFMACRO RCHARMAP ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) . BODY)
+(DEFMACRO RCHARMAP ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) &BODY BODY)
   `(RCHARMAP-PER-LINE (,FROM-BP-FORM ,TO-BP-FORM . ,RETURN-FORMS) (NIL) . ,BODY))
 
-(DEFMACRO RCHARMAP-PER-LINE ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) LINE-FORMS . BODY)
+(DEFMACRO RCHARMAP-PER-LINE ((FROM-BP-FORM TO-BP-FORM . RETURN-FORMS) LINE-FORMS &BODY BODY)
   `(LET ((*FROM-BP* ,FROM-BP-FORM)
          (*TO-BP* ,TO-BP-FORM))
      (DO-NAMED *RCHARMAP*
@@ -133,18 +137,6 @@
 (DEFMACRO RCHARMAP-LINE ()
   'LINE)
 
-(DEFMACRO MVRETURN VALUES
-  `(PROG () (RETURN . ,VALUES)))
-
-(DEFMACRO MULTIPLE-VALUE-FUNCALL (FUNCTION . ARGS)
-  `(PROGN (%OPEN-CALL-BLOCK ,FUNCTION 0 4) ;No ADI, destination-return
-	  (%ASSURE-PDL-ROOM ,(LENGTH ARGS))
-	  ,@(MAPCAR '(LAMBDA (A) `(%PUSH ,A)) ARGS)
-	  (%ACTIVATE-OPEN-CALL-BLOCK)))
-
-(DEFMACRO MULTIPLE-VALUE-LEXPR-FUNCALL (FUNCTION . ARGS)
-  `(MULTIPLE-VALUE-CALL (LEXPR-FUNCALL ,FUNCTION . ,ARGS)))
-
 (DEFMACRO PUSH* (I R)
   `(OR (MEMQ ,I ,R) (PUSH ,I ,R)))
 
@@ -161,14 +153,14 @@
 (DEFMACRO LIST-SYNTAX (CHAR)
   `(CHAR-SYNTAX ,CHAR *LIST-SYNTAX-TABLE*))
 
-(DEFMACRO ATOM-WORD-SYNTAX-BIND BODY
+(DEFMACRO ATOM-WORD-SYNTAX-BIND (&BODY BODY)
   `(LET ((*MODE-WORD-SYNTAX-TABLE* *ATOM-WORD-SYNTAX-TABLE*))
      . ,BODY))
 
 (DEFMACRO BP-CH-CHAR (BP)
   `(LDB %%CH-CHAR (BP-CHAR ,BP)))
 
-(DEFMACRO PRESERVE-POINT BODY
+(DEFMACRO PRESERVE-POINT (&BODY BODY)
   `(LET ((NLINES (1- (COUNT-LINES (INTERVAL-FIRST-BP *INTERVAL*) (POINT) T)))
 	 (NCHARS (BP-INDEX (POINT))))
      (PROGN . ,BODY)
@@ -177,34 +169,22 @@
 					  NLINES T)
 			    NCHARS T))))
 
-(DEFMACRO PRESERVE-BUFFER-POINT ((BUFFER) . BODY)
-  `(LET ((SAVED-POINT (BUFFER-SAVED-POINT ,BUFFER))
-	 NLINES NCHARS)
-       (AND (EQ ,BUFFER *INTERVAL*) (MOVE-BP SAVED-POINT (POINT)))
-       (SETQ NLINES (COUNT-LINES (INTERVAL-FIRST-BP ,BUFFER) SAVED-POINT T)
-	     NCHARS (BP-INDEX SAVED-POINT))
-       (PROGN . ,BODY)
-       (MOVE-BP SAVED-POINT
+(DEFMACRO PRESERVE-BUFFER-POINT ((BUFFER) &BODY BODY)
+  `(LET ((BUFFER-P (TYPEP ,BUFFER 'BUFFER))
+	 SAVED-POINT NLINES NCHARS)
+     (IF (NOT BUFFER-P)
+	 (SETQ SAVED-POINT (POINT))
+	 (SETQ SAVED-POINT (BUFFER-SAVED-POINT ,BUFFER))
+	 (AND (EQ ,BUFFER *INTERVAL*) (MOVE-BP SAVED-POINT (POINT))))
+     (SETQ NLINES (COUNT-LINES (INTERVAL-FIRST-BP ,BUFFER) SAVED-POINT T)
+	   NCHARS (BP-INDEX SAVED-POINT))
+     (PROGN . ,BODY)
+     (MOVE-BP SAVED-POINT
+	      (LET ((*INTERVAL* ,BUFFER))	;Range check right
 		(FORWARD-CHAR (FORWARD-LINE (INTERVAL-FIRST-BP ,BUFFER)
 					    (1- NLINES) T)
-			      NCHARS T))
-       (AND (EQ ,BUFFER *INTERVAL*) (MOVE-BP (POINT) SAVED-POINT))))
-
-;;; (OPEN-FILE (<var> <filename> <options>) <form1> <form2> ...)
-;;; Opens the file <filename>, using <options>, and lets <var> be the
-;;; stream for the rest of the form.  An unwind-protect closes the file.
-(DEFMACRO OPEN-FILE ((VAR FILENAME OPTIONS DELETE-IF-NOT-COMPLETE) . BODY)
-  `(LET ((,VAR NIL)
-	 (.COMPLETE-P. NIL))
-     (UNWIND-PROTECT
-       (PROG1
-	 (PROGN
-	   (SETQ ,VAR (OPEN ,FILENAME ,OPTIONS))
-	   . ,BODY)
-	 (SETQ .COMPLETE-P. T))
-       (COND ((AND ,VAR (NOT (STRINGP ,VAR)))
-	      ,(AND DELETE-IF-NOT-COMPLETE `(OR .COMPLETE-P. (FUNCALL ,VAR ':DELETE)))
-	      (CLOSE ,VAR))))))
+			      NCHARS T)))
+     (AND (EQ ,BUFFER *INTERVAL*) BUFFER-P (MOVE-BP (POINT) SAVED-POINT))))
 
 (DEFMACRO DPRINT LIST
   (DO ((L LIST (CDR L))
@@ -215,23 +195,23 @@
 (DEFMACRO CURRENT-FONT (WINDOW &OPTIONAL (NUMBER '*FONT*))
   `(AREF (TV:SHEET-FONT-MAP (WINDOW-SHEET ,WINDOW)) ,NUMBER))
 
-(DEFMACRO TYPEIN-LINE-ACTIVATE BODY
+(DEFMACRO TYPEIN-LINE-ACTIVATE (&BODY BODY)
   `(LET ((*EDITOR-ALREADY-KNOWS* T))
      (TV:WINDOW-CALL (*TYPEIN-WINDOW*)
        . ,BODY)))
 
-(DEFMACRO PROMPT-LINE-ACTIVATE BODY
+(DEFMACRO PROMPT-LINE-ACTIVATE (&BODY BODY)
   `(LET ((*EDITOR-ALREADY-KNOWS* T))
      (TV:WINDOW-CALL (*MODE-LINE-WINDOW*)
        . ,BODY)))
 
-(DEFMACRO TEMPORARY-WINDOW-SELECT ((ZWEI-WINDOW) . BODY)
+(DEFMACRO TEMPORARY-WINDOW-SELECT ((ZWEI-WINDOW) &BODY BODY)
   `(LET ((*EDITOR-ALREADY-KNOWS* T)
 	 (.SHEET. (WINDOW-SHEET ,ZWEI-WINDOW)))
      (TV:WINDOW-CALL (.SHEET. :DEACTIVATE)
        . ,BODY)))
 
-(DEFMACRO WITHOUT-IO-BUFFER-OUTPUT-FUNCTION BODY
+(DEFMACRO WITHOUT-IO-BUFFER-OUTPUT-FUNCTION (&BODY BODY)
   `(LOCAL-DECLARE ((SPECIAL TV:IO-BUFFER))
      (LET ()
        (BIND TV:(LOCF (IO-BUFFER-OUTPUT-FUNCTION IO-BUFFER)) NIL)
@@ -244,7 +224,7 @@
 (DEFMACRO MARK ()
   '(WINDOW-MARK *WINDOW*))
 
-(DEFMACRO REGION ((BP1 BP2) . BODY)
+(DEFMACRO REGION ((BP1 BP2) &BODY BODY)
   `(LET ((,BP1 (POINT)) (,BP2 (MARK)))
      (COND ((NOT (WINDOW-MARK-P *WINDOW*))
 	    (BARF "There is no region."))
@@ -252,7 +232,7 @@
 	    (PSETQ ,BP1 ,BP2 ,BP2 ,BP1)))
      . ,BODY))
 
-(DEFMACRO REGION-LINES ((START-LINE STOP-LINE) . BODY)
+(DEFMACRO REGION-LINES ((START-LINE STOP-LINE) &BODY BODY)
   `(LET ((REGION-LINES-BP1 (POINT)) (REGION-LINES-BP2 (MARK)))
      (COND ((NOT (WINDOW-MARK-P *WINDOW*))
 	    (BARF "There is no region."))
@@ -263,7 +243,7 @@
        (,START-LINE ,STOP-LINE)
        . ,BODY)))
 
-(DEFMACRO INTERVAL-LINES ((BP1 BP2) (START-LINE STOP-LINE) . BODY)
+(DEFMACRO INTERVAL-LINES ((BP1 BP2) (START-LINE STOP-LINE) &BODY BODY)
   `(LET ((,START-LINE
 	  (COND ((ZEROP (BP-INDEX ,BP1))
 		 (BP-LINE ,BP1))
@@ -274,19 +254,19 @@
 		(T (LINE-NEXT (BP-LINE ,BP2))))))
      . ,BODY))
 
-(DEFMACRO TEMP-KILL-RING (THING . BODY)
+(DEFMACRO TEMP-KILL-RING (THING &BODY BODY)
   `(LET ((*KILL-RING* (CONS ,THING *KILL-RING*)))
      . ,BODY))
 
 ;;; PRESERVE-POINT
 
-(DEFMACRO WITH-BP ((VARIABLE BP TYPE) . BODY)
+(DEFMACRO WITH-BP ((VARIABLE BP TYPE) &BODY BODY)
   `(LET ((,VARIABLE (COPY-BP ,BP ,TYPE)))
      (UNWIND-PROTECT
        (PROGN . ,BODY)
        (FLUSH-BP ,VARIABLE))))
 
-(DEFMACRO BIND-MODE-LINE (LIST . BODY)
+(DEFMACRO BIND-MODE-LINE (LIST &BODY BODY)
   `(LET ((*MODE-LINE-LIST* ',LIST))
      . ,BODY))
 
@@ -300,17 +280,37 @@
 	  (ORDER-BPS ,START-BP ,END-BP))))
 
 ;;; Bind off the read-only attribute of the specified interval temporarily.
-;;; A bug with this is that the fact that the interval was modified will be forgotten.
-(DEFMACRO WITH-READ-ONLY-SUPPRESSED ((INTERVAL) . BODY)
-  `((LAMBDA () (BIND (LOCF (INTERVAL-TICK ,INTERVAL)) 0)
-	       . ,BODY)))
+(DEFMACRO WITH-READ-ONLY-SUPPRESSED ((INTERVAL) &BODY BODY)
+  (ONCE-ONLY (INTERVAL)
+    `(LET* ((.SAVED-TICK. (NODE-TICK ,INTERVAL))	;':READ-ONLY presumably
+	    (.FILE-ID. (AND (TYPEP ,INTERVAL 'FILE-BUFFER)
+			    (BUFFER-FILE-ID ,INTERVAL)))
+	    (.SPECIAL-P. (AND .FILE-ID. (LISTP .FILE-ID.)
+			      (EQ (FIRST .FILE-ID.) ':SPECIAL-BUFFER)))
+	    (.OLD-TICK. (IF .SPECIAL-P. (THIRD .FILE-ID.) 0)))
+       (UNWIND-PROTECT
+	 (PROGN
+	   (SETF (NODE-TICK ,INTERVAL) .OLD-TICK.)
+	   . ,BODY)
+	 (AND .SPECIAL-P. (SETF (THIRD .FILE-ID.) (NODE-TICK ,INTERVAL)))
+	 (SETF (NODE-TICK ,INTERVAL) .SAVED-TICK.)))))
+
+;;; This command reads from the mini-buffer with completion
+(DEFMACRO WITH-MINI-BUFFER-COMPLETION ((MINI-BUFFER-WINDOW) &BODY BODY)
+  (ONCE-ONLY (MINI-BUFFER-WINDOW)
+    `(LET ((.SET-P. NIL))
+       (UNWIND-PROTECT
+	 (PROGN
+	   (SETQ .SET-P. (TURN-ON-MINI-BUFFER-COMPLETION-BLINKER ,MINI-BUFFER-WINDOW T))
+	   . ,BODY)
+	 (AND .SET-P. (TURN-ON-MINI-BUFFER-COMPLETION-BLINKER ,MINI-BUFFER-WINDOW NIL))))))
 
 ;;; Defines a command.  Form is:
 ;;; (DEFCOM COM-foo "Documentation." OPTIONS-LIST . BODY)
 ;;; Note: unlike EINE, there is no lambda-list.
 ;;; Options are:  (KM) -- This command always preserves MARK.
 
-(DEFMACRO DEFCOM (FN DOC OPTIONS . DEF)
+(DEFMACRO DEFCOM (FN DOC OPTIONS &BODY DEF)
   `(PROGN 'COMPILE
      (COMMAND-DEFINE ',FN ',DOC ',OPTIONS)
      (DEFUN ,FN ()
@@ -324,7 +324,7 @@
 	 (PUTPROP COMMAND DOC 'DOCUMENTATION))
 	((OR (SYMBOLP DOC)
 	     (AND (NOT (ATOM DOC))
-		  (EQ (CAR DOC) 'LAMBDA)))
+		  (MEMQ (CAR DOC) '(FUNCTION LAMBDA))))
 	 (PUTPROP COMMAND DOC 'DOCUMENTATION-FUNCTION))
 	(T
 	 (FERROR NIL "The command ~S has invalid self-documentation ~S" COMMAND DOC)))
@@ -367,20 +367,23 @@
 				(T 0))
 			  (COND ((CHAR-EQUAL #/* (AREF COMMAND (1- CLEN))) (1- CLEN))
 				(T CLEN)))))
-       (DO ((I 0 (1+ I))
-            (FLAG T)
-            (CHAR)
-            (LIM (STRING-LENGTH STR)))
-           (( I LIM) STR)
-         (SETQ CHAR (AREF STR I))
-         (COND ((= CHAR #/-)
-                (ASET #\SP STR I)
-                (SETQ FLAG T))
-               (FLAG
-                (SETQ FLAG NIL))
-               ((AND ( CHAR #/A)
-                     ( CHAR #/Z))
-                (ASET (+ 40 CHAR) STR I)))))))
+       (PRETTY-COMMAND-NAME STR))))
+
+(DEFUN PRETTY-COMMAND-NAME (STR)
+  (DO ((I 0 (1+ I))
+       (FLAG T)
+       (CHAR)
+       (LIM (STRING-LENGTH STR)))
+      (( I LIM) STR)
+    (SETQ CHAR (AREF STR I))
+    (COND ((= CHAR #/-)
+	   (ASET #\SP STR I)
+	   (SETQ FLAG T))
+	  (FLAG
+	   (SETQ FLAG NIL))
+	  ((AND ( CHAR #/A)
+		( CHAR #/Z))
+	   (ASET (+ 40 CHAR) STR I)))))
 
 ;;; A variable is a symbol, whose print name starts and ends with "*".
 ;;; The value of the variable is the value of the symbol.
@@ -426,24 +429,21 @@
   (PUTPROP VAR INIT 'VARIABLE-INIT)
   (PUTPROP VAR TYPE 'VARIABLE-TYPE)
   (PUTPROP VAR DOC 'VARIABLE-DOCUMENTATION)
-  (SI:RECORD-SOURCE-FILE-NAME VAR))
+  (SI:RECORD-SOURCE-FILE-NAME VAR 'DEFVAR))
 
 (DEFUN SETQ-ZWEI-VARIABLES ()
   (DO L *VARIABLE-ALIST* (CDR L) (NULL L)
     (LET ((V (CDAR L)))
       (SET V (GET V 'VARIABLE-INIT)))))
 
-(SETQ *DEFAULT-INDENT-ALIST* '((LET 1 1) (LET* 1 1) (LET-GLOBALLY 1 1) (LAMBDA 1 1)
-			       (*CATCH 1 1)
-			       (DOLIST 1 1) (DO 2 1)
-			       (PROG . INDENT-PROG) (PROG* . INDENT-PROG)
-			       (LOCAL-DECLARE 1 1) (SELECT 1 1) (SELECTQ 1 1)
-                               (DO-NAMED 3 1) (DOTIMES 1 1)
-			       (MULTIPLE-VALUE 1 1)
-			       (MULTIPLE-VALUE-BIND 1 3 2 1)
-			       (DEFSELECT 1 1) (DEFCOM 3 1) (DEFTYPE 4 1)
-			       (DEFFLAVOR 1 7 3 1) (DEFSTRUCT 1 1)
-			       (DEFPROP 0 0)))
+(SETQ *INITIAL-LISP-INDENT-OFFSET-ALIST*
+      (NCONC *INITIAL-LISP-INDENT-OFFSET-ALIST*
+	     '((LAMBDA 1 1) (*CATCH 1 1)
+	       (LET 1 1) (LET* 1 1) (LET-IF 2 1) (IF 2 1)
+	       (DO 2 1) (DO-NAMED 3 1) (RETURN-FROM 1 1)
+	       (PROG . INDENT-PROG) (PROG* . INDENT-PROG)
+	       (MULTIPLE-VALUE 1 1) (MULTIPLE-VALUE-BIND 1 3 2 1)
+	       (DEFFLAVOR 1 7 3 1) (DEFPROP 0 0))))
 
 (DEFVARIABLE *FILL-COLUMN* 576. :FIXNUM
    "Width in pixels used for filling text.")
@@ -453,33 +453,34 @@
    "Characters which separate pages.")
 (DEFVARIABLE *STICKY-MINOR-MODES* '(ATOM-WORD-MODE WORD-ABBREV-MODE EMACS-MODE) :ANYTHING
    "Minor modes to carry from current buffer to new ones.")
-(DEFVARIABLE *UNSTICKY-MINOR-MODES* '(ELECTRIC-SHIFT-LOCK-MODE) :ANYTHING
+(DEFVARIABLE *UNSTICKY-MINOR-MODES* '(ELECTRIC-SHIFT-LOCK-MODE ELECTRIC-FONT-LOCK-MODE)
+  :ANYTHING
    "Minor modes that are turned off when the mode is changed explicitly")
+(DEFVARIABLE *INITIAL-MINOR-MODES* NIL :ANYTHING
+   "Minor modes turned on in any major mode")
 (DEFVARIABLE *DEFAULT-SAVE-MODE* ':ASK :KEYWORD
    "Default save mode for new buffers (NIL, :ASK, :ALWAYS).")
 (DEFVARIABLE *FIND-FILE-SAVE-MODE* ':ASK :KEYWORD
    "Default save mode for new buffers create by Find File (NIL, :ASK, :ALWAYS).")
-(DEFVARIABLE *DIRECTORY-LISTER* 'SUBSET-DIRECTORY-LISTING :ANYTHING
+(DEFVARIABLE *DIRECTORY-LISTER* 'DEFAULT-DIRECTORY-LISTER :ANYTHING
    "Function used by Display Directory and auto directory display option.")
+(DEFVARIABLE *DIRECTORY-SINGLE-FILE-LISTER* 'DEFAULT-LIST-ONE-FILE :ANYTHING
+   "Function normally called to display each file")
 (DEFVARIABLE *AUTO-PUSH-POINT-OPTION* 12 :FIXNUM-OR-NIL
    "Searches push point if it moves more than this many lines.")
-(DEFVARIABLE *AUTO-PUSH-POINT-NOTIFICATION* " ^@" :STRING
+(DEFVARIABLE *AUTO-PUSH-POINT-NOTIFICATION* "Point pushed" :STRING
    "This is typed in the echo area when point is automatically pushed.")
 (DEFVARIABLE *AUTO-DIRECTORY-DISPLAY* NIL :KEYWORD
-   "Tells on which kind of file commands to display directory (NIL, *READ, :WRITE, T).")
+   "Tells on which kind of file commands to display directory (NIL, :READ, :WRITE, T).")
 (DEFVARIABLE *TAB-BLINKER-FLAG* T :BOOLEAN
    "If a blinker is placed over a tab, make the blinker the width of a space.")
-(DEFVARIABLE *FILE-NAME-SYNTAX* -1 :FIXNUM
-   "Tells how to interpret a lone word as a filename (-1, 0, 1).
-Like FS FNAM SYNTAX in TECO.  0 means treat it as the FN2, 1 means treat it
-as the FN1, -1 (the default) means treat it as the FN1 and let the FN2 be /">/".")
 (DEFVARIABLE *FILL-PREFIX* "" :STRING
    "String to put before each line when filling.")
 (DEFVARIABLE *FILL-EXTRA-SPACE-LIST* '(#/. #/! #/?) :CHAR-LIST
    "Characters that must be followed by two spaces.")
 (DEFVARIABLE *FLASH-MATCHING-PAREN* T :BOOLEAN
    "When point is to the right of a close paren, flash the matching open paren.")
-(DEFVARIABLE *COMMENT-START* ";" :STRING
+(DEFVARIABLE *COMMENT-START* NIL :STRING
    "String that indicates the start of a comment.")
 (DEFVARIABLE *COMMENT-BEGIN* ";" :STRING
    "String for beginning new comments.")
@@ -491,10 +492,6 @@ as the FN1, -1 (the default) means treat it as the FN1 and let the FN2 be /">/".
    "Replacing commands try to preserve case.")
 (DEFVARIABLE *PERMANENT-REAL-LINE-GOAL-XPOS* NIL :FIXNUM-OR-NIL
    "If non-NIL, goal for Up and Down Real Line commands.")
-(DEFVARIABLE *DEFAULT-FILE-NAME* NIL :STRING
-   "The default file name.")
-(DEFVARIABLE *DEFAULT-AUX-FILE-NAME* NIL :STRING
-   "The auxiliary default file name, used by Insert File, etc.")
 (DEFVARIABLE *SPACE-INDENT-FLAG* NIL :BOOLEAN
    "If true, Auto Fill mode will indent new lines.")
 (DEFVARIABLE *POINT-PDL-MAX* 10 :FIXNUM
@@ -534,13 +531,15 @@ This variable tells ZWEI how to denote the region between POINT and MARK.
 It should be a symbol, either :UNDERLINE or :REVERSE-VIDEO.")
 (DEFVARIABLE *DEFAULT-MAJOR-MODE* 'LISP-MODE :ANYTHING
    "The major mode in which new buffers are placed by default.")
+(DEFVARIABLE *DEFAULT-PACKAGE* NIL :ANYTHING
+   "The package new buffers are initially in.")
 (DEFVARIABLE *LISP-INDENT-OFFSET* NIL :FIXNUM-OR-NIL
-   "Same as Q$Lisp Indent Offset$ in EMACS.  Good luck trying to use it. - DLW & MMcM")
+   "Same as QLisp Indent Offset in EMACS.  Good luck trying to use it. - DLW & MMcM")
 (DEFVARIABLE *COMMENT-ROUND-FUNCTION* 'ROUND-FOR-COMMENT :ANYTHING
    "Function used to round up column when comments cannot be aligned to comment column.")
 (DEFVARIABLE *LISP-DEFUN-INDENTATION* '(2 1) :ANYTHING
    "Amount to indent the second line of a defun.")
-(DEFVARIABLE *LISP-INDENT-OFFSET-ALIST* *DEFAULT-INDENT-ALIST* :ANYTHING
+(DEFVARIABLE *LISP-INDENT-OFFSET-ALIST* *INITIAL-LISP-INDENT-OFFSET-ALIST* :ANYTHING
    "Describe this someday when all figured out.")
 (DEFVARIABLE *FLASH-MATCHING-PAREN* T :BOOLEAN
    "Flash the ( that matches the ) we are to the right of.")
@@ -548,8 +547,9 @@ It should be a symbol, either :UNDERLINE or :REVERSE-VIDEO.")
    "Amount to offset indentation of car of list.")
 (DEFVARIABLE *FILE-VERSIONS-KEPT* 2 :FIXNUM
    "Number of non-superfluous versions of a file in Dired.")
-(DEFVARIABLE *TEMP-FILE-FN2-LIST* '("MEMO" "XGP" "@XGP" "UNFASL" "OUTPUT" "OLREC") :ANYTHING
-   "List of strings which are second file names to be automatically 
+(DEFVARIABLE *TEMP-FILE-TYPE-LIST* '("MEMO" "XGP" "@XGP" "UNFASL" "OUTPUT" "OLREC" "PRESS")
+	     :ANYTHING
+   "List of strings which are file types to be automatically 
 marked for deletion in Dired.")
 (DEFVARIABLE *TEXT-JUSTIFIER-ESCAPE-LIST* '(#/. #/@ #/- #/\ #/') :CHAR-LIST
    "List of characters that start text justifier commands when at the start of the line.")
@@ -559,3 +559,13 @@ marked for deletion in Dired.")
    "Character to end an underlining.")
 (DEFVARIABLE *PL1-INDING-STYLE* 1 :FIXNUM
    "Pl1 indentation style.")
+(DEFVARIABLE *ELECTRIC-SHIFT-LOCK-XORS* T :BOOLEAN
+   "Shift key acts as xor of shift in electric shift-lock mode")
+(DEFVARIABLE *KILL-INTERVAL-SMARTS* NIL :BOOLEAN
+   "Kill and yank commands try to optimize whitespace")
+
+	;:PACKAGE should be in here too except it causes lossage with
+	;REVERT-BUFFER and REPARSE-MODE-LINE remprop'ing it when it didn't
+	;come from the file mode line in the first place.  This needs redesigning.
+(DEFVARIABLE *MODE-LINE-PROPERTIES* '(:MODE :LOWERCASE :FONTS :BACKSPACE :TAB-WIDTH) :ANYTHING
+   "Known properties in the -*- line")

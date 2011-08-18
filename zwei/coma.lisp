@@ -49,8 +49,6 @@
 ;;; *TYPEOUT-WINDOW*
 ;;;    A larger, menu-like window for random stream output.
 
-(ENDF HEAD)
-
 (DEFCOM COM-SELF-INSERT "Inserts itself." (NM)
   (LET ((CHAR (IN-CURRENT-FONT *LAST-COMMAND-CHAR*))
 	(POINT (POINT)))
@@ -58,7 +56,7 @@
 	 (DOTIMES (I *NUMERIC-ARG*)
 	   (INSERT-MOVING POINT CHAR))
 	 (SETQ *CURRENT-COMMAND-TYPE* 'SELF-INSERT)
-	 (MVRETURN DIS-LINE LINE INDEX))))
+	 (VALUES DIS-LINE LINE INDEX))))
 
 (DEFCOM COM-QUOTED-INSERT "Insert a quoted character" (NM)
   (TYPEIN-LINE "~:[~*~;~A ~]~:@C: "
@@ -91,7 +89,10 @@ move point that many characters backward." (KM -R)
 With a negative argument, use the absolute value of the argument, and
 count the characters the way ITS would count them, namely,
 count newlines as two characters rather than one.  This is useful for interpreting
-character counts returned by R and BOLIO." (KM)
+character counts returned by R and BOLIO.
+With no argument, just feep; the user was probably in Bolio mode and confused." (KM)
+  (IF (NOT *NUMERIC-ARG-P*)
+      (BARF))
   (LET ((DEST (FUNCALL (IF (MINUSP *NUMERIC-ARG*) #'FORWARD-ITS-CHAR #'FORWARD-CHAR)
 		       (INTERVAL-FIRST-BP *INTERVAL*) (ABS *NUMERIC-ARG*))))
     (IF (NULL DEST)
@@ -124,8 +125,7 @@ commands." (KM -R)
 		   ((NOT *NUMERIC-ARG-P*)
 		    ;; No argument give, going down.  Create a line.
 		    (SETQ RET DIS-TEXT)
-		    (MOVE-BP POINT (INSERT (INTERVAL-LAST-BP *INTERVAL*) #\CR))
-		    (SETQ *REAL-LINE-GOAL-XPOS* 0))
+		    (MOVE-BP POINT (INSERT (INTERVAL-LAST-BP *INTERVAL*) #\CR)))
 		   (T
 		    ;; He was going forwards, go to end.
 		    (MOVE-BP POINT (INTERVAL-LAST-BP *INTERVAL*))
@@ -138,13 +138,17 @@ commands." (KM -R)
 			  *REAL-LINE-GOAL-XPOS*)
 			 (T (BP-INDENTATION POINT))))
 	     (LET ((INDEX (INDENTATION-INDEX DEST *REAL-LINE-GOAL-XPOS*)))
-	       (MOVE-BP POINT DEST (OR INDEX (LINE-LENGTH DEST)))))))
+	       (MOVE-BP POINT DEST
+			(COND (INDEX)
+			      ((NEQ DEST (BP-LINE (INTERVAL-LAST-BP *INTERVAL*)))
+			       (LINE-LENGTH DEST))
+			      (T (BP-INDEX (INTERVAL-LAST-BP *INTERVAL*)))))))))
     RET))
 
 (DEFCOM COM-SET-GOAL-COLUMN "Sets the goal column for Up Real Line and Down Real Line." (KM)
-  (SETQ *PERMANENT-REAL-LINE-GOAL-XPOS*
-	(COND ((> *NUMERIC-ARG* 1) NIL)
-	      (T (BP-INDENTATION (POINT)))))
+  (REPORT-COLUMN-SETTING "c-N//c-P goal column"
+			 (SETQ *PERMANENT-REAL-LINE-GOAL-XPOS* (IF (> *NUMERIC-ARG* 1) NIL
+								   (BP-INDENTATION (POINT)))))
   DIS-NONE)
 
 (DEFCOM COM-RECENTER-WINDOW "Choose a new point in buffer to begin redisplay.
@@ -194,12 +198,16 @@ With argument, move window up <arg> lines." (KM)
   (RECENTER-WINDOW-RELATIVE *WINDOW* (* *NUMERIC-ARG* (- 1 (WINDOW-N-PLINES *WINDOW*))))
   DIS-NONE)
 
-(DEFCOM COM-BEGINNING-OF-LINE "Move to the beginning of the line." (KM)
-  (MOVE-BP (POINT) (BEG-LINE (POINT) (1- *NUMERIC-ARG*)))
+(DEFCOM COM-BEGINNING-OF-LINE "Move to the beginning of the line.
+With a numeric argument, also moves forward by a number of lines
+one less than the argument." (KM)
+  (MOVE-BP (POINT) (BEG-LINE (POINT) (1- *NUMERIC-ARG*) T))
   DIS-BPS)
 
-(DEFCOM COM-END-OF-LINE "Move to the end of the line." (KM)
-  (MOVE-BP (POINT) (END-LINE (POINT) (1- *NUMERIC-ARG*)))
+(DEFCOM COM-END-OF-LINE "Move to the end of the line.
+With a numeric argument, also moves forward by a number of lines
+one less than the argument." (KM)
+  (MOVE-BP (POINT) (END-LINE (POINT) (1- *NUMERIC-ARG*) T))
   DIS-BPS)
 
 (DEFCOM COM-MOVE-TO-SCREEN-EDGE "Jump to top or bottom of screen.
@@ -256,7 +264,7 @@ from the end." (KM PUSH)
   DIS-BPS)
 
 (DEFCOM COM-SWAP-POINT-AND-MARK "Exchange point and the mark." (SM)
-  (OR (EQ (BP-INTERVAL (POINT)) (BP-INTERVAL (MARK)))
+  (OR (EQ (BP-TOP-LEVEL-NODE (POINT)) (BP-TOP-LEVEL-NODE (MARK)))
       (BARF "Point and mark not in same buffer"))
   (SWAP-BPS (POINT) (MARK))
   DIS-BPS)
@@ -295,14 +303,17 @@ With an argument, exchanges point with the nth position on the stack." (KM)
 A numeric argument rotates top arg entries of the point pdl (the default
 numeric argument is 2).  An argument of 1 rotates the whole point pdl
 and a negative argument rotates the other way." ()
-  (ROTATE-POINT-PDL *WINDOW* (IF *NUMERIC-ARG-P* *NUMERIC-ARG* 2)))
+  (ROTATE-POINT-PDL *WINDOW* (IF (MEMQ *NUMERIC-ARG-P* '(:SIGN NIL))
+				 (* 2 *NUMERIC-ARG*) *NUMERIC-ARG*)))
 
 (DEFVAR *DEFAULT-PREVIOUS-POINT-ARG* 3)
 (DEFCOM COM-MOVE-TO-DEFAULT-PREVIOUS-POINT "Rotate the point pdl.
 A numeric argument specifies the number of entries to rotate, and sets the new default." ()
-  (AND *NUMERIC-ARG-P*
-       (SETQ *DEFAULT-PREVIOUS-POINT-ARG* *NUMERIC-ARG*))
-  (ROTATE-POINT-PDL *WINDOW* *DEFAULT-PREVIOUS-POINT-ARG*))
+  (OR (MEMQ *NUMERIC-ARG-P* '(:SIGN NIL))
+      (SETQ *DEFAULT-PREVIOUS-POINT-ARG* *NUMERIC-ARG*))
+  (ROTATE-POINT-PDL *WINDOW* (IF (EQ *NUMERIC-ARG-P* ':SIGN)
+				 (* *NUMERIC-ARG* *DEFAULT-PREVIOUS-POINT-ARG*)
+				 *DEFAULT-PREVIOUS-POINT-ARG*)))
 
 (DEFCOM COM-INSERT-CRS "Insert one or more newlines into the buffer." ()
   (LET ((POINT (POINT)))
@@ -368,8 +379,9 @@ down a line first (killing the end of the current line)." ()
 
 (DEFCOM COM-DELETE-FORWARD "Delete one or more characters forward." ()
   (LET ((POINT (POINT)))
-    (LET ((BP (FORWARD-CHAR POINT *NUMERIC-ARG* T)))
-      (COND ((EQ (BP-LINE POINT) (BP-LINE BP))
+    (LET ((BP (FORWARD-CHAR POINT *NUMERIC-ARG*)))
+      (COND ((NULL BP) (BARF))
+	    ((EQ (BP-LINE POINT) (BP-LINE BP))
 	     (MUST-REDISPLAY *WINDOW*
 			     DIS-LINE
 			     (BP-LINE BP)
@@ -408,7 +420,7 @@ With a numeric argument, always kills the specified number of lines." ()
 		  DIS-TEXT)
 		 (T
 		  (KILL-INTERVAL POINT (END-LINE POINT) T T)
-		  (MVRETURN DIS-LINE (BP-LINE POINT) (BP-INDEX POINT))))))))
+		  (VALUES DIS-LINE (BP-LINE POINT) (BP-INDEX POINT))))))))
 
 (DEFCOM COM-CLEAR "Kill to the start of the current line." ()
   (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
@@ -430,7 +442,7 @@ Killed text is placed on the kill-ring for retrieval" ()
        (SETF (WINDOW-MARK-P *WINDOW*) T))
   (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
   (REGION (BP1 BP2)
-     (KILL-INTERVAL BP1 BP2 T T))
+    (KILL-INTERVAL BP1 BP2 T T T))
   (CLEAN-POINT-PDL *WINDOW*)
   (LET ((PDL (WINDOW-POINT-PDL *WINDOW*)))
     (AND PDL (MOVE-BP (MARK) (CAAR PDL))))
@@ -444,11 +456,13 @@ Killed text is placed on the kill-ring for retrieval" ()
 Leaves point and mark around what is inserted.  A numeric argument means use the
 n'th most recent kill from the ring." ()
   (OR *KILL-RING* (BARF))
-  (LET ((ARG (IF (EQ *NUMERIC-ARG-P* ':CONTROL-U) 0 (1- *NUMERIC-ARG*))))
+  (LET ((ARG (COND ((EQ *NUMERIC-ARG-P* ':CONTROL-U)  0)
+		   ((MINUSP *NUMERIC-ARG*) (+ (LENGTH *KILL-RING*) *NUMERIC-ARG*))
+		   (T (1- *NUMERIC-ARG*)))))
     (AND ( ARG (LENGTH *KILL-RING*)) (BARF))
     (SETQ *CURRENT-COMMAND-TYPE* 'YANK)
     (POINT-PDL-PUSH (POINT) *WINDOW* NIL NIL)
-    (LET ((BP (INSERT-THING (POINT) (NTH ARG *KILL-RING*))))
+    (LET ((BP (INSERT-KILL-RING-THING (POINT) (NTH ARG *KILL-RING*))))
       (COND ((EQ *NUMERIC-ARG-P* ':CONTROL-U)
 	     (MOVE-BP (MARK) BP))
 	    (T
@@ -463,9 +477,11 @@ the whole ring." ()
   ;; Need not check for MARK-P, by special case.
   (OR (EQ *LAST-COMMAND-TYPE* 'YANK) (BARF))
   (SETQ *CURRENT-COMMAND-TYPE* 'YANK)
-  (DELETE-INTERVAL (POINT) (MARK))
-  (OR (ZEROP *NUMERIC-ARG*)
-      (MOVE-BP (POINT) (INSERT-THING (POINT) (KILL-RING-POP (1- *NUMERIC-ARG*)))))
+  (LET ((SWAP-P (BP-< (POINT) (MARK))))
+    (DELETE-INTERVAL (POINT) (MARK))
+    (OR (ZEROP *NUMERIC-ARG*)
+	(MOVE-BP (POINT) (INSERT-KILL-RING-THING (POINT) (KILL-RING-POP (1- *NUMERIC-ARG*)))))
+    (AND SWAP-P (SWAP-BPS (POINT) (MARK))))
   DIS-TEXT)
 
 ;;; If there was no arg at all, *NUMERIC-ARG-P* is NIL and *NUMERIC-ARG* is 1.
@@ -625,14 +641,14 @@ argument, it interchanges the S-expressions at point and mark." ()
 	  BP4 (POINT-PDL-POP *WINDOW*))
     (LET ((LIST (LIST BP1 BP2 BP3 BP4)))
       (SETQ LIST (SORT LIST #'(LAMBDA (BP1 BP2)
-				(AND (EQ (BP-INTERVAL BP1) (BP-INTERVAL BP2))
+				(AND (EQ (BP-TOP-LEVEL-NODE BP1) (BP-TOP-LEVEL-NODE BP2))
 				     (BP-< BP1 BP2)))))
       (SETQ BP1 (FIRST LIST)
 	    BP2 (SECOND LIST)
 	    BP3 (THIRD LIST)
 	    BP4 (FOURTH LIST)))
-    (OR (AND (EQ (BP-INTERVAL BP1) (BP-INTERVAL BP2))
-	     (EQ (BP-INTERVAL BP3) (BP-INTERVAL BP4)))
+    (OR (AND (EQ (BP-TOP-LEVEL-NODE BP1) (BP-TOP-LEVEL-NODE BP2))
+	     (EQ (BP-TOP-LEVEL-NODE BP3) (BP-TOP-LEVEL-NODE BP4)))
 	(BARF "Regions are not both within single buffers"))
     (WITH-BP (NBP2 (INSERT-INTERVAL BP2 BP3 BP4 T) ':NORMAL)
       (WITH-BP (NBP4 (INSERT-INTERVAL BP4 BP1 BP2 T) ':NORMAL)
@@ -645,17 +661,17 @@ argument, it interchanges the S-expressions at point and mark." ()
 	(MOVE-BP POINT NBP4))))
   DIS-TEXT)
 
-(DEFUN REVERSE-SUBR (FN N &AUX (POINT (POINT)) BP-LIST)
+(DEFUN REVERSE-SUBR (FN N &OPTIONAL (BP (POINT)) BP-LIST)
   (AND (MINUSP N)
-       (SETQ POINT (FUNCALL FN POINT N)
+       (SETQ BP (FUNCALL FN BP N)
 	     N (- N)))
   (UNWIND-PROTECT
     (PROGN
       (DO ((I 0 (1+ I))
-	   (START-BP POINT END-BP)
+	   (START-BP BP END-BP)
 	   (END-BP))
 	  (( I N)
-	   (UNDO-SAVE POINT END-BP T "Reverse"))
+	   (UNDO-SAVE BP END-BP T "Reverse"))
 	(SETQ END-BP (OR (FUNCALL FN START-BP 1) (BARF))
 	      START-BP (OR (FUNCALL FN END-BP -1) (BARF)))
 	(PUSH (LIST (COPY-BP START-BP ':MOVES) (COPY-BP END-BP ':NORMAL)) BP-LIST))
@@ -670,10 +686,12 @@ argument, it interchanges the S-expressions at point and mark." ()
 	      LEFT-END-BP (CADAR LIST-FROM-THE-LEFT))
 	(SETQ RIGHT-START-BP (CAAR LIST-FROM-THE-RIGHT)
 	      RIGHT-END-BP (CADAR LIST-FROM-THE-RIGHT))
-	(INSERT-INTERVAL LEFT-START-BP RIGHT-START-BP RIGHT-END-BP T)
-	(DELETE-INTERVAL RIGHT-START-BP RIGHT-END-BP T)
-	(INSERT-INTERVAL RIGHT-START-BP LEFT-START-BP LEFT-END-BP T)
-	(DELETE-INTERVAL LEFT-START-BP LEFT-END-BP T)))
+	(INSERT-INTERVAL LEFT-START-BP
+			 (PROG1 (COPY-INTERVAL RIGHT-START-BP RIGHT-END-BP T)
+				(DELETE-INTERVAL RIGHT-START-BP RIGHT-END-BP T)))
+	(INSERT-INTERVAL RIGHT-START-BP
+			 (PROG1 (COPY-INTERVAL LEFT-START-BP LEFT-END-BP T)
+				(DELETE-INTERVAL LEFT-START-BP LEFT-END-BP T)))))
     (DO ((BPS BP-LIST (CDR BPS)))
 	((NULL BPS))
       (FLUSH-BP (CAAR BPS))
@@ -683,13 +701,22 @@ argument, it interchanges the S-expressions at point and mark." ()
   (REVERSE-SUBR 'FORWARD-LINE *NUMERIC-ARG*)
   DIS-TEXT)
 
-(DEFUN KILL-COMMAND-INTERNAL (FUNCTION ARG &AUX (POINT (POINT)))
-  (KILL-INTERVAL-ARG POINT
-		     (OR (FUNCALL FUNCTION POINT ARG) (BARF))
-		     ARG)
-  (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
-  (MOVE-BP (MARK) POINT)
+(DEFCOM COM-REVERSE-FOLLOWING-LIST "Reverse the elements of the list after point" ()
+  (LET* ((BP (POINT))
+	 (COUNT (OR (COUNT-LIST-ELEMENTS BP) (BARF))))
+    (REVERSE-SUBR #'FORWARD-SEXP COUNT (FORWARD-LIST BP 1 NIL -1 T)))
   DIS-TEXT)
+
+(DEFUN KILL-COMMAND-INTERNAL (FUNCTION ARG &AUX (POINT (POINT)))
+  (LET* ((OTHER-END (OR (FUNCALL FUNCTION POINT ARG) (BARF)))
+	 (SAME-LINE-P (EQ (BP-LINE POINT) (BP-LINE OTHER-END))))
+    (KILL-INTERVAL-ARG POINT OTHER-END ARG)
+    (SETQ *CURRENT-COMMAND-TYPE* 'KILL)
+    (MOVE-BP (MARK) POINT)
+    (COND ((AND SAME-LINE-P
+		(= (BP-INDEX POINT) (LINE-LENGTH (BP-LINE POINT))))
+	   (VALUES DIS-LINE (BP-LINE POINT) (BP-INDEX POINT)))
+	  (T DIS-TEXT))))
 
 (DEFCOM COM-FORWARD-WORD "Move one or more words forward." (KM)
   (MOVE-BP (POINT)
@@ -761,18 +788,14 @@ but never over an unbalanced (.  Useful in keyboard macros, e.g." (KM)
 
 (DEFCOM COM-FORWARD-UP-LIST "Move up one level of list structure, forward.
 Also, if called inside of a string, moves up out of that string." (KM)
-  (LET ((BP (IF (LISP-BP-SYNTACTIC-CONTEXT (POINT))
-		(FORWARD-UP-STRING (POINT) (MINUSP *NUMERIC-ARG*))
-		(FORWARD-SEXP (POINT) *NUMERIC-ARG* NIL 1))))
+  (LET ((BP (FORWARD-UP-LIST-OR-STRING (POINT) *NUMERIC-ARG*)))
     (OR BP (BARF))
     (MOVE-BP (POINT) BP))
   DIS-BPS)
 
 (DEFCOM COM-BACKWARD-UP-LIST "Move up one level of list structure, backward.
 Also, if called inside of a string, moves back up out of that string." (KM)
-  (LET ((BP (IF (LISP-BP-SYNTACTIC-CONTEXT (POINT))
-		(FORWARD-UP-STRING (POINT) (NOT (MINUSP *NUMERIC-ARG*)))
-		(FORWARD-SEXP (POINT) (- *NUMERIC-ARG*) NIL 1))))
+  (LET ((BP (FORWARD-UP-LIST-OR-STRING (POINT) (- *NUMERIC-ARG*))))
     (OR BP (BARF))
     (MOVE-BP (POINT) BP))
   DIS-BPS)
@@ -785,17 +808,17 @@ Also, if called inside of a string, moves back up out of that string." (KM)
 
 (DEFCOM COM-END-OF-DEFUN "Go to the end of the current defun." (KM)
   (LET ((BP (FORWARD-DEFUN (POINT) -1 T)))		;Go to front of defun.
-    (OR (SETQ BP (FORWARD-LIST BP)) (BARF))		; and forward over it.
+    (OR (SETQ BP (FORWARD-SEXP BP)) (BARF))		; and forward over it.
     (SETQ BP (BEG-LINE BP 1 T))
     (COND ((OR (BP-< BP (POINT))                      ;If we were between defuns,
 	       (AND (PLUSP *NUMERIC-ARG*) (BP-= BP (POINT))))
 	   (SETQ BP (END-LINE BP -1 T))
-	   (OR (SETQ BP (FORWARD-LIST (FORWARD-DEFUN BP 1 T)))
+	   (OR (SETQ BP (FORWARD-SEXP (FORWARD-DEFUN BP 1 T)))
 	       (BARF))
 	   (SETQ BP (BEG-LINE BP 1 T))))              ; then move ahead another.
     (POINT-PDL-PUSH (POINT) *WINDOW*)
     (OR (= *NUMERIC-ARG* 1)
-	(SETQ BP (BEG-LINE (FORWARD-LIST (FORWARD-DEFUN BP (1- *NUMERIC-ARG*) T) 1 T) 1 T)))
+	(SETQ BP (BEG-LINE (FORWARD-SEXP (FORWARD-DEFUN BP (1- *NUMERIC-ARG*) T) 1 T) 1 T)))
     (MOVE-BP (POINT) BP))
   DIS-BPS)
 
