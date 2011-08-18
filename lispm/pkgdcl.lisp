@@ -148,7 +148,7 @@
   (MYREFNAME GLOBAL COLOR))
 
 (PACKAGE-DECLARE ZWEI GLOBAL 10000
-	(("AI: NZWEI; DEFS >" DEFS)		;Structure definitions and declarations.
+	(("AI: NZWEI; DEFS QFASL" DEFS)		;Structure definitions and declarations.
 	 ("AI: NZWEI; MACROS QFASL" DEFS)	;Lisp macros used in the ZWEIs source.
 
 	 ("AI: NZWEI; COMTAB QFASL")		;Functions regarding comtabs and command loop.
