@@ -126,7 +126,8 @@
 
   (COND ((AND (FBOUNDP 'FORMAT) (FBOUNDP 'CHAOS:HOST-DATA))
          (FORMAT T "~A~%" (CHAOS:HOST-DATA CHAOS:MY-ADDRESS)))
-        (T (PRINC "Lisp Machine cold load environment, beware!")))
+        (T (FUNCALL STANDARD-OUTPUT ':CLEAR-EOL)
+	   (PRINC "Lisp Machine cold load environment, beware!")))
 
   ;; This process no longer needs to be able to run except for the usual reasons.
   (COND ((FBOUNDP 'TV:WINDOW-INITIALIZE)
