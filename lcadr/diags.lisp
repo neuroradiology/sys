@@ -118,6 +118,8 @@
   (CC-TEST-INCREMENTER)
   (PRINT 'CC-TEST-ARITH-COND-JUMP)
   (CC-TEST-ARITH-COND-JUMP)
+  (PRINT 'CC-GROSS-DATA-TESTS)
+  (CC-GROSS-DATA-TESTS ALL-MEMORIES)
   (PRINT 'CC-ADDRESS-TEST-A-MEM)
   (CC-ADDRESS-TEST-A-MEM)
   (PRINT 'CC-TEST-M-MEM-ADR)
@@ -128,12 +130,11 @@
   (CC-TEST-PDL-ADR))
 
 ;Test each 4K separately since they have separate address drivers
-(DEFUN CC-FAST-ADDRESS-TEST-C-MEM-BANKS (&OPTIONAL (NBANKS 3))
+(DEFUN CC-FAST-ADDRESS-TEST-C-MEM-BANKS (&OPTIONAL (NBANKS 4))
   (FORMAT T "CC-FAST-ADDRESS-TEST-C-MEM-BANKS~%")
   (DOTIMES (BANK NBANKS)
     (CC-FAST-ADDRESS-TEST
       (FORMAT NIL "CMEM-BANK ~A" BANK) (+ RACMO (* BANK 10000)) 48. 12.)))
-
 
 ;;; Toplevel data path tests
 
@@ -672,7 +673,9 @@ A-MEM & M-MEM -> IWR -> C-MEM -> IR(Jump) -> Unibus" RACMO 48.))
     (CC-RUN-TEST-LOOP 0)			;RUN UNTIL DONE OR ERROR
     (AND (= (CC-READ-PC) 3)			;NORMAL HALT, DONE
 	 (RETURN (NREVERSE ERRORS)))
-    (SETQ ADDRESS (1+ (#Q ASH #M LSH (CC-READ-M-MEM CONS-M-SRC-LC) -6))  ;NEXT ADDRESS TO DO
+    (SETQ ADDRESS (1+ (logand 7777
+			      (#Q ASH #M LSH (CC-READ-M-MEM CONS-M-SRC-LC)
+			       -6)))  ;NEXT ADDRESS TO DO
 	  LOC (1- ADDRESS)
 	  GOOD (CC-READ-M-MEM CONS-M-SRC-MD) 
 	  BAD (CC-READ-M-MEM 0))
@@ -791,8 +794,7 @@ A-MEM & M-MEM -> IWR -> C-MEM -> IR(Jump) -> Unibus" RACMO 48.))
   (DO ((N 3 (1- N))
        (ONES (SUB1 (EXPT 2 N-DATA-BITS)))
        (ZEROS 0)
-       (HIADR (+ REGADR (COND ((EQ MEM-NAME 'C-MEM) 30000)   ;CROCK
-			      (T (EXPT 2 N-ADDRESS-BITS)))))
+       (HIADR (+ REGADR (EXPT 2 N-ADDRESS-BITS)))
        (ERRORS 0))
       ((= N 0))
     (DO ((ADR REGADR (+ ADR 2))
@@ -1088,6 +1090,7 @@ BYTL-1=|)
 ;; Things to test are whether both halfwords and all 4 bytes properly mung
 ;; the MROT field.  Doesn't currently test whether automatic fetching.
 ;; Does test LC incrementing.  Eventually that should be tested.
+;; Should test LC -> VMA data path.
 (DEFUN CC-TEST-LC-AFFECTS-SHIFT ()
   (CC-WRITE-A-MEM 1 0)
   (CC-WRITE-M-MEM 2 37777777777)
@@ -1218,26 +1221,47 @@ LC=|)
 	    (PRINC '|, but should be |)
 	    (PRIN1 VAL))
 	   (T (SETQ OK-CNT (1+ OK-CNT))))))
-  (cc-execute (w-c-mem 0)
+  (cc-write-d-mem 0 (dpb 1 cons-disp-p-bit (dpb 1 cons-disp-n-bit 0)))
+  (do ((cnt 0 (1+ cnt))
+       (adr 0 (lsh 1 cnt)))
+      ((= adr 20000))
+    (cc-execute (w-c-mem adr)
 	      cons-ir-op cons-op-dispatch
 	      cons-ir-disp-lpc 1
 	      cons-ir-disp-bytl 0
 	      cons-ir-disp-addr 0)
-  (cc-write-d-mem 0 (dpb 1 cons-disp-p-bit (dpb 1 cons-disp-n-bit 0)))
-  (cc-save-micro-stack)
-  (setq cc-saved-micro-stack-ptr 0)
-  (as-1 -1 cc-micro-stack 0)
-  (as-1 -1 cc-micro-stack 1)
-  (cc-restore-micro-stack)
-  (cc-write-pc 0)
-  (cc-noop-clock)	;dispatch inst to IR
-  (cc-clock)		;execute it
-  (cc-noop-clock)	;write spc
-  (cc-save-micro-stack)
-  (cond ((not (= cc-saved-micro-stack-ptr 1))
-	 (format t "~%Dispatch push failed to advance USP ~s" cc-saved-micro-stack-ptr)))
-  (cond ((not (= (setq tem (ar-1 cc-micro-stack 1)) 0))
-	 (format t "~%Dispatch push own address at 0 pushed ~s instead" tem)))
+    (cc-save-micro-stack)
+    (setq cc-saved-micro-stack-ptr 0)
+    (as-1 -1 cc-micro-stack 0)
+    (as-1 -1 cc-micro-stack 1)
+    (cc-restore-micro-stack)
+    (cc-write-pc adr)
+    (cc-noop-clock)	;dispatch inst to IR
+    (cc-clock)		;execute it
+    (cc-noop-clock)	;write spc
+    (cc-save-micro-stack)
+    (cond ((not (= cc-saved-micro-stack-ptr 1))
+	   (format t "~%Dispatch push failed to advance USP ~s" cc-saved-micro-stack-ptr)))
+    (cond ((not (= (setq tem (ar-1 cc-micro-stack 1)) adr))
+	   (format t "~%Dispatch push own address at adr ~s pushed ~s instead" adr tem)))
+    (cc-execute (w-c-mem adr)
+	      cons-ir-op cons-op-dispatch
+	      cons-ir-disp-bytl 0
+	      cons-ir-disp-addr 0)
+    (cc-save-micro-stack)
+    (setq cc-saved-micro-stack-ptr 0)
+    (as-1 -1 cc-micro-stack 0)
+    (as-1 -1 cc-micro-stack 1)
+    (cc-restore-micro-stack)
+    (cc-write-pc adr)
+    (cc-noop-clock)	;dispatch inst to IR
+    (cc-clock)		;execute it
+    (cc-noop-clock)	;write spc
+    (cc-save-micro-stack)
+    (cond ((not (= cc-saved-micro-stack-ptr 1))
+	   (format t "~%Dispatch push failed to advance USP ~s" cc-saved-micro-stack-ptr)))
+    (cond ((not (= (setq tem (ar-1 cc-micro-stack 1)) (1+ adr)))
+	   (format t "~%Dispatch next address at adr ~s pushed ~s instead" adr tem))))
 )
 
  
@@ -1478,14 +1502,13 @@ AND of bad addresses: ~O~%OR of bad address: ~O"
       (DO () ((LDB-TEST 0001 (SETQ STATUS (PHYS-MEM-READ DC-STS-ADR)))))))
 
 
-(DEFUN CC-MEM-FILL (FROM TO &OPTIONAL (WORD 0) (FUNCTION (FUNCTION (LAMBDA (X) (1+ X)))))
+(DEFUN CC-MEM-FILL (FROM TO &OPTIONAL (WORD 0) (FUNCTION (FUNCTION 1+)))
   (DO ((ADR FROM (1+ ADR))
        (WORD WORD (FUNCALL FUNCTION WORD)))
       ((OR (KBD-TYI-NO-HANG) (> ADR TO)) ADR)
       (PHYS-MEM-WRITE ADR WORD)))
 
-(DEFUN CC-MEM-FILL-CHECK (FROM TO &OPTIONAL (WORD 0)
-                                            (FUNCTION (FUNCTION (LAMBDA (X) (1+ X)))))
+(DEFUN CC-MEM-FILL-CHECK (FROM TO &OPTIONAL (WORD 0) (FUNCTION (FUNCTION 1+)))
   (DO ((ADR FROM (1+ ADR))
        (MEM-WORD 0)
        (WORD WORD (FUNCALL FUNCTION WORD)))
@@ -1537,7 +1560,8 @@ AND of bad addresses: ~O~%OR of bad address: ~O"
 (DEFMACRO CC-MEMORY-BANK (VMA)
   `(LDB 1612 ,VMA))
 
-(DEFUN CC-PARITY-SWEEP-INFO (PHYS-ADR-LIST &OPTIONAL (PRINT-AREA-SYMBOL T))
+(DEFUN CC-PARITY-SWEEP-INFO (PHYS-ADR-LIST
+			     &OPTIONAL FIX-SINGLE-BIT-ERRORS (PRINT-AREA-SYMBOL T))
   (DO ((L PHYS-ADR-LIST (CDR L))
        (PHYS-ADR) (VIRT-ADR) (AREA-NUMBER) (AREA-SYMBOL) (CORE) (DISK))
       ((NULL L) NIL)
@@ -1551,8 +1575,12 @@ AND of bad addresses: ~O~%OR of bad address: ~O"
     (FORMAT T " Core copy ~O, Disk copy ~O  bits:"
 	    (SETQ CORE (QF-MEM-READ VIRT-ADR))
 	    (SETQ DISK (QF-MEM-READ-DISK-COPY VIRT-ADR)))
-    (CC-PRINT-BITS (LOGXOR CORE DISK)))
-)
+    (CC-PRINT-BITS (LOGXOR CORE DISK))
+    (IF (AND FIX-SINGLE-BIT-ERRORS
+	     T  ;(SINGLE-BIT-P (LOGXOR CORE DISK))
+	     )
+	(PROGN (FORMAT T "~%Fixing locn ~o to ~o" phys-adr disk)
+	       (PHYS-MEM-WRITE PHYS-ADR DISK)))))
 
 (DEFUN CC-PARITY-SWEEP (&OPTIONAL (NUMBER-OF-MEMORIES 2)
 				  VERBOSE-P FIX-ERRORS-P
@@ -1688,6 +1716,8 @@ Speed	ILong	  Pin	Actual	Nominal
     (setq start-time (dpb high 2007 low)))
   (process-sleep 60.)
   (spy-write spy-clk 10)	;Clear RUN, but leave DEBUG set
+  (spy-write spy-mode 0)	;Dont leave that random speed in there.  The cc-read-m-mem
+				; may cause randomness if you do.
   (let ((low (%unibus-read 764120))  ;Hardware synchronizes if you read this one first
 	(high (%unibus-read 764122)))
     (setq end-time (dpb high 2007 low)))
@@ -2171,11 +2201,22 @@ Speed	ILong	  Pin	Actual	Nominal
       CONS-IR-ALUF CONS-ALU-M+1)
  )
 
+(defun display-registers-for-debug-divide-test ()
+  (cond ((boundp display-registers-for-debug-divide-test-flag)
+	 (format T "~%A-MEM 1001 dividend  ~A    " (cc-read-a-mem 1001))
+	 (format T "A-MEM 1002 divisor   ~A~%" (cc-read-a-mem 1002))
+	 (format T "A-MEM 1003 rem       ~A    " (cc-read-a-mem 1003))
+	 (format T "M-MEM 1    count     ~A" (cc-read-m-mem 1))
+	 (format T "~%M-1                  ~A    " (cc-read-m-mem #o22))
+	 (format T "A-2                  ~A" (cc-read-A-mem #o23))
+	 (format T "~%Output Bus           ~A" (cc-read-obus)))))
+
+;(setq  display-registers-for-debug-divide-test-flag T)
 
 ;first arg of NIL says use values in machine.
 (DEFUN CC-DIVIDE-TEST-LOOP (&OPTIONAL (DIVIDEND (RANDOM 37777777))
 			    (DIVISOR (RANDOM 37777777)))
-  (LET ((REM (\ DIVIDEND DIVISOR)))
+  (LET ((REM (IF DIVIDEND (\ DIVIDEND DIVISOR))))
     (CC-WRITE-M-MEM 1 0)			;error count
     (IF (NUMBERP DIVIDEND)
 	(PROGN (CC-WRITE-A-MEM 1001 DIVIDEND)
@@ -2186,10 +2227,27 @@ Speed	ILong	  Pin	Actual	Nominal
     (CC-READ-M-MEM 1))
 )
 
-(DEFUN CC-DIVIDE-TEST-LOOP-STATE NIL
-  (LIST (CC-READ-A-MEM 1001) (CC-READ-A-MEM 1002)))
+(DEFUN CC-DIVIDE-SAVE-STATE NIL
+  (LIST (CC-READ-A-MEM 1001) (CC-READ-A-MEM 1002) (CC-READ-A-MEM 1003)))
 
-(DEFUN CC-DIVIDE-RESTORE-STATE (S)
+(DEFUN CC-DIVIDE-RESTORE-STATE (STATE)
+  (CC-WRITE-A-MEM 1001 (CAR STATE))
+  (CC-WRITE-A-MEM 1002 (CADR STATE))
+  (CC-WRITE-A-MEM 1003 (CADDR STATE)))
+  
+(DEFUN CC-DIVIDE-COMPARE-STATE (STATE &AUX TEM)
+  (IF (NOT (= (SETQ TEM (CC-READ-A-MEM 1001)) (CAR STATE)))
+      (FORMAT T "~%1001 CLOBBERED FROM ~S TO ~S" TEM (CAR STATE)))
+  (IF (NOT (= (SETQ TEM (CC-READ-A-MEM 1002)) (CADR STATE)))
+      (FORMAT T "~%1002 CLOBBERED FROM ~S TO ~S" TEM (CADR STATE)))
+  (IF (NOT (= (SETQ TEM (CC-READ-A-MEM 1003)) (CADDR STATE)))
+      (FORMAT T "~%1003 CLOBBERED FROM ~S TO ~S" TEM (CADDR STATE))))
+
+(comment
+(DEFUN CC-DIVIDE-TEST-LOOP-STATE NIL
+  (LIST (CC-READ-A-MEM 1001) (CC-READ-A-MEM 1002))) )
+
+(DEFUN CC-DIVIDE-RESTORE-STATE-AND-DIAGNOSE (S)
   (DBG-RESET)
   (CC-RESET-MACH)
   (CC-ZERO-ENTIRE-MACHINE)
@@ -2219,9 +2277,9 @@ Speed	ILong	  Pin	Actual	Nominal
 	  (IF (NOT (= (LDB CONS-IR-OP INST) CONS-OP-JUMP))
 	      (IF (SETQ TEM (ASSQ PC HIST))
 		  (IF (NOT (= (CDR TEM) OBUS))
-		      (PROGN (FORMAT T "~%Multiple values observed at PC ~S, ~S ~S "
+		      (COMMENT (PROGN (FORMAT T "~%Multiple values observed at PC ~S, ~S ~S "
 				     PC OBUS (CDR TEM))
-			     (CC-PRINT-BITS (LOGXOR OBUS (CDR TEM)))))
+			     (CC-PRINT-BITS (LOGXOR OBUS (CDR TEM))))))
 		  (SETQ HIST (CONS (CONS PC OBUS) HIST))))
 	  (SPY-WRITE SPY-CLK 1))	;continue
 	(CC-STOP-MACH)
@@ -2250,3 +2308,183 @@ Speed	ILong	  Pin	Actual	Nominal
 		(LENGTH HIST) GOOD-COMPARISONS BAD-COMPARISONS)
   ))
 
+;THIS DOESNT SEEM TO WORK JUST YET.
+(DEFUN CC-PDL-BUFFER-PUSH-POP-CHECK ()
+  (DBG-RESET)
+  (CC-RESET-MACH)
+  (CC-EXECUTE (W-C-MEM 100)
+      CONS-IR-FUNC-DEST CONS-FUNC-DEST-PDL-BUFFER-PUSH)
+  (CC-EXECUTE (W-C-MEM 101)
+      CONS-IR-M-SRC CONS-M-SRC-C-PDL-BUFFER-POINTER-POP)
+  (CC-EXECUTE (W-C-MEM 102)
+      CONS-IR-OP CONS-OP-JUMP
+      CONS-IR-JUMP-ADDR 100
+      CONS-IR-JUMP-COND CONS-JUMP-COND-UNC
+      CONS-IR-N 1)
+  (LET ((PP 1777) PC RPP INCR IR)
+    (CC-WRITE-PDL-BUFFER-POINTER PP)
+    (CC-SET-SPEED 2)
+    (CC-COLON-START 100)
+    (DOTIMES (C 1000)
+      (CC-STOP-MACH)
+      (SETQ PC (CC-READ-PC)
+	    IR (CC-READ-IR)
+	    RPP (CC-READ-PDL-BUFFER-POINTER))
+      (SETQ INCR (CDR (ASSQ PC '((100 . 0) (101 . 1) (102 . 0) (103 . 0)))))
+      (IF (NULL INCR)
+	  (FORMAT T "~%PC was random ~S" PC)
+	  (IF (NOT (= (LOGAND 1777 (+ PP INCR)) RPP))
+	      (FORMAT T "~%PP WRONG, WAS ~S SHOULD BE ~S" RPP (LOGAND 1777 (+ PP INCR)))))
+      (CC-WRITE-IR IR)
+      (CC-WRITE-PC PC)
+      (CC-CLOCK)
+      (SPY-WRITE SPY-CLK 1))   ;CONTINUE
+    ))
+
+(DEFVAR KEY-BITS
+	'((#/4 11)
+	  (#\PLUS-MINUS 21)
+	  (#\NETWORK 42)
+	  (#\MACRO 100)
+	  (#/C 164)))
+
+(DEFVAR *TEST-LOCAL-KEYBOARD* NIL)
+(DEFUN KEYBOARD-DBG-READ (ADR)
+  (IF *TEST-LOCAL-KEYBOARD* (%UNIBUS-READ ADR) (DBG-READ ADR)))
+
+(DEFUN KEYBOARD-DBG-WRITE (ADR DATA)
+  (IF *TEST-LOCAL-KEYBOARD* (%UNIBUS-WRITE ADR DATA) (DBG-WRITE ADR DATA)))
+
+(DEFUN TEST-IO-KEYBOARD ()
+  (KEYBOARD-DBG-READ 764100)				;Clear out keyboard
+  (IF (LDB-TEST 0501 (KEYBOARD-DBG-READ 764112))
+      (FORMAT T "~&Keyboard ready did not clear when read"))
+  (DOLIST (L KEY-BITS)
+    (APPLY 'TEST-KEY L))
+  )
+
+(DEFUN TEST-KEY (KEY VALUE)
+  (FORMAT T "~&Hold down the ~:C key on the debugee and then type space on this keyboard."
+	  KEY)
+  (FUNCALL STANDARD-INPUT ':TYI)
+  (LET ((READ-KEY (KEYBOARD-DBG-READ 764100)))
+    (IF ( READ-KEY VALUE)
+	(FORMAT T "Keyboard should have been ~O and was ~O" VALUE READ-KEY))))
+
+(DEFUN CC-TEST-IO-BOARD (&OPTIONAL (*TEST-LOCAL-KEYBOARD* *TEST-LOCAL-KEYBOARD*))
+  (FORMAT T "~&Testing Time of day clock")
+  (CHECK-ANDS-AND-OR 764120 16. 1000. "Time of day")
+  ;; Enable remote mouse
+  (KEYBOARD-DBG-WRITE 764112 1)
+  (FORMAT T
+	  "~&Testing mouse Y direction, roll mouse upwards for a while
+and then type space")
+  (CHECK-ANDS-AND-OR 764104 12. NIL "Mouse Y position")
+  (FORMAT T
+	  "~&Testing mouse X direction, roll mouse sideways for a while
+and then type space")
+  (CHECK-ANDS-AND-OR 764106 12. NIL "Mouse X position")
+  (FORMAT T "~&Testing console beeper, should be beeping")
+  (LOOP DO (KEYBOARD-DBG-READ 764110) UNTIL (FUNCALL STANDARD-INPUT ':TYI-NO-HANG))
+  (FORMAT T "~&Testing Chaosnet interface")
+  (LET ((CHAOS:CHATST-USE-DEBUG (NOT *TEST-LOCAL-KEYBOARD*)))
+    (CHAOS:CHATST)))
+
+(DEFUN CHECK-ANDS-AND-OR (ADDR BITS ITERATION NAME)
+  (LET* ((MASK (1- (^ 2 BITS)))
+	 (AND MASK)
+	 (OR 0))
+    (DO ((I 0 (1+ I))
+	 (RES))
+	((IF (NULL ITERATION)
+	     (FUNCALL STANDARD-INPUT ':TYI-NO-HANG)
+	     ( I ITERATION)))
+      (SETQ RES (LOGAND MASK (KEYBOARD-DBG-READ ADDR))
+	    OR (LOGIOR OR RES)
+	    AND (LOGAND AND RES)))
+    (IF (OR ( AND 0) ( OR MASK))
+	(FORMAT T "~&Bits in the ~A register not changing.~% LOGAND=~O LOGIOR=~O"
+		NAME AND OR))))
+
+(DEFCONST *SERIAL-IO-TESTS*
+	  '(((:BAUD 1200.) (:PARITY :ODD)
+	     (:NUMBER-OF-DATA-BITS 7) (:NUMBER-OF-STOP-BITS 2))
+	    ((:BAUD 9600.) (:PARITY :EVEN)
+	     (:NUMBER-OF-DATA-BITS 8) (:NUMBER-OF-STOP-BITS 1))))
+
+(DEFUN TEST-SERIAL-IO ()
+  (LET ((STREAM NIL))
+    (UNWIND-PROTECT
+      (PROGN
+	(SETQ STREAM (SI:MAKE-SERIAL-STREAM
+		       ':NUMBER-OF-STOP-BITS 1
+		       ':PARITY ':ODD))
+	(DOLIST (PROP '(:CHECK-PARITY-ERRORS :CHECK-OVER-RUN-ERRORS :CHECK-FRAMING-ERRORS))
+	  (FUNCALL STREAM ':PUT PROP T))
+	(FORMAT T "~&Testing serial I/O using /"remote loop back/" in the UART.")
+	(UNWIND-PROTECT
+	  (PROGN
+	    (FUNCALL STREAM ':PUT ':LOCAL-LOOP-BACK T)
+	    (TEST-SERIAL-IO-SERIES STREAM *SERIAL-IO-TESTS*))
+	  (FUNCALL STREAM ':PUT ':LOCAL-LOOP-BACK NIL))
+	(FORMAT T "~2&Attach a loop-back plug; type N if you don't want to do this test,
+or any other character to run the test.")
+	(LET ((CHAR (FUNCALL STANDARD-INPUT ':TYI)))
+	  (COND ((NOT (CHAR-EQUAL #/N CHAR))
+		 (FORMAT T "~&Testing extra EIA-RS-232 bits.")
+		 (TEST-SERIAL-IO-EIA-RS-232-BITS STREAM)
+		 (TEST-SERIAL-IO-SERIES STREAM *SERIAL-IO-TESTS*)))))
+      (CLOSE STREAM))))
+
+(DEFVAR *SERIAL-IO-ERROR-COUNT*)
+(DEFCONST *SERIAL-IO-ERROR-LIMIT* 5)
+
+(DEFUN TEST-SERIAL-IO-SERIES (STREAM SERIES)
+  (DOLIST (TEST SERIES)
+    (LET ((BASE 10.)
+	  (FIRST T)
+	  (*SERIAL-IO-ERROR-COUNT* 0))
+      (FORMAT T "~&")
+      (DOLIST (CLAUSE TEST)
+	(LET ((NAME (FIRST CLAUSE))
+	      (VALUE (SECOND CLAUSE)))
+	  (IF (NOT FIRST)
+	      (FORMAT T "; "))
+	  (SETQ FIRST NIL)
+	  (FORMAT T "~S = ~S" NAME VALUE)
+	  (FUNCALL STREAM ':PUT NAME VALUE)))
+      (TEST-SERIAL-IO-CHARS STREAM))))
+
+(DEFCONST *SERIAL-IO-TIMEOUT* 60.)
+
+(DEFUN TEST-SERIAL-IO-CHARS (STREAM)
+  (DOTIMES (SENT-CHAR (^ 2 (FUNCALL STREAM ':GET ':NUMBER-OF-DATA-BITS)))
+    (FUNCALL STREAM ':TYO SENT-CHAR)
+    (COND ((PROCESS-WAIT-WITH-TIMEOUT "Serial In" *SERIAL-IO-TIMEOUT* STREAM ':LISTEN)
+	   (LET ((GOT-CHAR (FUNCALL STREAM ':TYI)))
+	     (COND ((NOT (= SENT-CHAR GOT-CHAR))
+		    (FORMAT T "~&Error: sent ~O and got back ~O (both octal)~%"
+			    SENT-CHAR GOT-CHAR)
+		    (INCF *SERIAL-IO-ERROR-COUNT*)
+		    (COND ((< *SERIAL-IO-ERROR-COUNT* *SERIAL-IO-ERROR-LIMIT*)
+			   (FORMAT T "~&Status of serial I//O line:~%")
+			   (SI:SERIAL-STATUS)))))))
+	   (T
+	     (FORMAT T "~&Error: timed out waiting for character ~O (octal)~%"
+		     SENT-CHAR)))))
+
+;;; Unfortunately, you can't read back clear-to-send (the LM-2 Serial I/O
+;;; documentation is wishful thinking).
+(DEFUN TEST-SERIAL-IO-EIA-RS-232-BITS (STREAM)
+  (LOOP FOR SET IN '(:DATA-TERMINAL-READY :DATA-TERMINAL-READY)
+	FOR GET IN '(:DATA-SET-READY      :CARRIER-DETECT)
+	DO
+	(FUNCALL STREAM ':PUT SET NIL)
+	(IF (NOT (NULL (FUNCALL STREAM ':GET GET)))
+	    (FORMAT T "~&Error: Sent zero on ~S and got one on ~S.~%" SET GET))
+	(FUNCALL STREAM ':PUT SET T)
+	(IF (NULL (FUNCALL STREAM ':GET GET))
+	    (FORMAT T "~&Error: Sent one on ~S and got zero on ~S.~%" SET GET)))
+  ;; Fix world.
+  (FUNCALL STREAM ':PUT ':REQUEST-TO-SEND T)
+  (FUNCALL STREAM ':PUT ':DATA-TERMINAL-READY T))

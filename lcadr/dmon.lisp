@@ -2,16 +2,24 @@
 ;;; Diagnostic "monitor"  (will be anyway. pretty simpleminded for now).
 
 (DEFVAR CC-MAIN-MEMORY-SIZE NIL)
-  (ADD-INITIALIZATION "clear target machine core size"
-		      '(SETQ CC-MAIN-MEMORY-SIZE NIL))
+(ADD-INITIALIZATION "clear target machine core size"
+		    '(SETQ CC-MAIN-MEMORY-SIZE NIL)
+		    '(:BEFORE-COLD))
 
-(DEFUN CC-RUN-MTEST (&OPTIONAL ALREADY-LOADED RANGE (MAP-OFFSET 0) &AUX PC CHAR)
+(DEFUN CC-RUN-MTEST-AUTO (&OPTIONAL ALREADY-LOADED RANGE (MAP-OFFSET 0))
+  (CC-RUN-MTEST ALREADY-LOADED RANGE MAP-OFFSET T))
+
+;if AUTO-P is non-nil, errors will be proceeded from.  ADRIOR, ADRAND, DATAIOR, DATAAND
+; will be updated if prgm can figure out how to do it.
+(DEFUN CC-RUN-MTEST (&OPTIONAL ALREADY-LOADED RANGE (MAP-OFFSET 0) AUTO-P
+		     &AUX PC SYMBOLIC-PC CHAR 
+		     ERRORS OTHER-ERRORS ADRAND ADRIOR DATAAND DATAIOR)
        (COND ((AND (NULL CC-MAIN-MEMORY-SIZE)
 		   (NULL RANGE))
 	      (CC-DISCOVER-MAIN-MEMORY-SIZE)))
        (COND ((NULL ALREADY-LOADED)
 	      (CC-ZERO-ENTIRE-MACHINE)
-	      (CC-UCODE-LOADER NIL "AI:LISPM1;MEMD ULOAD" NIL)))
+	      (CC-UCODE-LOADER NIL "SYS: UBIN; MEMD ULOAD >" NIL)))
        (COND ((ZEROP MAP-OFFSET) (CC-FAST-LOAD-STRAIGHT-MAP))
 	     (T (CC-LOAD-STRAIGHT-MAP MAP-OFFSET)))
        (COND ((NULL RANGE)
@@ -22,10 +30,12 @@
        (LET ((CC-MODE-REG (+ 44 (LOGAND CC-MODE-REG 3))))  ;SAME SPEED, DISABLE PROM, ENABLE
 	 (CC-RESET-MACH)				   ; ERROR STOPS.
 	 (DO TEST 0 (1+ TEST) (= TEST 10)
+	     (SETQ ERRORS 0 OTHER-ERRORS 0
+		   ADRAND 77777777 ADRIOR 0 DATAAND 37777777777 DATAIOR 0)
 	     (SETQ CC-UPDATE-DISPLAY-FLAG T)
 	     (CC-SYMBOLIC-DEPOSIT-REGISTER 'M-TEST TEST)
 	     (CC-REGISTER-DEPOSIT RASA (CC-SYMBOLIC-CMEM-ADR  'MEMORY-DATA-TEST))
-	     (CC-REGISTER-DEPOSIT RAGO 0)
+	CONT (CC-REGISTER-DEPOSIT RAGO 0)
           L  (COND ((SETQ CHAR (KBD-TYI-NO-HANG))
 		    (GO X1))
 		   ((ZEROP (CC-REGISTER-EXAMINE RAGO)) (GO X)))
@@ -36,12 +46,33 @@
 		    (CC-REGISTER-DEPOSIT RASTOP 0)
 		    (GO E)))
 	  X  (CC-REGISTER-DEPOSIT RASTOP 0)
-	     (COND ((NOT (= (SETQ PC (CC-REGISTER-EXAMINE RAPC))
-			    (CC-SYMBOLIC-CMEM-ADR 'MEMORY-TEST-OK)))
-		    (FORMAT T "~%Test ~D halted at ~S (= ~O) "
-			    TEST
-			    (CC-FIND-CLOSEST-SYM (+ RACMO PC))
-			    PC))
+	     (COND ((NOT (OR (= (SETQ PC (CC-REGISTER-EXAMINE RAPC))
+				(CC-SYMBOLIC-CMEM-ADR 'MEMORY-TEST-OK))
+			     (> ERRORS 100.)))   ;give up after 100. errors.
+		    (SETQ SYMBOLIC-PC (CC-FIND-CLOSEST-SYM (+ RACMO PC)))
+		    (IF (NULL AUTO-P)
+			(FORMAT T "~%Test ~D halted at ~S (= ~O) " TEST SYMBOLIC-PC PC)
+			(SETQ ERRORS (1+ ERRORS))
+			(LET* ((CORRECT-DATA
+				(CC-SYMBOLIC-EXAMINE-REGISTER 'A-CURRENT-MEMORY-DATA))
+			       (WRONG-BITS (LOGXOR CC-SAVED-MD CORRECT-DATA)))
+			  (IF (NOT (MEMBER SYMBOLIC-PC '( ERROR-WRONG-DATA
+							  (ERROR-WRONG-DATA 2)
+							  (MEMORY-CHECK 2))))
+			      (PROGN (SETQ OTHER-ERRORS (1+ OTHER-ERRORS))
+				     (FORMAT T "~%unexpected stop!!")
+				     (CC))
+			      (SETQ ADRAND (LOGAND ADRAND CC-SAVED-VMA)
+				    ADRIOR (LOGIOR ADRIOR CC-SAVED-VMA)
+				    DATAAND (LOGAND WRONG-BITS DATAAND)
+				    DATAIOR (LOGIOR WRONG-BITS DATAIOR))))
+			(GO CONT)))
+		   ((NOT (ZEROP ERRORS))
+		    (FORMAT T "~%Test ~D, ~D errors, ADRAND ~S, ADRIOR ~S,
+DATAAND ~S, DATAIOR ~S, other errors ~D"
+			    TEST ERRORS ADRAND ADRIOR DATAAND DATAIOR OTHER-ERRORS)
+		    (FORMAT T "~%DATAIOR bits ")
+		    (CC-PRINT-BITS DATAIOR))
 		   (T (FORMAT T "~%Test ~D OK" TEST)))
 	   E  )))
 
@@ -82,7 +113,14 @@
 	(PHYS-MEM-WRITE (+ TV-ADR 2) ADR)	;Set pointer
 	(LOGAND 377 (PHYS-MEM-READ (+ TV-ADR 1))))
 
+(DEFUN CC-TV-READ-SYNC-ENB-RAM (ADR &OPTIONAL (TV-ADR 17377760))
+	(PHYS-MEM-WRITE (+ TV-ADR 3) 200)	;Enable SYNC RAM
+	(PHYS-MEM-WRITE (+ TV-ADR 2) ADR)	;Set pointer
+	(LOGAND 377 (PHYS-MEM-READ (+ TV-ADR 1))))
+
+;;; This clobbers vertical spacing in order to guarantee access to RAM not PROM.
 (DEFUN CC-TV-WRITE-SYNC (ADR DATA &OPTIONAL (TV-ADR 17377760))
+	(PHYS-MEM-WRITE (+ TV-ADR 3) 200)	;Enable SYNC RAM
 	(PHYS-MEM-WRITE (+ TV-ADR 2) ADR)	;Set pointer
 	(PHYS-MEM-WRITE (+ TV-ADR 1) DATA))
 
@@ -124,6 +162,10 @@
   (CC-TV-FILL-SYNC SYNC-PROG 0 TV-ADR)
   (CC-TV-START-SYNC 0 1 0 TV-ADR))
 
+(defun cc-tv-setup-loop ()
+  (do ()
+      (())
+    (cc-tv-setup-cpt)))
 
 (DEFUN CC-TV-CPT-CHECK-SYNC (&OPTIONAL (SYNC-PROG SI:CPT-SYNC2) (TV-ADR 17377760))
   (CC-TV-STOP-SYNC TV-ADR)
@@ -170,13 +212,18 @@
 				      (T " fails storing 0 then 1's in data bits "))
 				(CC-WRONG-BITS-LIST GOOD2 BAD3 8)))))))
 
-(defun cc-tv-sync-write-loop (&optional (adr 0) (data -1))
-  (do () (())
-    (cc-tv-write-sync adr data)))
+(DEFUN CC-TV-SYNC-WRITE-LOOP (&OPTIONAL (ADR 0) (DATA -1))
+  (DO () ((KBD-TYI-NO-HANG))
+    (CC-TV-WRITE-SYNC ADR DATA)))
 
 (DEFUN CC-TV-SYNC-READ-LOOP (&OPTIONAL (ADR 0))
-  (DO () (())
+  (DO () ((KBD-TYI-NO-HANG))
     (CC-TV-READ-SYNC ADR)))
+
+(DEFUN CC-TV-SYNC-READ-LOOP-ENB-RAM (&OPTIONAL (ADR 0))
+  (DO () ((KBD-TYI-NO-HANG))
+    (CC-TV-READ-SYNC-ENB-RAM ADR)))
+
 
 (DEFUN CC-TEST-TV-MEMORY (&OPTIONAL ALREADY-LOADED)
   (CC-TV-SETUP-CPT)
@@ -210,6 +257,52 @@
 				    (* BANK 40000))
 				 32.
 				 14.)))
+
+;FAST-ADDRESS-TEST FOR THE TV ONLY DOES TWO 16K BANKS.  ONE BANK IS ODD ADDRESSES, THE
+;OTHER EVEN.  A COUPLE OF THE VARIABLES HAVE DIFFERENT NAMES AND SOME HAVE BEEN 
+;REPLACED BY CONSTANTS BUT OTHERWISE THIS IS COPIED FROM THE FAST ADDRESS TEST BELOW.
+(DEFUN CC-FAST-ADDRESS-TEST-TV-MEM ()
+ (DOTIMES (BANK 2)
+  (FORMAT T "~%~[even ~;odd ~]bank " BANK)
+    (DO ((N 4 (1- N))
+         (PHASE 0 (1+ PHASE))
+         (ONES 37777777777)
+         (ADR-MASK 37776)
+         (ZEROS 0)
+         (BASE-ADDRESS (+ 17000000 BANK)))
+        ((= N 0)) 					
+     (DO ((BITNO 0 (1+ BITNO))
+	 (GOOD1 (COND ((EVENP PHASE) ZEROS) (T ONES)))
+	 (GOOD2 (COND ((EVENP PHASE) ONES) (T ZEROS)))
+	 (BAD1)
+	 (BAD2)
+	 (BAD3)
+	 (LOCATION-ONE)
+	 (LOCATION-TWO)
+         (CC-SUSPECT-BIT-LIST))
+	((= BITNO 13.))
+      (SETQ LOCATION-ONE (+ BASE-ADDRESS (COND ((< PHASE 2)
+			                        (LSH 2 BITNO))
+                  			       (T (LOGXOR ADR-MASK (LSH 2 BITNO))))))
+      (SETQ LOCATION-TWO (COND ((< PHASE 2) BASE-ADDRESS)
+			    (T (+ BASE-ADDRESS ADR-MASK))))
+      (PHYS-MEM-WRITE LOCATION-ONE GOOD2)
+      (COND ((NOT (EQUAL (SETQ BAD2 (PHYS-MEM-READ LOCATION-ONE)) GOOD2))
+	     (PRINC " loc ") (PRIN1 LOCATION-ONE)
+	     (CC-PRINT-BIT-LIST " fails in data bits "
+				(CC-WRONG-BITS-LIST GOOD2 BAD2 32.))))
+      (PHYS-MEM-WRITE LOCATION-TWO GOOD1)
+      (COND ((NOT (EQUAL (SETQ BAD1 (PHYS-MEM-READ LOCATION-TWO)) GOOD1))
+	     (PRINC " loc ") (PRIN1 LOCATION-TWO)
+	     (CC-PRINT-BIT-LIST " fails in data bits "
+				(CC-WRONG-BITS-LIST GOOD1 BAD1 32.))))
+      (COND ((NOT (EQUAL (SETQ BAD3 (PHYS-MEM-READ LOCATION-ONE)) GOOD2))
+	     (PRINC " address bit ") (PRIN1-DECIMAL (1+ BITNO))
+	     (CC-PRINT-BIT-LIST (COND ((EVENP PHASE)
+				       " fails storing 1's then 0 in data bits ")
+				      (T " fails storing 0 then 1's in data bits "))
+				(CC-WRONG-BITS-LIST GOOD2 BAD3 32.))))))))
+
 
 
 ;FAST ADDRESS TEST WRITES ZEROS AND ONES INTO 2 LOCATIONS 
@@ -255,7 +348,9 @@
 				      (T " fails storing 0 then 1's in data bits "))
 				(CC-WRONG-BITS-LIST GOOD2 BAD3 N-DATA-BITS)))))))
 
-;; Fill main memory. Stop via statistics counter.
+
+
+;; Fillmain memory. Stop via statistics counter.
 ;; VMA gets loaded with starting address minus one.
 ;; MD has data.
 

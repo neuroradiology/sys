@@ -20,8 +20,7 @@
 
 (DEFMACRO QF-DATA-TYPE (Q) `(LDB 3005 ,Q))
 
-(DEFMACRO QF-POINTER (Q) `(LET ((**FOO** ,Q))
-                               (LOGIOR (LSH (LDB 1414 **FOO**) 14) (LDB 0014 **FOO**))))
+(DEFMACRO QF-POINTER (Q) `(LOGAND 77777777 ,Q))	;Can't use LDB, byte too wide
 
 (DEFMACRO QF-CDR-CODE (Q) `(LDB 3602 ,Q))
 

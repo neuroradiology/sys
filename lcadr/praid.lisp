@@ -1,4 +1,4 @@
-;;-*- mode: lispm; package: cadr -*-
+;;-*- mode: lisp; package: cadr -*-
 
 ;Production check out aids.  These are mostly for freshly constructed machines
 ;  before CC-TEST-MACHINE can even do anything reasonable.
@@ -60,7 +60,11 @@
 
 
 
-
+;-DB NEEDS UB   BUSINT D01-8
+;BUS REQ        BUSINT D05-6
+;NPR            BUSINT D10-6
+;DB UB MASTER   BUSINT D04-12
+;SELECT DEBUG   BUSINT E07-8
 ;SPY WRITE L    BUSINT J08-10
 ;-DBWRITE	5F03(6)  SPY0	5AJ1-10  MBCPIN
 ;-LDBIRH	5F03(15) SPY0	5F15(11) DEBUG
@@ -127,7 +131,7 @@
     (CC-READ-MD)))
 
 (DEFUN P-MD-SHIFTING-LOOP (&OPTIONAL (N 0))
-  (DO () (()) (CC-WRITE-MD-SHIFTING N)))
+  (DO () (()) (CC-WRITE-MD-SHIFTING N)))	;
 
 (DEFUN CC-TEST-VMA (&OPTIONAL (N 0) (M -1))
   (DO () ((KBD-TYI-NO-HANG))
@@ -173,6 +177,15 @@
 (DEFUN P-A-MEM-R-LOOP (&OPTIONAL (ADR 0))
   (DO () (()) (CC-READ-A-MEM ADR)))
 
+
+(DEFUN P-PDL-BUFFER-WR-LOOP (&OPTIONAL (ADR 0) (VAL1 0) (VAL2 -1))
+  (DO () (())
+    (CC-WRITE-PDL-BUFFER ADR VAL1)
+    (CC-READ-PDL-BUFFER ADR)
+    (CC-WRITE-PDL-BUFFER ADR VAL2)
+    (CC-READ-PDL-BUFFER VAL2)))
+
+
 (defun p-m-rw-a-pass (n &optional (adr 0))
   (CC-WRITE-MD n)		;PUT VALUE INTO THE MRD REGISTER
   (CC-EXECUTE  ;NOTE NO WRITE, JUST PUT IT IN IR
@@ -192,6 +205,20 @@
 
 (DEFUN P-C-MEM-R-LOOP (&OPTIONAL (ADR 0))
   (DO () (()) (CC-READ-C-MEM ADR)))
+
+(DEFUN P-C-MEM-WR-LOOP (&OPTIONAL (ADR 0) (VAL1 0) (VAL2 -1))
+  (DO () (())
+    (CC-WRITE-C-MEM ADR VAL1)
+    (CC-READ-C-MEM ADR)
+    (CC-WRITE-C-MEM ADR VAL2)
+    (CC-READ-C-MEM ADR)))
+
+(defun p-lc-wr-loop (&optional (n1 0) (n2 -1))
+  (do () (())
+    (cc-write-lc n1)
+    (cc-read-lc)
+    (cc-write-lc n2)
+    (cc-read-lc)))
 
 (DEFUN P-LC-LOOP (&OPTIONAL (N 0))
   (DO () (()) (CC-WRITE-FUNC-DEST CONS-FUNC-DEST-LC N)))
@@ -278,3 +305,58 @@
   (DO ()
       (())
     (DBG-WRITE ADR DATA)))
+
+
+  ;;
+  ;;  Functions for debugging disk controllers
+  ;;
+
+
+
+
+  ;; Part 6 - Write and read block 1 of the disk.  Use a floating 1's and 0's
+  ;;          pattern, and then an address pattern, and check for Xbus data path
+  ;;	      and addressing failures.
+  ;; This doesn't check high-order address bits
+(DEFUN DLOOP ()
+  (DO () (())
+  (DO I 0 (1+ I) (= I 40)	;Loc 0-37 get floating 1's
+    (PHYS-MEM-WRITE I (#M LSH #Q ASH 1 I)))
+  (DO I 0 (1+ I) (= I 40)	;Loc 40-77 get floating 0's
+    (PHYS-MEM-WRITE (+ 40 I) (- (#M LSH #Q ASH 1 32.) (#M LSH #Q ASH 1 I))))
+  (DO I 100 (1+ I) (= I 400)	;Loc 100-377 get address pattern
+    (PHYS-MEM-WRITE I (+ (LSH (LOGXOR 377 I) 8) I)))
+ ; (PRINT 'WRITE)
+  (DC-EXEC DC-WRITE 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS)
+;  (LET ((MA (DC-READ-MA)))
+;    #M (DECLARE (FIXNUM MA))
+;    (COND ((NOT (= MA 377))
+;	   (TERPRI) (PRINC '|MA wrong on write of pattern, correct=377, actual=|)
+;	   (PRIN1 MA))))
+  (DO I 0 (1+ I) (= I 400)	;Clear buffer
+    (PHYS-MEM-WRITE I 0))
+ ; (PRINT 'READ)
+  (DC-EXEC DC-READ 0 0 1 CCW-LOC 0 DC-ALL-ERROR-BITS)
+;  (LET ((MA (DC-READ-MA)))
+;    #M (DECLARE (FIXNUM MA))
+;    (COND ((NOT (= MA 377))
+;	   (TERPRI) (PRINC '|MA wrong on read of pattern, correct=377, actual=|)
+;	   (PRIN1 MA) (TERPRI))))		
+  ;; Check pattern read back into core, see if it's correct
+;  (LET ((DCHECK-AND 37777777777) (DCHECK-IOR 0)  ;Accumulate error bits here
+;	(DCHECK-ADR-AND 377) (DCHECK-ADR-IOR 0))
+;    (DO I 0 (1+ I) (= I 40)	;Loc 0-37 get floating 1's
+;      (DCHECK-COMPARE I (#M LSH #Q ASH 1 I)))
+;    (DO I 0 (1+ I) (= I 40)	;Loc 40-77 get floating 0's
+;      (DCHECK-COMPARE (+ 40 I) (- (#M LSH #Q ASH 1 32.) (#M LSH #Q ASH 1 I))))
+;    (DO I 100 (1+ I) (= I 400)	;Loc 100-377 get address pattern
+;      (DCHECK-COMPARE I (+ (#M LSH #Q ASH (LOGXOR 377 I) 8) I)))
+;    (DCHECK-PM '|Data bits dropped during write to or read from disk: |
+;	       (LOGXOR 37777777777 DCHECK-IOR))
+;    (DCHECK-PM '|Data bits picked during write to or read from disk: |
+;	       DCHECK-AND)
+;    (DCHECK-PM '|Address bits 0 with bad data during write to or read from disk: |
+;	       (LOGXOR 377 DCHECK-ADR-AND))
+;    (DCHECK-PM '|Address bits 1 with bad data during write to or read from disk: |
+;	       DCHECK-ADR-IOR))
+  ));; Maybe there should be a test-loop for the above?

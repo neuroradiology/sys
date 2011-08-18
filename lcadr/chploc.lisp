@@ -1,12 +1,14 @@
-;;; -*- LISP; PACKAGE:CADR -*-
+;;; -*- MODE:LISP; PACKAGE:CADR -*-
 
 ;; This stuff is to help locating errors relative to IC chips.
 
 (DEFUN (PCHECK CC-COLON-CMD) (IGNORE)
   (LET ((QUAN (CC-REGISTER-EXAMINE CC-LAST-OPEN-REGISTER)))
-    (FORMAT T "~%=~O" QUAN)
     (SELECTQ (CC-FIND-REG-ADR-RANGE CC-LAST-OPEN-REGISTER)
-      (C (LET ((P0 (PARITY (LDB (BITS 12.  0.) QUAN)))
+      (C (SETQ QUAN (CC-READ-C-MEM-WITH-PARITY (- CC-LAST-OPEN-REGISTER RACMO)))
+	 (FORMAT T "~%=~O  -> " QUAN)
+	 (CC-PRINT-BITS QUAN)
+	 (LET ((P0 (PARITY (LDB (BITS 12.  0.) QUAN)))
 	       (P1 (PARITY (LDB (BITS 12. 12.) QUAN)))
 	       (P2 (PARITY (LDB (BITS 12. 24.) QUAN)))
 	       (P3 (PARITY (LDB (BITS 12. 36.) QUAN)))

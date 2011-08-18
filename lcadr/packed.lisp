@@ -604,16 +604,20 @@
 
 (DEFUN CC-SET-CURRENT-MICROLOAD (PART)
   (COND ((NUMBERP PART) (SETQ PART (IMPLODE (APPEND '(M C R) (LIST (+ PART 60)))))))
-  (OR (MEMQ PART '(MCR1 MCR2))
-      (ERROR '|Partition name should be MCR1 or MCR2| PART))
+  (OR (STRING-EQUAL PART "MCR" 0 0 3)
+      (ERROR '|Partition name should be MCRn| PART))
   (READ-LABEL)
   (SETQ INITIAL-MCR-NAME PART)
   (WRITE-LABEL))
 
 (DEFUN CC-SET-CURRENT-BAND (PART)
   (COND ((NUMBERP PART) (SETQ PART (IMPLODE (APPEND '(L O D) (LIST (+ PART 60)))))))
-  (OR (MEMQ PART '(LOD1 LOD2 LOD3 LOD4 LOD5 LOD6 LOD7))
+  (OR (STRING-EQUAL PART "LOD" 0 0 3)
       (ERROR '|Partition name should be among LOD1...LOD7| PART))
   (READ-LABEL)
   (SETQ INITIAL-LOD-NAME PART)
   (WRITE-LABEL))
+
+;;; Only works on the real machine.
+(DEFUN CC-PRINT-DISK-LABEL ()  ;This is what I always think it is named. -- DLW
+  (PRINT-DISK-LABEL "CC"))
