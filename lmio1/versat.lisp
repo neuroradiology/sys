@@ -87,8 +87,8 @@
 	;; Copy sideways line into buffer
 	(DOTIMES (Y H)
 	  (LET ((BIT (AREF INPUT-ARRAY (- W X 1) Y)))
-	    (ASET BIT LINE-ARRAY (LOGXOR (* 2 Y) 7))
-	    (ASET BIT LINE-ARRAY (LOGXOR (1+ (* 2 Y)) 7))))
+	    (ASET BIT LINE-ARRAY (* 2 Y))
+	    (ASET BIT LINE-ARRAY (1+ (* 2 Y)))))
 	;; Now have line in line buffer, print it twice
 	(VERSATEC-WAIT)
 	(%UNIBUS-WRITE VERSATEC-BUFFER-ADDRESS UB-ADR)
@@ -128,7 +128,7 @@
 	  (LET ((BIT (AREF INPUT-ARRAY X Y))
 		(XPOS (+ MARGIN (* SCALE X))))
 	    (DOTIMES (I SCALE)
-	      (ASET BIT LINE-ARRAY (LOGXOR (+ I XPOS) 7)))))
+	      (ASET BIT LINE-ARRAY (+ I XPOS)))))
 	;; Now have line in line buffer, print it twice
 	(DOTIMES (I SCALE)
 	  (VERSATEC-WAIT)

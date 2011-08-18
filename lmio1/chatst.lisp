@@ -173,13 +173,13 @@ to change the pattern."
   (IF BUSY-WAIT
       (DO () ((LDB-TEST %%CHAOS-CSR-RECEIVE-DONE
 			(%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))))
-      (PROCESS-SLEEP 30.))  ;Give it time to arrive
+      (PROCESS-SLEEP 10.))  ;Give it time to arrive
   (SETQ CSR (%UNIBUS-READ CONTROL-STATUS-REGISTER-TEST))
   (SETQ ME (%UNIBUS-READ MY-NUMBER-REGISTER-TEST))
+  (IF (NOT (ZEROP (LDB-TEST %%CHAOS-CSR-TRANSMIT-ABORT CSR)))
+      (FORMAT t "~%Transmit aborted, then~%"))
   (COND ((NOT (LDB-TEST %%CHAOS-CSR-RECEIVE-DONE CSR))
          (SETQ LOSE T) (PRINT 'NO-RECEIVE))
-        ((LDB-TEST %%CHAOS-CSR-TRANSMIT-ABORT CSR)
-         (SETQ LOSE T) (PRINT 'TRANSMIT-ABORT))
         (T (AND (LDB-TEST %%CHAOS-CSR-CRC-ERROR CSR)
                 (PROGN (SETQ LOSE T)
                        (PRINT '"CRC Error indicated (check the data)")))

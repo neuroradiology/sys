@@ -177,7 +177,7 @@
       ;; Process X-data
       (cond ((not (zerop (boole 1 100000 m)))
 	     (setq xwidths (next-word)))
-	    (t (setq xwidths (*array nil 'fixnum 200))
+	    (t (setq xwidths (*array nil 'fixnum 400))
 	       (fillarray xwidths '(-1))	;Chars not in bc..ec have -1
 	       (do ((j (caddr seg) (1+ j))
 		    (k 0))
@@ -188,7 +188,7 @@
       ;; Process Y-data
       (cond ((not (zerop (boole 1 40000 m)))
 	     (setq ywidths (next-word)))
-	    (t (setq ywidths (*array nil 'fixnum 200))
+	    (t (setq ywidths (*array nil 'fixnum 400))
 	       (fillarray xwidths '(-1))	;Chars not in bc..ec have -1
 	       (do ((j (caddr seg) (1+ j))
 		    (k 0))
@@ -235,13 +235,13 @@
     (setq xwidths (cadr (cddddr dat)))
     (cond ((not (zerop (caddr dat)))	;Already got data in micas
 	   (cond ((numberp xwidths)	;Fixed-width font
-		  (setq tem (*array nil 'fixnum 200))
+		  (setq tem (*array nil 'fixnum 400))
 		  (fillarray tem (list xwidths))
 		  (setq xwidths tem)))
 	   xwidths)
 	  ((numberp xwidths)		;Fixed-width font
 	   (setq tem (// (* xwidths 2540. point-size) 72000.))
-	   (setq xwidths (*array nil 'fixnum 200))
+	   (setq xwidths (*array nil 'fixnum 400))
 	   (fillarray xwidths (list tem))
 	   xwidths)		    
 	  ((let ((arr (*array nil 'fixnum

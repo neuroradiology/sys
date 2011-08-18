@@ -1,4 +1,4 @@
-;;; -*-LISP-*-
+;;; -*-Mode:LISP;Package:FED-*-
 
 (SPECIAL FED-WINDOW FED-FD-ALIST FED-WINDOW-CLASS)
 

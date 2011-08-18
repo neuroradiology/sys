@@ -1,5 +1,7 @@
 ;;-*- MODE: LISP; PACKAGE: USER; IBASE: 10.; BASE: 10. -*-
 
+;work rotation xfrm
+
 (DEFCONST CTEST-BOARD-TYPE 'LG684)  ;OR MPG216
 
 ;Continuity Tester Interface
@@ -472,6 +474,7 @@
 (DEFVAR LG684-JACK-XOFFS NIL)
 (DEFVAR LG684-JACK-YOFFS NIL)
 
+(DEFVAR DEC-EDGE-XOFFS NIL)    ;offset within dec edge connector. 
 
 (DEFUN LG684-PRNLOC (LOC &AUX ANS)
   (let ((group (ldb LG684-%DIPG loc))
@@ -498,7 +501,7 @@
 	  (t (SETQ ANS (format nil "~A-~2,48D" ANS pin)))))
   ANS)
 
-(DEFUN LG684-INIT (&AUX JN DX)
+(DEFUN LG684-INIT (&AUX JN DX PN)
   (SETQ LG684-JACKSZ (MAKE-ARRAY NIL ART-Q 13.))	;J0 illegal
   (DOTIMES (C 12.)
     (AS-1 (IF (BIT-TEST 1 C) 40 50)
@@ -522,17 +525,28 @@
     (SETQ JN (1+ JN)))
   (SETQ LG684-PADDLE-XOFFS (MAKE-ARRAY NIL ART-Q 6)
 	LG684-PADDLE-YOFFS (MAKE-ARRAY NIL ART-Q 6))
-  (SETQ JN 0
+  (SETQ JN 5
 	DX 0)  
   (DOTIMES (JGROUP 3)
     (AS-1 DX LG684-PADDLE-XOFFS JN)
     (AS-1 LG684-DECCNY LG684-PADDLE-YOFFS JN)
-    (SETQ JN (1+ JN)
+    (SETQ JN (1- JN)
 	  DX (+ DX LG684-DECX1))
     (AS-1 DX LG684-PADDLE-XOFFS JN)
     (AS-1 LG684-DECCNY LG684-PADDLE-YOFFS JN)
-    (SETQ JN (1+ JN)
-	  DX (+ DX LG684-DECX2))))
+    (SETQ JN (1- JN)
+	  DX (+ DX LG684-DECX2)))
+  (SETQ DEC-EDGE-XOFFS (MAKE-ARRAY NIL ART-Q 18.))
+  (SETQ DX 0
+	PN 17.)
+  (DOTIMES (PGROUP 3)
+    (AS-1 DX DEC-EDGE-XOFFS PN)
+    (SETQ PN (1- PN))
+    (DOTIMES (C 5)
+      (SETQ DX (+ DX LG684-DCPNSP))
+      (AS-1 DX DEC-EDGE-XOFFS PN)
+      (SETQ PN (1- PN)))
+    (SETQ DX (+ DX LG684-DCGRSP))))
 
 (DEFUN LG684-GETLOC (STR BEG LIM &AUX C VAL-LIST IDX)
   (IF (NULL BEG) (SETQ BEG 0))
@@ -564,7 +578,7 @@
 					(DPB PIN CTEST-%%PIN 0)))))
     (5 (SI:DESTRUCTURING-BIND (LET PADDLE-LET PADDLE-SIDE) VAL-LIST
 			      (DPB LET LG684-%CONN
-				   (DPB (+ (LSH (CTEST-DEC-LETTER-TO-NUMBER PADDLE-LET) 1)
+				   (DPB (+ (LSH PADDLE-LET 1)  ;already dec-letter hacked
 					   (1- PADDLE-SIDE))
 					CTEST-%%PIN
 					0))))	;LG684-%CONT => 0
@@ -595,7 +609,7 @@
 		       (NOT (<= CONN LG684-MAXCON)))
 		   (FERROR NIL "bad conn number"))
 	       (SETQ X (+ X (AR-1 LG684-PADDLE-XOFFS (1- CONN))
-			  (* LG684-DCPNSP (LSH PIN -1)))
+			  (AR-1 DEC-EDGE-XOFFS (1- (LSH PIN -1))))
 		     Y (+ Y (AR-1 LG684-PADDLE-YOFFS (1- CONN))
 			  (* LG684-DCPINO (LOGAND PIN 1)))))
 	      (t (let ((maxp (ar-1 lg684-jacksz conn)))
@@ -605,7 +619,8 @@
 			 y (+ y (ar-1 (ar-1 flat-cable-conn-yoffs maxp) (1- pin))
 			      (AR-1 LG684-JACK-YOFFS CONN)))
 		   )))
-	(return x y)))
+	(return (- 9000 x) (- 17000 y)
+)))  ;board fits in tester backwards ..
 
 
 (DEFUN CTEST-NUMBER-TO-DEC-LETTER (NUM)
@@ -616,12 +631,14 @@
   (+ #/@ NUM))
 
 (DEFUN CTEST-DEC-LETTER-TO-NUMBER (NUM)
+  (SETQ NUM (+ NUM #/@))
   (COND ((MEMQ NUM '(#/G #/I #/O #/Q))
 	 (FERROR NIL "~C invalid DEC letter" NUM)))
   (IF (> NUM #/Q) (SETQ NUM (1- NUM)))
   (IF (> NUM #/O) (SETQ NUM (1- NUM)))
   (IF (> NUM #/I) (SETQ NUM (1- NUM)))
   (IF (> NUM #/G) (SETQ NUM (1- NUM)))
+  (SETQ NUM (- NUM #/@))
   NUM)
 
 ;---

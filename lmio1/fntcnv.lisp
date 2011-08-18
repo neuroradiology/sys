@@ -334,7 +334,7 @@
   (setq filename (fs:file-parse-name filename nil t ':kst))
   (or fontname (setq fontname (funcall filename ':name)))
   (and (stringp fontname) (setq fontname (intern fontname "FONTS")))
-  (setq stream (open fielname '(:fixnum :in :byte-size 9.)))
+  (setq stream (open filename '(:fixnum :in :byte-size 9.)))
   (setq fd (make-font-descriptor fd-name fontname))
   ;; Discard KSTID.
   (dotimes (i 4) (funcall stream ':tyi))

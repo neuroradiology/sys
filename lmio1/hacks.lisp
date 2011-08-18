@@ -1,4 +1,4 @@
-;-*-LISP-*-
+;-*-MODE: LISP; PACKAGE: USER; BASE: 8-*-
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 (SETQ SINE-EPSILON '30.)

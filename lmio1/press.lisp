@@ -582,7 +582,7 @@
 		   (CDY2 (AREF NEWVEC-DY-TABLE CH2)))
 		  ((OR ( X X1) STOP))
 		;; If Y would be below the line, use CH1 else use CH2
-		(IF (< (// (SMALL-FLOAT (+ Y CDY2)) (+ X CDX2)) SLOPE)
+		(IF (< (// (SMALL-FLOAT (- (+ Y CDY2) Y0)) (- (+ X CDX2) X0)) SLOPE)
 		    (SETQ CH CH1 XINC CDX1 YINC CDY1)
 		    (SETQ CH CH2 XINC CDX2 YINC CDY2))
 		;; If getting too close to the endpoint, use a shorter line

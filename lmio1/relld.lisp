@@ -48,7 +48,7 @@
 (defvar area-vector)
 (defvar area-code-list `(temp-area macro-compiled-program nr-sym p-n-string
 				working-storage-area permanent-storage-area
-				fasl-constants-area))
+				fasl-constants-area fasl-constants-area))
 
 ;The high ten bits of a relocatable pointer are the section number.
 (defvar section-number-bp 1612)
@@ -87,7 +87,7 @@
 ;First come two halfwords which contain SIXBIT/QFASL/.
 
 ;Then comes a halfword containing the number FASL-OP-REL-FILE.
-;This tells FASLOAD to call FASL-REL-FILE.
+;This tells FASLOAD to call FASL-OP-REL-FILE which calls this loader.
 
 ;Then comes a halfword containing the op-code READ-STORAGE-FORMAT-VERSION
 ; (that is, the index in op-list of that symbol)
@@ -109,6 +109,9 @@
 ;in order of increasing section number.
 
 ;Then comes a halfword containing zero.
+;This causes this loader to exit.
+;Then comes a halfword containing FASL-OP-END-OF-FILE,
+;or more qfasl format data.
 
 ;What are sections?
 
@@ -141,9 +144,10 @@
 
 ;Load a relocatable file from the stream LOAD-STREAM.
 ;PKG-SPECIFIED is the package argument to FASLOAD, or NIL.
-;The other args are the data for bypassing the stream
+;The other three args are the data for bypassing the stream
 ;and reading directly out of the chaosnet buffer.
 ;They are passed along because FASLOAD already started using them.
+;We return the same three quantities, as updated, so FASLOAD can continue.
 ;See READ-HALFWORD for more information.
 (defun rel-load-stream (load-stream
 			  stream-array stream-index stream-count pkg-specified)
@@ -162,10 +166,11 @@
 	    ((null l))
 	  (aset (symeval (car l)) area-vector i))
 	(init-data-type-tables)
-	(top-level)))
+	(top-level)
+	(return stream-array stream-index stream-count)))
 
 (defun init-data-type-tables ()
-  (setq data-type-pointer-p (make-array temp-area art-q
+  (setq data-type-pointer-p (make-array working-storage-area art-q
 					(lsh 1 (logand %%q-data-type 77))))
   (aset t data-type-pointer-p dtp-symbol)
   (aset t data-type-pointer-p dtp-symbol-header)

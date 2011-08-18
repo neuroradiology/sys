@@ -60,6 +60,7 @@
 (defun start-xgp-hardcopy-background-process (file array xdim ydim)
    (let ((inhibit-scheduling-flag t)
 	 (hcarray (allocate-resource 'xgp-hardcopy-bit-array)))
+     (tv:who-line-update)
      (copy-array-contents array hcarray)
      (process-run-function "XGP Hardcopy"
         #'(lambda (file array xdim ydim)

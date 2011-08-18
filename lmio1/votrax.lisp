@@ -1,5 +1,6 @@
 ;;;-*-LISP-*-
 
+(comment
 (DECLARE (SPECIAL DL11-RCV-CSR DL11-RCV-DAT DL11-XMT-CSR DL11-XMT-DAT))
 (SETQ DL11-RCV-CSR 775630)
 (SETQ DL11-RCV-DAT (+ DL11-RCV-CSR 2)
@@ -18,7 +19,12 @@
   (DO ((I 0 (1+ I))
        (LEN (STRING-LENGTH STR)))
       (( I LEN))
-    (DL11-TYO (AR-1 STR I))))
+    (DL11-TYO (AR-1 STR I))))  )
+
+(declare (special votrax-stream))
+
+(setq votrax-stream (si:make-serial-stream))
+
 
 (DECLARE (SPECIAL PHONEME-ALIST LAST-UTTERANCE))
 (SETQ PHONEME-ALIST '((PA0 . 3) (PA1 . 76)
@@ -66,12 +72,12 @@
   (DO ((LIST LIST (CDR LIST))
        (INT 300)
        (PH))
-      ((NULL LIST) (DL11-TYO -1) T)
+      ((NULL LIST) (funcall votrax-stream ':TYO -1) T)
     (SETQ PH (CAR LIST))
     (COND ((NUMBERP PH)
 	   (SETQ INT (- 400 (* PH 100))))
 	  (T
-	   (DL11-TYO (+ INT (CDR (ASSQ PH PHONEME-ALIST))))))))
+	   (funcall votrax-stream ':tyo (+ INT (CDR (ASSQ PH PHONEME-ALIST))))))))
 
 (DEFUN SPEAK (&OPTIONAL (X LAST-UTTERANCE))
   (SPEAK-1 (SETQ LAST-UTTERANCE X)))
@@ -118,8 +124,8 @@
 
 (DEFUN SPEAK-RAN (N)
   (DOTIMES (I N)
-    (DL11-TYO (RANDOM 400)))
-  (DL11-TYO -1))
+    (funcall votrax-stream ':TYO (RANDOM 400)))
+  (funcall votrax-stream ':TYO -1))
 
 (DEFUN OPERATOR ()
   (SPEAK-SENTENCE "THE NUMBER YOU HAVE REACHED <> TWO FIVE THREE <> SIX SEVEN SIX FIVE <> IS NOT IN SERVICE <> PLEASE CHECK THE NUMBER AND DIAL AGAIN OR ASK YOUR OPERATOR FOR ASSISTANCE <> <> THIS IS A RECORDING"))

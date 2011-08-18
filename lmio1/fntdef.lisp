@@ -4,7 +4,7 @@
 ;If NIL then this character is not defined for this font.
 
 (DEFSTRUCT (FONT-DESCRIPTOR :ARRAY-LEADER :NAMED
-				  (:MAKE-ARRAY (DEFAULT-ARRAY-AREA 'ART-Q 200)))
+				  (:MAKE-ARRAY (NIL 'ART-Q 200)))
 	   FD-FILL-POINTER
 	   FD-NAME
 	   FD-LINE-SPACING		;Vertical distance between baselines.

@@ -1,5 +1,6 @@
 ;; -*- Mode: Lisp; Package: Supdup; Ibase: 8 -*-
 ;; Lisp Machine Supdup server -- Old window system only
+;; This file is currently broken.
 
 ;; SUPDUP-TIMEOUT is time in which the LISTEN must win.  Set high for debugging.
 (DEFVAR SUPDUP-TIMEOUT 100000.)
@@ -41,13 +42,14 @@
 ;; ITS TTYOPT word -- describes terminal capabilities.
 ;; Left half fields begin with %TO, right hand with %TP.
 
-(DEFVAR %TOOVR)
-(DEFVAR %TOMVU)
-(DEFVAR %TORAW 40_18.)	    ;Suppress cursor motion optimization
-(DEFVAR %TOFCI 10_18.)	    ;Can generate ITS 12-bit character set
+(DEFVAR %TOSAI 4000_18.)
+(DEFVAR %TOOVR 1000_18.)
+(DEFVAR %TOMVU  400_18.)
+(DEFVAR %TORAW   40_18.)    ;Suppress cursor motion optimization
+(DEFVAR %TOFCI   10_18.)    ;Can generate ITS 12-bit character set
 			    ;%TPCBS (control-back-slash) will also be on
-(DEFVAR %TOLID  2_18.)	    ;Can insert/delete lines
-(DEFVAR %TOCID  1_18.)	    ;Can insert/delete characters
+(DEFVAR %TOLID    2_18.)    ;Can insert/delete lines
+(DEFVAR %TOCID    1_18.)    ;Can insert/delete characters
 
 ;; ITS 12-bit character representation -- low 7 bits are 
 
@@ -67,9 +69,12 @@
 		      NIL
 		      'CHAOS:SERVER-ALIST))
 
-;; This is the top level function of the server process.
+;; For debugging
 
-(DECLARE (SPECIAL SUPDUP-PROCESSES FONTS:BIGFNT))
+(DEFVAR SUPSER-PROCESSES NIL)
+(DEFVAR SUPSER-STREAMS NIL)
+
+;; This is the top level function of the server process.
 
 (DEFUN SERVE-SUPDUP (&AUX (CONN (CHAOS:LISTEN "SUPDUP")))
   (COND ((CHAOS:WAIT CONN 'CHAOS:LISTENING-STATE SUPDUP-TIMEOUT "Supdup wait")
@@ -82,7 +87,8 @@
 			  (UNWIND-PROTECT
 			    (SUPDUP-INITIALIZE CONN)
 			    (CHAOS:CLOSE CONN))))
-		(RETURN-STATE))
+		;; (RETURN-STATE)
+		)
 	       (T (CHAOS:CLOSE CONN
 			       (FORMAT NIL "Connection went into ~S after listening."
 				       (CHAOS:STATE CONN))))))
@@ -100,35 +106,38 @@
 
 (DEFUN SUPDUP-INITIALIZE (CONN &AUX CHAOS-STREAM SUPDUP-STREAM W-O)
   (SETQ CHAOS-STREAM (CHAOS:STREAM CONN))
-  (SEND-GREETING CHAOS-STREAM)
+  ;; This is apparently a part of the supdup protocol
+  (FUNCALL CHAOS-STREAM ':STRING-OUT (CHAOS:HOST-DATA CHAOS:MY-ADDRESS))
+  (FUNCALL CHAOS-STREAM ':TYO 15)
+  (FUNCALL CHAOS-STREAM ':TYO 12)
+  (FUNCALL CHAOS-STREAM ':TYO %TDNOP)
+  (FUNCALL CHAOS-STREAM ':FORCE-OUTPUT)
+  (SETQ SUPDUP-STREAM (MAKE-SUPDUP-STREAM CHAOS-STREAM))
   (SETQ W-O (FUNCALL SUPDUP-STREAM ':WHICH-OPERATIONS))
-  (SETQ SUPDUP-STREAM 
-	(MAKE-EDITOR-STREAM (MAKE-SUPDUP-STREAM CHAOS-STREAM)
-			    ;; Hack Glass ttys here at some point.  RWG has one.
-			    (COND ((MEMQ ':SET-CURSORPOS W-O) #'DISPLAY-EDITOR)
-				  (T #'PRINTING-EDITOR))))
-  ;; Why this?
+  (SETQ SUPDUP-STREAM
+	(SI:MAKE-EDITOR-STREAM SUPDUP-STREAM
+			       ;; Hack Glass ttys here at some point.  RWG has one.
+			       (COND ((MEMQ ':SET-CURSORPOS W-O) #'SI:DISPLAY-EDITOR)
+				     (T #'SI:PRINTING-EDITOR))))
   (PROCESS-SLEEP 120.)
   (FUNCALL SUPDUP-STREAM ':CLEAR-SCREEN)
+  (PRINT-LOADED-BAND SUPDUP-STREAM)
+  (FUNCALL SUPDUP-STREAM ':STRING-OUT (CHAOS:HOST-DATA CHAOS:MY-ADDRESS))
+  (FUNCALL SUPDUP-STREAM ':TYO #\RETURN)
+  (FUNCALL SUPDUP-STREAM ':FORCE-OUTPUT)
+  ;; For debugging
+  (PUSH SUPDUP-STREAM SUPSER-STREAMS)
+  (PUSH CURRENT-PROCESS SUPSER-PROCESSES)
   ;; Wake up monitor process
-  ;; (PUSH CURRENT-PROCESS SUPDUP-PROCESSES)
   ;; (PREPARE-FOR-SUPDUP)
   (SUPDUP-TOP-LEVEL SUPDUP-STREAM))
-
-(DEFUN SEND-GREETING (STREAM)
-    (FUNCALL STREAM ':STRING-OUT (CHAOS:HOST-DATA CHAOS:MY-ADDRESS)) 
-    (FUNCALL STREAM ':TYO 15)
-    (FUNCALL STREAM ':TYO 12)
-    ;; Why this?
-    (FUNCALL STREAM ':TYO %TDNOP)
-    (FUNCALL STREAM ':FORCE-OUTPUT))
 
 ;; A copy of SI:LISP-TOP-LEVEL1 which does a :FORCE-OUTPUT before evaluation.
 ;; Why is this the right place?
 ;; Note that the stream to use is passed as an argument and bound to the
-;; special variable TERMINAL-IO.  *, +, - are bound so as to be per stack group.
+;; special variable TERMINAL-IO.  - , +, *, etc. are bound so as to be per stack group.
 
-(DEFUN SUPDUP-TOP-LEVEL (TERMINAL-IO &AUX THROW-FLAG VALUES * + -)
+(DEFUN SUPDUP-TOP-LEVEL (TERMINAL-IO &AUX THROW-FLAG - + ++ +++ * ** *** //)
   ;; Do forever
   (DO () (NIL)
     ;; *CATCH returns a value and a flag saying whether thrown to.
@@ -138,16 +147,16 @@
 	      (PROGN (TERPRI)
 		     (SETQ - (SI:READ-FOR-TOP-LEVEL))
 		     (FUNCALL STANDARD-OUTPUT ':FORCE-OUTPUT)
-		     (LET ((LISP-TOP-LEVEL-INSIDE-EVAL T))
-		       (SETQ VALUES (MULTIPLE-VALUE-LIST (EVAL -))))
-		     ;; Save first value and print all values
-		     (SETQ * (FIRST VALUE))
-		     (DOLIST (VALUE VALUES)
+		     (LET ((SI:LISP-TOP-LEVEL-INSIDE-EVAL T))
+		       (SETQ // (MULTIPLE-VALUE-LIST (EVAL -))))
+		     ;; Save first value, list of all values, and previous two values
+		     (SETQ *** ** ** * * (FIRST //))
+		     (DOLIST (VALUE //)
 		       (TERPRI)
 		       (FUNCALL (OR PRIN1 #'PRIN1) VALUE)))))
     ;; Signal return to top level
     (IF THROW-FLAG (PRINT '*))
-    (SETQ + -)))
+    (SETQ +++ ++ ++ + + -)))
 
 (DEFUN 18BIT-IN (STREAM)
     (DPB (FUNCALL STREAM ':TYI)
@@ -173,8 +182,8 @@
 ;; and thus doesn't handle the :UNTYI or :RUBOUT-HANDLER messages.
 ;; Should precede these variable names with SS- or something.
 
-(DECLARE (SPECIAL SUPDUP-CHAOS-STREAM MORE-PROCESSING-FLAG
-		  MORE-PROCESSING-IN-PROGRESS MORE-PROCESSING-LINE
+(DECLARE (SPECIAL SUPDUP-CHAOS-STREAM SUPDUP-WHICH-OPERATIONS
+		  MORE-PROCESSING-FLAG MORE-PROCESSING-IN-PROGRESS MORE-PROCESSING-LINE
                   TCTYPE TTYOPT HEIGHT WIDTH TTYROL SMARTS ISPEED OSPEED
                   XPOS YPOS SUPDUP-FINGER-STRING
 		  META-BITS-SEEN))
@@ -190,7 +199,7 @@
 
 (DEFUN MAKE-SUPDUP-STREAM (SUPDUP-CHAOS-STREAM)
   (MULTIPLE-VALUE-BIND (TCTYPE TTYOPT HEIGHT WIDTH TTYROL SMARTS ISPEED OSPEED)
-      (RECEIVE-TTY-VARIABLES CH-STREAM)
+      (RECEIVE-TTY-VARIABLES SUPDUP-CHAOS-STREAM)
     (LET ((SUPDUP-FINGER-STRING)
 	  (SUPDUP-WHICH-OPERATIONS)
 	  (XPOS 0)
@@ -204,7 +213,7 @@
 		   :TYO :FRESH-LINE :BEEP))
       ;; Set the WHICH-OPERATIONS parameter of the supdup stream according
       ;; to the terminal capabilities.
-      (IF (BIT-MEST %TOMVU TTYOPT)
+      (IF (BIT-TEST %TOMVU TTYOPT)
 	  (PUSH-LIST '(:TRIGGER-MORE :READ-CURSORPOS :SET-CURSORPOS
 				     :SET-CURSORPOS-RELATIVE :HOME-CURSOR
 				     :COMPUTE-MOTION :CURSOR-MOTION)
@@ -221,7 +230,7 @@
       (CLOSURE '(TCTYPE TTYOPT HEIGHT WIDTH TTYROL SMARTS ISPEED OSPEED
 			XPOS YPOS MORE-PROCESSING-FLAG MORE-PROCESSING-IN-PROGRESS
 			MORE-PROCESSING-LINE META-BITS-SEEN
-			SUPDUP-FINGER-STRING SUPDUP-WHICH-OPERATIONS)
+			SUPDUP-CHAOS-STREAM SUPDUP-FINGER-STRING SUPDUP-WHICH-OPERATIONS)
 	       #'SUPDUP-STREAM))))
 
 (DEFMACRO SUPSER-RAW-TYO (CHAR)
@@ -261,7 +270,7 @@
 
   (:READ-CURSORPOS (&OPTIONAL (UNIT ':CHARACTER))
     (SELECTQ UNIT
-      (:CHARACTER (RETURN XPOS YPOS))
+      (:CHARACTER (MVRETURN XPOS YPOS))
       (OTHERWISE (FERROR NIL "~S is not a known unit." UNIT))))
   (:SET-CURSORPOS (X Y &OPTIONAL (UNIT ':CHARACTER))
     ;; For compatibility
@@ -336,6 +345,33 @@
 ;; before printing "Quit".  In the new window system, presumably there will be
 ;; a process stuffing characters into an IO-BUFFER.
 
+;; User can set this to change control/meta prefixes.
+
+(DEFVAR SUPSER-TYI-HOOK 'DEFAULT-SUPSER-TYI-HOOK)
+
+(DEFUN DEFAULT-SUPSER-TYI-HOOK (CHAR OP)
+  (COND ((= CHAR #\BREAK) (BREAK BREAK T) NIL)
+	((OR (= CHAR #/Z) (= CHAR #/Z))
+	 (PRINC "Z Quit")
+	 (*THROW 'SI:TOP-LEVEL NIL))
+	;; 12-bit keyboard available
+	((BIT-TEST %TOFCI TTYOPT) CHAR)
+	;; Ascii keyboard.  Accept C-B as break.
+	((= CHAR #/B) (BREAK BREAK T) NIL)
+	;; C-^ is control prefix,  is meta prefix, C-C is control-meta prefix.
+	;; Any prefix typed twice transmits the prefix directly.  This doesn't
+	;; address the entire character set from Ascii, but its good enough for now.
+	((= CHAR #/^)
+	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
+	 (IF (= CHAR #/^) #/^ (DPB 1 %%KBD-CONTROL CHAR)))
+	((= CHAR #/)
+	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
+	 (IF (= CHAR #/) #/ (DPB 1 %%KBD-META CHAR)))
+	((= CHAR #/C)
+	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
+	 (IF (= CHAR #/C) #/C (DPB 3 %%KBD-CONTROL-META CHAR)))
+	(T CHAR)))
+
 (DEFUN SUPSER-TYI () (SUPSER-TYI-CHECK-HOOK ':TYI))
 (DEFUN SUPSER-TYI-NO-HANG () (SUPSER-TYI-CHECK-HOOK ':TYI-NO-HANG))
 
@@ -359,6 +395,7 @@
   (DO () (NIL)
     (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
     (COND ((NULL CHAR) (RETURN))
+	  (( CHAR 300) (SUPDUP-ESCAPE CHAR)) 
 	  (( CHAR 34) (RETURN))
 	  (T (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM ':TYI))
 	     (COND
@@ -378,34 +415,6 @@
   (COND ((NULL CHAR) NIL)
 	((BIT-TEST %TOFCI TTYOPT) (12-BIT-TO-LM-CHAR CHAR))
 	(T (ASCII-TO-LM-CHAR CHAR))))
-
-;; User can set this to change control/meta prefixes.
-
-(DEFVAR SUPSER-TYI-HOOK 'DEFAULT-SUPSER-TYI-HOOK)
-
-(DEFUN DEFAULT-SUPSER-TYI-HOOK (CHAR OP)
-  (COND ((NULL
-	((= CHAR #\BREAK) (BREAK BREAK T) NIL)
-	((OR (= CHAR #/Z) (= CHAR #/Z))
-	 (PRINC "Z Quit")
-	 (*THROW 'SI:TOP-LEVEL NIL))
-	;; 12-bit keyboard available
-	((BIT-TEST %TOFCI TTYOPT) CHAR)
-	;; Ascii keyboard.  Accept C-B as break.
-	((= CHAR #/B) (BREAK BREAK T) NIL)
-	;; C-^ is control prefix,  is meta prefix, C-C is control-meta prefix.
-	;; Any prefix typed twice transmits the prefix directly.  This doesn't
-	;; address the entire character set from Ascii, but its good enough for now.
-	((= CHAR #/^)
-	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
-	 (IF (= CHAR #/^) #/^ (DPB 1 %%KBD-CONTROL CHAR)))
-	((= CHAR #/)
-	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
-	 (IF (= CHAR #/) #/ (DPB 1 %%KBD-META CHAR)))
-	((= CHAR #/C)
-	 (SETQ CHAR (FUNCALL SUPDUP-CHAOS-STREAM OP))
-	 (IF (= CHAR #/C) #/C (DPB 3 %%KBD-CONTROL-META CHAR)))
-	(T CHAR)))
 
 ;; Convert C-M to RETURN, C-H to BS, etc. as special cases since it is most likely
 ;; that the user typed RETURN and BS keys on his keyboard.  Don't convert VT to
@@ -441,8 +450,8 @@ Lisp Machine characters from Ascii.  That is up to the individual program."
 
 (DEFUN 12-BIT-TO-LM-CHAR (CHAR &AUX ASC TOP)
   (SETQ TOP (BIT-TEST %TXTOP CHAR))
-  (SETQ CHAR (LOGAND %TXASC CHAR))
-  (SETQ CHAR
+  (SETQ ASC (LOGAND %TXASC CHAR))
+  (SETQ ASC
 	(COND (TOP (COND ((< ASC #\SPACE) ASC)
 			 ((= ASC #/A) #\ESC)
 			 ((= ASC #/B) #\BREAK)
@@ -588,6 +597,9 @@ For return, the result is zero."
     (SUPSER-RAW-TYO YPOS)
     (SUPSER-RAW-TYO XPOS))
 
+(DEFUN SUPSER-SET-CURSORPOS-RELATIVE (X Y)
+  (SUPSER-SET-CURSORPOS (+ XPOS X) (+ YPOS Y)))
+
 ;; Use MORE-PROCESSING-IN-PROGRESS flag to avoid recursion.
 ;; This should be handled higher up.
 
@@ -595,7 +607,7 @@ For return, the result is zero."
   (SUPSER-STRING-OUT ':STRING-OUT "--More--")
   (SETQ CHAR (SUPSER-RAW-TYI))
   (IF ( CHAR #\SPACE)
-      (FUNCALL SUPDUP-CHAOS-STRAM ':UNTYI CHAR))
+      (FUNCALL SUPDUP-CHAOS-STREAM ':UNTYI CHAR))
   ;; Clear out the --More--, home cursor up, and clear the top line.
   (SUPSER-SET-CURSORPOS 0 YPOS)
   (SUPSER-RAW-TYO %TDEOL)
@@ -683,6 +695,8 @@ For return, the result is zero."
 
 
 ;;; Fancy cpt-monitor display
+
+(declare (special fonts:bigfnt))
 
 (defclass message-window-class window-with-pc-ppr-class (stream))
 

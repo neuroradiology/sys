@@ -111,7 +111,7 @@
   (LET ((DOW-BEG-YEAR
 	  (LET ((B (\ (+ YEAR 1899.) 400.)))
 	    (\ (- (+ (1+ B) (SETQ B (// B 4))) (// B 25.)) 7)))
-	(FEB29 (IF (ZEROP (\ YEAR 4)) 1 0)))	;Good enough for this century, and the next
+	(FEB29 (IF (LEAP-YEAR-P YEAR) 1 0)))
     (LET ((DOW-APRIL-30 (\ (+ DOW-BEG-YEAR 119. FEB29) 7)))
       (- 30. DOW-APRIL-30))))
 
@@ -123,7 +123,7 @@
 			 (1- *TIMEZONE*) *TIMEZONE*)))
   (SETQ TEM (+ (1- DAY) (AREF *CUMULATIVE-MONTH-DAYS-TABLE* MONTH)
 	       (// (1- YEAR) 4) (* YEAR 365.)))	;Number of days since 1/1/00.
-  (AND (> MONTH 2) (ZEROP (\ YEAR 4))
+  (AND (> MONTH 2) (LEAP-YEAR-P YEAR)
        (SETQ TEM (1+ TEM)))			;After 29-Feb in a leap year.
   (+ SECONDS (* TEM 86400.) (* TIMEZONE 3600.)))	;Return number of seconds.
 
@@ -174,12 +174,12 @@
 						    (// *LAST-TIME-MINUTES* 60.)))
 			 (SETQ *LAST-TIME-MINUTES* (\ *LAST-TIME-MINUTES* 60.)))
 		  24.)
-	       (< (PROG1 (SETQ *LAST-TIME-DAY* (1+ *LAST-TIME-DAY*))
+	       ( (PROG1 (SETQ *LAST-TIME-DAY* (1+ *LAST-TIME-DAY*))
 			 (SETQ *LAST-TIME-DAY-OF-THE-WEEK*
 			       (\ (1+ *LAST-TIME-DAY-OF-THE-WEEK*) 7))
 			 (SETQ *LAST-TIME-HOURS* 0))
 		  (MONTH-LENGTH *LAST-TIME-MONTH* *LAST-TIME-YEAR*))
-	       (< (SETQ *LAST-TIME-DAY* 1
+	       ( (SETQ *LAST-TIME-DAY* 1
 			*LAST-TIME-MONTH* (1+ *LAST-TIME-MONTH*))
 		  12.)
 	       (SETQ *LAST-TIME-MONTH* 1
@@ -195,8 +195,13 @@
 
 (DEFUN MONTH-LENGTH (MONTH YEAR)
   (IF (= MONTH 2)
-      (IF (ZEROP (\ YEAR 4)) 29. 28.)
+      (IF (LEAP-YEAR-P YEAR) 29. 28.)
       (NTH MONTH *MONTH-LENGTHS*)))
+
+(DEFUN LEAP-YEAR-P (YEAR)
+  (AND (ZEROP (\ YEAR 4))
+       (OR (NOT (ZEROP (\ YEAR 100.)))
+	   (ZEROP (\ YEAR 400.)))))
 
 (DEFUN DAYLIGHT-SAVINGS-P ()
   (UPDATE-TIMEBASE)
@@ -466,12 +471,12 @@
 				TOKEN (// TOKEN 100.))))
 		 (SETQ MONTH (// TOKEN 100.)
 		       DAY (\ TOKEN 100.))
-		 (COND (( DAY 12.))
-		       ((OR ( MONTH 12.) AMBIGUOUS-ASSUME-DAY-FIRST)
+		 (COND ((> DAY 12.))
+		       ((OR (> MONTH 12.) AMBIGUOUS-ASSUME-DAY-FIRST)
 			(PSETQ DAY MONTH MONTH DAY)))
 		 (SETQ STATE (IF YEAR ':DONE ':DAY-AND-MONTH-SEEN)))
 		(T
-		 (IF ( TOKEN 12.)
+		 (IF (> TOKEN 12.)
 		     (SETQ DAY TOKEN)
 		     (SETQ MONTH TOKEN))
 		 (SETQ STATE ':DAY-OR-MONTH-SEEN))))

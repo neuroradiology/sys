@@ -576,7 +576,7 @@ D - Display entire font   V - set sample string
                                             FD-BLINKER-WIDTH 7
                                             FD-SPACE-WIDTH 7))
              (AS-1 (MAKE-CHAR-DESCRIPTOR
-                    MAKE-ARRAY (DEFAULT-ARRAY-AREA ART-4B '(11 7))
+                    MAKE-ARRAY (NIL ART-4B '(11 7))
                     CD-CHAR-WIDTH 7
                     CD-CHAR-LEFT-KERN 0)
                    FD #/ )
@@ -852,7 +852,7 @@ Dots above character top will be lost.  Store anyway? "
     (SETQ KERN (- CHAR-BOX-X1 (+ XSTART PLANE-X1)))
     ;; Copy the data in the FED buffer into a CD
     (SETQ CD (MAKE-CHAR-DESCRIPTOR
-                      MAKE-ARRAY (DEFAULT-ARRAY-AREA ART-4B (LIST YWIDTH XWIDTH))
+                      MAKE-ARRAY (NIL ART-4B (LIST YWIDTH XWIDTH))
                       CD-CHAR-WIDTH (- CHAR-BOX-X2 CHAR-BOX-X1)
                       CD-CHAR-LEFT-KERN KERN))
     (DO I 0 (1+ I) (= I XWIDTH)

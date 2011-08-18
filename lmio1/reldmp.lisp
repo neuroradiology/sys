@@ -249,10 +249,8 @@
     (or secnum (ferror nil "object in unhandled area"))
     (let ((total-len (%structure-total-size object))
 	  (boxed-len (%structure-boxed-size object))
-	  (start-offset (cond ((and (arrayp object)
-				    (array-has-leader-p object))
-			       (- (+ 2 (array-leader-length object))))
-			      (t 0))))
+	  (start-offset (%pointer-difference (%find-structure-leader object)
+					     object)))
       (let ((index (allocate-section-space secnum total-len))
 	    (array (aref dump-section-array-table secnum)))
 	;; Copy in all the data of the object, assuming not relocatable data.

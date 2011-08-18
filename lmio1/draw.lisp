@@ -1,4 +1,7 @@
-;USER FUNCTIONS:			-*-lisp-*-
+;			-*-lisp-*-
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
+;USER FUNCTIONS:
 ; (DRAW-LINE initial-X initial-Y final-X final-Y &OPTIONAL mode)
 ; (DRAW-CIRCLE center-X center-Y radius &OPTIONAL mode)
 ; (DRAW-LINE-WITH-INTENSITY 

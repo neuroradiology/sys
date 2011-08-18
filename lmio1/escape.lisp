@@ -137,7 +137,8 @@ then the item itself is used."
     (KBD-ESC-PREPARE-WINDOW "Documenting all the <esc> keys, <esc>? documents single keys."
 			    'FULL-SCREEN))
   (FORMAT STREAM "Documentation of ESC keys:~%")
-  (DOLIST (ITEM (REVERSE KBD-ESC-REPOSITORY))
+  (SETQ KBD-ESC-REPOSITORY (SORTCAR KBD-ESC-REPOSITORY #'CHAR-LESSP))
+  (DOLIST (ITEM KBD-ESC-REPOSITORY)
     (KBD-ESC-PRINT-DOCUMENTATION STREAM ITEM))
   (FORMAT STREAM "~2%Type a space to flush:")
   (TYI STREAM)
