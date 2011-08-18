@@ -23,6 +23,11 @@
 ;; appropriately, and return; the stack group will be started up in
 ;; SG-RESUMABLE state.
 ;;
+;; Things that have PROCEED or BASH-AND-PROCEED properties should also have
+;; HELP-MESSAGE properties to tell the user about the extra commands made
+;; available (C and/or C).  This property is either a string or a function
+;; of SG and ETE.
+;;
 ;; Look at a few of these to get the idea of what they should look like.
 ;;
 ;; For errors signalled by macrocode (not microcode), the ETE looks like
@@ -35,7 +40,10 @@
 ;; As a special kludge, if the tag is a number, the result is simply that
 ;; number.  The ARRAY-NUMBER-DIMENSIONS error, for example, is one.
 (DEFUN SG-FIXNUM-CONTENTS (SG LOC)
-  (IF (NUMBERP LOC) LOC (%P-LDB %%Q-POINTER (SG-LOCATE SG LOC))))
+  (COND ((NUMBERP LOC) LOC)			;Constant
+	((EQ LOC 'M-1) (DPB (LDB 1010 (SG-VMA-M1-M2-TAGS SG)) 3010 (SG-AC-1 SG)))
+	((EQ LOC 'M-2) (DPB (LDB 2010 (SG-VMA-M1-M2-TAGS SG)) 3010 (SG-AC-2 SG)))
+	(T (%P-LDB %%Q-POINTER (SG-LOCATE SG LOC)))))
 
 (DEFUN SG-FIXNUM-STORE (X SG LOC)
   (%P-DPB X %%Q-POINTER (SG-LOCATE SG LOC)))
@@ -52,13 +60,14 @@
 ;; Fifth arg (optional) is name of sub-function (typically CAR or CDR)
 ;; to which the value was an argument.  Just to make error messages nicer.
 
-(DEFUN (ARGTYP INFORM) (SG ETE)
+(DEFUN (ARGTYP INFORM) (SG ETE &AUX FCN)
   (LET ((ARGNUM (FOURTH ETE)))
     (FORMAT T "~:[Some~*~*~;The~:[ ~:R~;~*~]~] argument to ~S, "
 	    ARGNUM (EQ ARGNUM T) (AND (NUMBERP ARGNUM) (1+ ARGNUM))
-	    (OR (SIXTH ETE) (SG-ERRING-FUNCTION SG))))
+	    (SETQ FCN (OR (SIXTH ETE) (SG-ERRING-FUNCTION SG)))))
   (P-PRIN1-CAREFUL (SG-LOCATE SG (THIRD ETE)))
-  (FORMAT T ", was of the wrong type.~%The function expected ")
+  (FORMAT T (IF (ARRAYP FCN) ", was an invalid array subscript.~%Use "      
+		", was of the wrong type.~%The function expected "))
   (LET ((TYPE (SECOND ETE)))
     (COND ((SYMBOLP TYPE)
 	   (PRINC-TYPE-NAME TYPE))
@@ -82,6 +91,7 @@
 	(BIGNUM "a bignum")
 	(INTEGER "a fixnum or a bignum")
 	(POSITIVE-FIXNUM "a fixnum  zero")
+	(FIXNUM-GREATER-THAN-1 "a fixnum > 1")
 	(PLUSP "a number > zero")
 	(SYMBOL "a symbol")
 	(CONS "a cons")
@@ -97,6 +107,10 @@
 	(Q-ARRAY "an array of Lisp objects")
 	(BYTE-ARRAY "an array of numbers")
 	(ART-4B-ARRAY "an array of 4-bit bytes")
+	(NON-DISPLACED-ARRAY "a non-displaced array")
+	(ART-Q-ARRAY "an array of type ART-Q")
+	(NUMERIC-ARRAY "an array of numeric type")
+	(REASONABLE-SIZE-ARRAY "an array of reasonable size")
 	(AREA "an area number, NIL (default), or a symbol whose value is one")
 	(FIXNUM-FIELD "a byte pointer to a field that fits in a fixnum")))
 
@@ -110,6 +124,10 @@
   (SG-STORE (READ-OBJECT "Form to evaluate and use as replacement argument:")
 	    SG (THIRD ETE))
   (SG-PROCEED-MICRO-PC SG (FIFTH ETE)))
+
+(DEFUN (ARGTYP HELP-MESSAGE) (IGNORE ETE)
+  (AND (FIFTH ETE)
+       (FORMAT T "C asks for a replacement argument and continues.")))
 
 ;; This routine should be called by the PROCEED routines for
 ;; microcode (non-FERROR) errors.  A restart micro pc is pushed onto
@@ -128,8 +146,8 @@
     (LET ((RP (SG-REGULAR-PDL SG))
 	  (SP (SG-SPECIAL-PDL SG))
 	  (SPP (SG-SPECIAL-PDL-POINTER SG))
-	  (AP (SG-AP SG)))
-      (OR (ZEROP (RP-MICRO-STACK-SAVED RP AP))	;Shuffle up stack to make room
+	  (FRAME (SG-AP SG)))
+      (OR (ZEROP (RP-MICRO-STACK-SAVED RP FRAME))	;Shuffle up stack to make room
 	  (DO ((FLAG 0)) ((NOT (ZEROP FLAG)))
 	    (ASET (AREF SP SPP) SP (1+ SPP))
 	    (%P-STORE-FLAG-BIT (ALOC SP (1+ SPP)) 0)
@@ -138,7 +156,7 @@
       (ASET PC SP (SETQ SPP (1+ SPP)))
       (%P-STORE-FLAG-BIT (ALOC SP SPP) 1)
       (SETF (SG-SPECIAL-PDL-POINTER SG) (1+ (SG-SPECIAL-PDL-POINTER SG)))
-      (SETF (RP-MICRO-STACK-SAVED RP AP) 1))))
+      (SETF (RP-MICRO-STACK-SAVED RP FRAME) 1))))
 
 ;; FIXNUM-OVERFLOW
 ;; First arg is M-T to show that that is where the value should
@@ -161,6 +179,7 @@
   (AND (EQ (THIRD ETE) 'PUSH)
        (SG-REGPDL-PUSH SG NUM)))
 
+(DEFPROP FIXNUM-OVERFLOW "C asks for a fixnum to use as the result." HELP-MESSAGE)
 (DEFPROP FIXNUM-OVERFLOW :FIXNUM-OVERFLOW CONDITION)
 (DEFPROP FIXNUM-OVERFLOW SIGNAL-WITH-CONTENTS SIGNAL)
 
@@ -179,9 +198,13 @@ representable as a ~:[~;small~] flonum.~%"
   (LIST (GET (CAR ETE) 'CONDITION)))
 
 (DEFUN (FLOATING-EXPONENT-UNDERFLOW PROCEED) (SG ETE)
-  (FORMAT T " Proceed using 0.0~:[s0~] as the value instead? " (EQ (SECOND ETE) 'FLO))
-  (OR (Y-OR-N-P) (*THROW 'QUIT NIL))
+  (OR (FQUERY '(:LIST-CHOICES NIL :FRESH-LINE NIL)
+	      "Proceed using 0.0~:[s0~] as the value instead? "
+	      (EQ (SECOND ETE) 'FLO))
+      (*THROW 'QUIT NIL))
   (SG-PROCEED-MICRO-PC SG NIL))
+
+(DEFPROP FLOATING-EXPONENT-UNDERFLOW "C proceeds using 0.0 as the result." HELP-MESSAGE)
 
 ;; FLOATING-EXPONENT-OVERFLOW
 ;; Result is to be placed in M-T and pushed on the pdl.
@@ -212,6 +235,8 @@ representable as a ~:[~;small~] flonum.~%"
        (EQ (SECOND ETE) 'SFL)
        (SG-REGPDL-POP SG))
   (SG-REGPDL-PUSH NUM SG))
+
+(DEFPROP FLOATING-EXPONENT-OVERFLOW "C asks for a flonum to use as the result." HELP-MESSAGE)
 
 ;; DIVIDE-BY-ZERO
 ;; You cannot recover.
@@ -228,11 +253,19 @@ representable as a ~:[~;small~] flonum.~%"
 ;; You cannot recover.
 
 (DEFUN (ARRAY-NUMBER-DIMENSIONS INFORM) (SG ETE)
-  (FORMAT T "~S was given ~S, a ~S-dimensional array; it expected a ~S-dimensional one.~%"
-	  (SG-ERRING-FUNCTION SG)
-	  (SG-CONTENTS SG (FOURTH ETE))
-	  (SG-FIXNUM-CONTENTS SG (SECOND ETE))
-	  (SG-FIXNUM-CONTENTS SG (THIRD ETE))))
+  ;; Was this array applied or aref'ed?
+  (LET ((CURRENT-UPC (SG-TRAP-MICRO-PC SG)))
+    (IF (AND ( BEGIN-QARYR CURRENT-UPC) (< CURRENT-UPC END-QARYR))
+	(FORMAT T "The ~D-dimensional array ~S was erroneously applied to ~D argument~:P.~%"
+		(SG-FIXNUM-CONTENTS SG (SECOND ETE))		
+		(SG-CONTENTS SG (FOURTH ETE))
+		(SG-FIXNUM-CONTENTS SG (THIRD ETE)))
+	(FORMAT T
+		"~S was given ~S, a ~S-dimensional array; it expected a ~S-dimensional one.~%"
+		(SG-ERRING-FUNCTION SG)
+		(SG-CONTENTS SG (FOURTH ETE))
+		(SG-FIXNUM-CONTENTS SG (SECOND ETE))
+		(SG-FIXNUM-CONTENTS SG (THIRD ETE))))))
 
 ;; IALLB-TOO-SMALL
 ;; First arg is how many we asked for.
@@ -240,6 +273,10 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (IALLB-TOO-SMALL INFORM) (SG ETE)
   (FORMAT T "There was a request to allocate ~S cells.~%"
 	  (SG-FIXNUM-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (CONS-ZERO-SIZE INFORM) (SG IGNORE)
+  (FORMAT T "There was an attempt to allocate zero storage by ~S.~%"
+	  (SG-ERRING-FUNCTION SG)))
 
 ;; NUMBER-ARRAY-NOT-ALLOWED
 ;; First arg is where to find the array.
@@ -278,6 +315,10 @@ representable as a ~:[~;small~] flonum.~%"
   (SG-FIXNUM-STORE NUM SG (SECOND ETE))
   (SG-PROCEED-MICRO-PC SG (FOURTH ETE)))
 
+(DEFUN (SUBSCRIPT-OOB HELP-MESSAGE) (IGNORE ETE)
+  (IF (FOURTH ETE)
+      (FORMAT T "C asks for a replacement subscript and proceeds.")))
+
 ;; BAD-ARRAY-TYPE
 ;; First arg is where array header is. Note that it may well have a data type of DTP-TRAP.
 ;; You cannot recover.
@@ -307,6 +348,9 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (ARRAY-HAS-NO-LEADER PROCEED) (SG IGNORE)
   (SG-STORE (READ-OBJECT "Form to evaluate and return instead:") SG 'M-T))
 
+(DEFPROP ARRAY-HAS-NO-LEADER "C asks for a value to use as the result and proceeds."
+	 HELP-MESSAGE)
+
 ;; FILL-POINTER-NOT-FIXNUM
 ;; Arg is where array pointer is.
 ;; Recover by returning an arbitrary frob, just flush spurious return addr and restart.
@@ -321,6 +365,9 @@ representable as a ~:[~;small~] flonum.~%"
 
 (DEFUN (FILL-POINTER-NOT-FIXNUM PROCEED) (SG IGNORE)
   (SG-STORE (READ-OBJECT "Form to evaluate and return instead:") SG 'M-T))
+
+(DEFPROP FILL-POINTER-NOT-FIXNUM "C asks for a value to use as the result and proceeds."
+	 HELP-MESSAGE)
 
 ;; More random losses.
 
@@ -385,6 +432,42 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (MVR-BAD-NUMBER INFORM) (SG ETE)
   (FORMAT T "The function attempted to return ~D. values.~%"
 	  (SG-FIXNUM-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (ZERO-ARGS-TO-SELECT-METHOD INFORM) (SG ETE)
+  (FORMAT T "~S was applied to no arguments.~%"
+	  (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (SELECTED-METHOD-NOT-FOUND INFORM) (SG ETE)
+  (FORMAT T "No method for message ~S was found in a call to ~S.~%"
+	  (SG-CONTENTS SG (THIRD ETE))
+	  (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (SELECT-METHOD-GARBAGE-IN-SELECT-METHOD-LIST INFORM) (SG ETE)
+  (FORMAT T "The weird object ~S was found in a select-method alist.~%"
+	  (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (SELECT-METHOD-BAD-SUBROUTINE-CALL INFORM) (SG ETE)
+  (FORMAT T "A bad /"subroutine call/" was found inside ~S.~%"
+	  (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (MICRO-CODE-ENTRY-OUT-OF-RANGE INFORM) (SG ETE)
+  (FORMAT T "MISC-instruction ~S is not an implemented instruction."
+	  (SG-FIXNUM-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (BIGNUM-NOT-BIG-ENOUGH-DPB INFORM) (IGNORE IGNORE)
+  (FORMAT T "There is an internal error in bignums; please report this bug."))
+
+(DEFUN (BAD-INTERNAL-MEMORY-SELECTOR-ARG INFORM) (SG ETE)
+  (FORMAT T "~S is not valid as the first argument to %WRITE-INTERNAL-PROCESSOR-MEMORIES."
+	  (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (BITBLT-DESTINATION-TOO-SMALL INFORM) (IGNORE IGNORE)
+  (FORMAT T "The destination of a BITBLT was too small."))
+
+(DEFUN (WRITE-IN-READ-ONLY INFORM) (SG ETE)
+  (FORMAT T "There was an attempt to write into ~S, which is a read-only address."
+	  (SG-CONTENTS SG (SECOND ETE))))
+
 
 ;;;; General Machine Lossages.
 
@@ -399,18 +482,21 @@ representable as a ~:[~;small~] flonum.~%"
 	  (CADR (ASSQ (SECOND ETE) '((REGULAR "regular") (SPECIAL "special"))))))
 
 (DEFUN (PDL-OVERFLOW PROCEED) (SG IGNORE)
-  (FORMAT T " Continuing with more pdl.~%")
+  (FORMAT T "Continuing with more pdl.~%")
   (SG-MAYBE-GROW-PDLS SG)		;Make very sure that there is enough room
   (SG-PROCEED-MICRO-PC SG NIL))		;Then continue after microcode check for room
+
+(DEFPROP PDL-OVERFLOW "C grows the pdl and proceeds." HELP-MESSAGE)
+
 
 ;; ILLEGAL-INSTRUCTION
 ;; No args.
 
 (DEFUN (ILLEGAL-INSTRUCTION INFORM) (SG IGNORE)
   (FORMAT T "There was an attempt to execute an invalid instruction: ~O"
-	  (LET ((AP (SG-PREVIOUS-ACTIVE SG (SG-AP SG))))
-	    (FEF-INSTRUCTION (AREF (SG-REGULAR-PDL SG) AP)
-			     (RP-EXIT-PC (SG-REGULAR-PDL SG) AP)))))
+	  (LET ((FRAME (SG-PREVIOUS-ACTIVE SG (SG-AP SG))))
+	    (FEF-INSTRUCTION (AREF (SG-REGULAR-PDL SG) FRAME)
+			     (RP-EXIT-PC (SG-REGULAR-PDL SG) FRAME)))))
 
 ;; BAD-CDR-CODE
 ;; Arg is where loser is.
@@ -441,6 +527,10 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (VIRTUAL-MEMORY-OVERFLOW INFORM) (IGNORE IGNORE)
   (FORMAT T "You've used up all available virtual memory!~%"))
 
+;; RCONS-FIXED
+(DEFUN (RCONS-FIXED INFORM) (IGNORE IGNORE)
+  (FORMAT T "There was an attempt to allocate storage in a fixed area.~%"))
+
 ;; REGION-TABLE-OVERFLOW
 (DEFUN (REGION-TABLE-OVERFLOW INFORM) (IGNORE IGNORE)
   (FORMAT T "Unable to create a new region because the region tables are full.~%"))
@@ -448,87 +538,196 @@ representable as a ~:[~;small~] flonum.~%"
 ;; RPLACD-WRONG-REPRESENTATION-TYPE
 ;; arg is first argument to RPLACD
 (DEFUN (RPLACD-WRONG-REPRESENTATION-TYPE INFORM) (SG ETE)
-  (FORMAT T "Attempt to RPLACD a list which is embedded in a structure and therefore/
+  (FORMAT T "Attempt to RPLACD a list which is embedded in a structure and therefore
 cannot be RPLACD'ed.  The list is ~S~%"
 	  (SG-CONTENTS SG (SECOND ETE))))
 
 ;;;; Special cases.
 
 ;; MAR-BREAK
+;; This code won't work if write-data is a DTP-NULL because of trap out of MAKUNBOUND
 
-(DEFUN (MAR-BREAK INFORM) (SG IGNORE)
+(DEFUN (MAR-BREAK INFORM) (SG ETE)
   (FORMAT T "The MAR has gone off because of an attempt to ~[read~;write~].~%"
-	  (SG-FLAGS-PGF-WRITE SG)))
+	  (SG-FLAGS-PGF-WRITE SG))
+  (AND (EQ (SECOND ETE) 'WRITE)
+       (FORMAT T "Value being written is ~S~%" (SG-CONTENTS SG 'PP))))
 
-;(DEFPROP MAR-BREAK MAR-BREAK-PROCEED PROCEED)
-;Doesn't work because SGENT takes a page fault, causeing recursive page faults.
-(DEFUN MAR-BREAK-PROCEED (SG IGNORE)
-  (FORMAT T "Proceed from MAR break? ")
-  (OR (Y-OR-N-P)
-      (*THROW 'QUIT NIL))
-  (SG-PROCEED-MICRO-PC SG NIL))
+(DEFPROP MAR-BREAK MAR-BREAK-PROCEED PROCEED)
+;By simply returning without calling SG-PROCEED-MICRO-PC, the PGF-R will return
+(DEFUN MAR-BREAK-PROCEED (SG ETE)
+  (COND ((NULL (SECOND ETE))
+	 (FORMAT T "Old microcode, MAR break not proceedable")
+	 (*THROW 'QUIT NIL))
+	((NOT (Y-OR-N-P "Proceed from MAR break? "))
+	 (*THROW 'QUIT NIL))
+	((EQ (SECOND ETE) 'WRITE)		;Simulate the write
+	 (AND (Y-OR-N-P "Allow the write to take place? ")
+	      (SG-FUNCALL SG #'(LAMBDA (VMA MD)
+				 (LET ((%MAR-HIGH -2) (%MAR-LOW -1))	;Disable MAR
+				   (RPLACA VMA MD)))
+			     (SG-SAVED-VMA SG) (SG-REGPDL-POP SG))))))
+
+(DEFPROP MAR-BREAK "C proceeds." HELP-MESSAGE)
+
 
 ;; TRANS-TRAP
 
+;Given an address which contains a dtp-null, find who it belongs to and which
+;of his cells it is.  Can also return NIL if it can't figure it out.
+(DEFUN DECODE-NULL-POINTER (VMA)
+  (DECLARE (RETURN-LIST NAME CELL-TYPE))
+  (AND (= (%P-DATA-TYPE VMA) DTP-NULL)
+       (LET ((SYMBOL (%FIND-STRUCTURE-HEADER (%P-CONTENTS-AS-LOCATIVE VMA))))
+	 (COND ((SYMBOLP SYMBOL)
+		(VALUES SYMBOL
+			(SELECTQ (%POINTER-DIFFERENCE VMA SYMBOL)
+			  (1 'VALUE)
+			  (2 'FUNCTION)
+			  (OTHERWISE 'CLOSURE))))	;Jumping to conclusions a bit
+	       ((LISTP SYMBOL)
+		(VALUES (SI:METH-FUNCTION-SPEC SYMBOL) 'FUNCTION))))))
+
+
 (DEFUN (TRANS-TRAP INFORM) (SG IGNORE)
   (PROG ((VMA (SG-SAVED-VMA SG))  ;I need to use a RETURN
-	 SYMBOL OFFSET PROP)
+	 PROP)
     (COND ((= (%P-DATA-TYPE VMA) DTP-NULL)
-	   (SETQ SYMBOL (%MAKE-POINTER DTP-SYMBOL (%P-CONTENTS-AS-LOCATIVE VMA))
-		 OFFSET (%POINTER-DIFFERENCE VMA SYMBOL))
-	   (SELECTQ OFFSET	;The function and value cells are special-cased
-	     (1 (RETURN (FORMAT T "The variable ~S is unbound.~%" SYMBOL)))
-	     (2 (FORMAT T "The function ~S is undefined.~%" SYMBOL)
-		(AND (SETQ PROP (GETL SYMBOL '(EXPR FEXPR MACRO SUBR FSUBR LSUBR AUTOLOAD)))
-		     (FORMAT T
+	   (MULTIPLE-VALUE-BIND (SYMBOL CELL-TYPE) (DECODE-NULL-POINTER VMA)
+	     (SELECTQ CELL-TYPE
+	       (VALUE (RETURN (FORMAT T "The variable ~S is unbound.~%" SYMBOL)))
+	       (FUNCTION
+		 (FORMAT T "The function ~S is undefined.~%" SYMBOL)
+		 (AND (SYMBOLP SYMBOL)
+		      (SETQ PROP (GETL SYMBOL '(EXPR FEXPR MACRO SUBR FSUBR LSUBR AUTOLOAD)))
+		      (FORMAT T
 	"Note: the symbol has a ~S property, this may be a Maclisp compatibility problem.~%"
-			     (CAR PROP)))
-		(RETURN NIL))
-	     (OTHERWISE
-	      ;; Might be an external value cell.  Unfortunately this isn't
-	      ;; being executed in the binding environment of the error, so
-	      ;; we can't easily look in the internal value-cell and see
-	      ;; if it points to this external value cell.  So we'll just
-	      ;; do a couple simple checks and jump to conclusions.
-	      ;; Also we don't allow here for the possibility of closures
-	      ;; of the function cell.
-	      (AND (OR (MINUSP OFFSET) (> OFFSET 4))
-		   (= (%P-DATA-TYPE SYMBOL) DTP-SYMBOL-HEADER)
-		   (RETURN (FORMAT T
-				   "The variable ~S is unbound (in a closure value-cell).~%"
+			      (CAR PROP)))
+		 (RETURN NIL))
+	       (CLOSURE
+		 (RETURN (FORMAT T "The variable ~S is unbound (in a closure value-cell).~%"
 				   SYMBOL)))))))
     ;; If it gets here, it's not a special case
-    (FORMAT T "The word #<~S ~S> was read from ~O .~%"
-	    (Q-DATA-TYPES (%P-DATA-TYPE VMA)) (%P-POINTER VMA) (%POINTER VMA))))
+    (FORMAT T "The word #<~S ~S> was read from location ~O ~@[(in ~A)~].~%"
+	    (Q-DATA-TYPES (%P-DATA-TYPE VMA)) (%P-POINTER VMA) (%POINTER VMA)
+	    (LET ((AREA (%AREA-NUMBER (%POINTER VMA))))
+	      (AND AREA (AREA-NAME AREA))))))
+
 
 (DEFUN (TRANS-TRAP SIGNAL) (SG IGNORE)
-  (LET ((VMA (SG-SAVED-VMA SG)))
-    (AND (= (%P-DATA-TYPE VMA) DTP-NULL)
-	 (LET ((SYMBOL (%MAKE-POINTER DTP-SYMBOL (%P-CONTENTS-AS-LOCATIVE VMA))))
-	   (SELECTQ (%POINTER-DIFFERENCE VMA SYMBOL)
-	     (1 `(:UNDEFINED-VARIABLE ,SYMBOL))
-	     (2 `(:UNDEFINED-FUNCTION ,SYMBOL)))))))
+  (MULTIPLE-VALUE-BIND (SYMBOL CELL-TYPE) (DECODE-NULL-POINTER (SG-SAVED-VMA SG))
+    (SELECTQ CELL-TYPE
+      ((VALUE CLOSURE) `(:UNDEFINED-VARIABLE ,SYMBOL))
+      (FUNCTION `(:UNDEFINED-FUNCTION ,SYMBOL)))))
+
+;Some people would rather not spend the time for this feature, so let them turn it off
+(DEFVAR ENABLE-TRANS-TRAP-DWIM T)
+
+;;; If problem is symbol in wrong package, offer some dwimoid assistance.
+(DEFUN (TRANS-TRAP OFFER-SPECIAL-COMMANDS) (SG IGNORE &AUX VMA SYM CELL NEW-VAL)
+  (COND ((AND ENABLE-TRANS-TRAP-DWIM
+	      (= (%P-DATA-TYPE (SETQ VMA (SG-SAVED-VMA SG))) DTP-NULL)
+	      (SYMBOLP (MULTIPLE-VALUE (SYM CELL) (DECODE-NULL-POINTER VMA)))
+	      (SETQ CELL (ASSQ CELL '((VALUE BOUNDP SYMEVAL "value" 1)
+				      (FUNCTION FBOUNDP FSYMEVAL "definition" 2))))
+	      (CAR (SETQ NEW-VAL (SG-FUNCALL SG #'TRANS-TRAP-DWIMIFY SYM CELL))))
+	 ;Special handling requested, don't enter regular error handler
+	 ;use TRANS-TRAP-RESTART in any case.  Even if indirecting permanently, just
+	 ; proceeding doesn't win because VMA points to ONE-Q-FORWARD, which manages
+	 ; not to get followed by just continuing.
+	 (SG-REGPDL-PUSH (CADR NEW-VAL) SG)
+	 (SG-PROCEED-MICRO-PC SG 'TRANS-TRAP-RESTART)
+	 (SETF (SG-CURRENT-STATE SG) SG-STATE-RESUMABLE)
+	 (PROCEED-SG SG))))
+
+(DEFUN TRANS-TRAP-DWIMIFY (SYM CELL)
+  (MULTIPLE-VALUE-BIND (NEW-SYM DWIM-P)
+    (*CATCH 'TRANS-TRAP-DWIMIFY
+      (MAP-OVER-LOOKALIKE-SYMBOLS (GET-PNAME SYM) PKG-GLOBAL-PACKAGE
+	 #'(LAMBDA (NEW-SYM ORIGINAL-SYM CELL &AUX ANS)
+	     (COND ((AND (NEQ NEW-SYM ORIGINAL-SYM)
+			 (FUNCALL (SECOND CELL) NEW-SYM)
+			 (SETQ ANS (FQUERY '(:CHOICES
+					      (((T "Yes.") #/Y #/T #\SP #\HAND-UP)
+					       ((NIL "No.") #/N #\RUBOUT #/Z #\HAND-DOWN)
+					       ((P "Permanently link ") #/P)
+					       ((G "Go to package ") #/G))
+					      :HELP-FUNCTION TRANS-TRAP-SPECIAL-COMMANDS-HELP)
+					   "Use the ~A of ~S? " (FOURTH CELL) NEW-SYM)))
+		    (COND ((EQ ANS 'P)
+			   (FORMAT QUERY-IO "~S to ~S." ORIGINAL-SYM NEW-SYM)
+			   (%P-STORE-TAG-AND-POINTER
+			     (%MAKE-POINTER-OFFSET DTP-LOCATIVE ORIGINAL-SYM (FIFTH CELL))
+			     DTP-ONE-Q-FORWARD
+			     (%MAKE-POINTER-OFFSET DTP-LOCATIVE NEW-SYM (FIFTH CELL))))
+			  ((EQ ANS 'G)
+			   (LET ((PKG (SYMBOL-PACKAGE NEW-SYM)))
+			     (FORMAT QUERY-IO "~A." (PKG-NAME PKG))
+			     (PKG-GOTO PKG))))
+		    (*THROW 'TRANS-TRAP-DWIMIFY NEW-SYM))))
+	 SYM CELL))
+    (AND DWIM-P (VALUES T (FUNCALL (THIRD CELL) NEW-SYM)))))
+
+(DEFUN TRANS-TRAP-SPECIAL-COMMANDS-HELP (S IGNORE IGNORE)
+  (FORMAT S "~&Y to use it this time.
+P to use it every time (permanently link the two symbols).
+G to use it this time and do a pkg-goto.
+N to do nothing special and enter the normal error handler.
+"))
+
+(DEFUN MAP-OVER-LOOKALIKE-SYMBOLS (PNAME PKG FUNCTION &REST ADDITIONAL-ARGS &AUX SYM)
+  (IF (SETQ SYM (INTERN-LOCAL-SOFT PNAME PKG))
+      (LEXPR-FUNCALL FUNCTION SYM ADDITIONAL-ARGS))
+  (DOLIST (P (SI:PKG-SUBPACKAGES PKG))
+    (LEXPR-FUNCALL #'MAP-OVER-LOOKALIKE-SYMBOLS PNAME P FUNCTION ADDITIONAL-ARGS)))
 
 (DEFUN (TRANS-TRAP PROCEED) (SG IGNORE)
-  (COND ((NOT (MEMQ (Q-DATA-TYPES (%P-DATA-TYPE (SG-SAVED-VMA SG))) GOOD-DATA-TYPES))
-	 (SG-REGPDL-PUSH (READ-OBJECT "Form to evaluate and use as replacement value?") SG)
-	 (SG-PROCEED-MICRO-PC SG 'TRANS-TRAP-RESTART)) ;Use replacement data on stack
-	(T (SG-PROCEED-MICRO-PC SG NIL))))	;Drop through, will do transport again
+  (LET ((VMA (SG-SAVED-VMA SG))
+	(PROMPT "Form to evaluate and use instead of cell's contents:")
+	SYMBOL CELL-TYPE)
+    (COND ((NOT (MEMQ (Q-DATA-TYPES (%P-DATA-TYPE VMA)) GOOD-DATA-TYPES))
+	   ;Location still contains garbage, get a replacement value.
+	   ;Try to make a prompt that isn't confusing.
+	   (AND (= (%P-DATA-TYPE VMA) DTP-NULL)
+		(MULTIPLE-VALUE (SYMBOL CELL-TYPE) (DECODE-NULL-POINTER VMA))
+		(SYMBOLP SYMBOL)
+		(SELECTQ CELL-TYPE
+		  (VALUE (SETQ PROMPT
+			   (FORMAT NIL "Form to evaluate and use instead of ~S's value:"
+				       SYMBOL)))
+		  (FUNCTION (SETQ PROMPT
+			      (FORMAT NIL
+			       "Form to evaluate and use instead of ~S's function definition:"
+			       SYMBOL)))))
+	   (SG-REGPDL-PUSH (READ-OBJECT PROMPT) SG)
+	   (SG-PROCEED-MICRO-PC SG 'TRANS-TRAP-RESTART)) ;Use replacement data on stack
+	  (T (SG-PROCEED-MICRO-PC SG NIL)))))	;Drop through, will do transport again
+
 
 (DEFUN (TRANS-TRAP BASH-AND-PROCEED) (SG IGNORE)
   (COND ((NOT (MEMQ (Q-DATA-TYPES (%P-DATA-TYPE (SG-SAVED-VMA SG))) GOOD-DATA-TYPES))
 	 (SG-STORE (READ-OBJECT
-		     (LET ((VMA (SG-SAVED-VMA SG)))
-		       (OR (AND (= (%P-DATA-TYPE VMA) DTP-NULL)
-				(SELECTQ (%POINTER-DIFFERENCE VMA
-					          (%P-CONTENTS-AS-LOCATIVE VMA))
-				  (1 (FORMAT NIL "Form to evaluate and SETQ ~S to?"
-						 (%FIND-STRUCTURE-HEADER VMA)))
-				  (2 (FORMAT NIL "Form to evaluate and FSET' ~S to?"
-						 (%FIND-STRUCTURE-HEADER VMA)))))
+		     (MULTIPLE-VALUE-BIND (SYMBOL CELL-TYPE)
+			 (DECODE-NULL-POINTER (SG-SAVED-VMA SG))
+		       (OR (AND (SYMBOLP SYMBOL)
+				(SELECTQ CELL-TYPE
+				  (VALUE
+				    (FORMAT NIL "Form to evaluate and SETQ ~S to?" SYMBOL))
+				  (FUNCTION
+				    (FORMAT NIL "Form to evaluate and FSET' ~S to?" SYMBOL))))
 			   "Form to evaluate and store back?")))
 		   SG 'RMD)))
   (SG-PROCEED-MICRO-PC SG NIL)) ;Drop through, will do transport again
+
+(DEFUN (TRANS-TRAP HELP-MESSAGE) (SG IGNORE)
+  (FORMAT T "C continues, using a specified value instead of the undefined ~A.~@
+	    C defines the ~:*~A to a specified value, then continues."
+	  (MULTIPLE-VALUE-BIND (SYMBOL CELL-TYPE) (DECODE-NULL-POINTER (SG-SAVED-VMA SG))
+	    (OR (AND (SYMBOLP SYMBOL)
+		     (SELECTQ CELL-TYPE
+		       (VALUE "variable")
+		       (FUNCTION "function")))
+		"memory cell"))))
 
 ;; FUNCTION-ENTRY
 ;; Special case.
@@ -538,26 +737,61 @@ cannot be RPLACD'ed.  The list is ~S~%"
 ;; and %%M-ESUBS-BAD-QUOTE-STATUS are not clear, as they are not used
 ;; by the microcode.
 
+(DEFUN FUNCTION-ENTRY-ERROR (SG)
+  (LOOP WITH ERROR-CODE = (AREF (SG-REGULAR-PDL SG) (SG-REGULAR-PDL-POINTER SG))
+	FOR SYMBOL IN '(%%M-ESUBS-TOO-FEW-ARGS %%M-ESUBS-TOO-MANY-ARGS %%M-ESUBS-BAD-DT)
+	FOR FLAG IN '(< > )
+	WHEN (LDB-TEST (SYMEVAL SYMBOL) ERROR-CODE)
+	  RETURN FLAG))
+
 (DEFUN (FUNCTION-ENTRY INFORM) (SG IGNORE)
-  (FORMAT T "The function ~S was called with "
-	  (FUNCTION-NAME (AREF (SG-REGULAR-PDL SG) (SG-AP SG))))
-  (LET ((ERR (AREF (SG-REGULAR-PDL SG) (SG-REGULAR-PDL-POINTER SG))))
-    (DO ((STL '("too few arguments." "too many arguments."
-		"an argument of bad data type.") (CDR STL))
-	 (SBL '(%%M-ESUBS-TOO-FEW-ARGS %%M-ESUBS-TOO-MANY-ARGS
-				       %%M-ESUBS-BAD-DT) (CDR SBL)))
-	((NULL SBL))
-      (AND (= (LDB (SYMEVAL (CAR SBL)) ERR) 1)
-	   (FORMAT T (CAR STL)))))
-  (TERPRI))
+  (FORMAT T "The function ~S was called with ~A.~%"
+	    (FUNCTION-NAME (AREF (SG-REGULAR-PDL SG) (SG-AP SG)))
+	    (CDR (ASSQ (FUNCTION-ENTRY-ERROR SG)
+		       '((< . "too few arguments")
+			 (> . "too many arguments")
+			 ( . "an argument of bad data type"))))))
 
 (DEFUN (FUNCTION-ENTRY SIGNAL) (SG IGNORE)
-  (LET ((ERR (AREF (SG-REGULAR-PDL SG) (SG-REGULAR-PDL-POINTER SG))))
-    (COND ((OR (LDB-TEST %%M-ESUBS-TOO-FEW-ARGS ERR)
-	       (LDB-TEST %%M-ESUBS-TOO-MANY-ARGS ERR))
-	   `(:WRONG-NUMBER-OF-ARGUMENTS
-	      ,(- (SG-REGULAR-PDL-POINTER SG) (SG-AP SG))
-	      (ALOC (SG-REGULAR-PDL SG) (1+ (SG-AP SG))))))))
+  (IF (MEMQ (FUNCTION-ENTRY-ERROR SG) '(< >))
+      `(:WRONG-NUMBER-OF-ARGUMENTS
+	  ,(- (SG-REGULAR-PDL-POINTER SG) (SG-AP SG))
+	  ,(ALOC (SG-REGULAR-PDL SG) (1+ (SG-AP SG))))))
+
+(DEFUN (FUNCTION-ENTRY PROCEED) (SG IGNORE)
+  (LET* ((RP (SG-REGULAR-PDL SG))
+	 (FRAME (SG-AP SG))
+	 (FORM (GET-FRAME-FUNCTION-AND-ARGS SG FRAME))
+	 (ARGS-INFO (ARGS-INFO (CAR FORM)))
+	 (ARGS-SUPPLIED (RP-NUMBER-ARGS-SUPPLIED RP FRAME))
+	 ARGS-WANTED)
+    ;; Function may have been redefined to take the supplied number of arguments
+    ;; so don't look at the original error, but check everything again.
+    (COND ((< ARGS-SUPPLIED (SETQ ARGS-WANTED (LDB %%ARG-DESC-MIN-ARGS ARGS-INFO)))
+	   (LOOP FOR I FROM ARGS-SUPPLIED BELOW ARGS-WANTED
+		 DO (SETQ FORM
+			  (NCONC FORM (NCONS (READ-OBJECT (FORMAT NIL "Arg ~D: " I) NIL))))))
+	  ((OR ( ARGS-SUPPLIED (SETQ ARGS-WANTED (LDB %%ARG-DESC-MAX-ARGS ARGS-INFO)))
+	       (LDB-TEST %%ARG-DESC-ANY-REST ARGS-INFO))
+	   (OR (FQUERY () "Try ~S again? " FORM)
+	       (*THROW 'QUIT NIL)))
+	  ((FQUERY () "Call again with the last ~[~1;~:;~:*~D ~]argument~:P dropped? "
+		      (- ARGS-SUPPLIED ARGS-WANTED))
+	   (RPLACD (NTHCDR ARGS-WANTED FORM) NIL))
+	  ((*THROW 'QUIT NIL)))
+    ;; If we haven't quit before getting here, he wants to proceed and FORM is set up
+    (SG-UNWIND-TO-FRAME-AND-REINVOKE SG FRAME FORM)
+    (LEAVING-ERROR-HANDLER)
+    (WITHOUT-INTERRUPTS
+      (AND ERROR-HANDLER-RUNNING
+	   (FREE-SECOND-LEVEL-ERROR-HANDLER-SG %CURRENT-STACK-GROUP))
+      (STACK-GROUP-RESUME SG NIL))))
+
+(DEFUN (FUNCTION-ENTRY HELP-MESSAGE) (SG IGNORE)
+  (FORMAT T "C offers to try again")
+  (SELECTQ (FUNCTION-ENTRY-ERROR SG)
+    (< (FORMAT T ", asking you for additional arguments."))
+    (> (FORMAT T ", dropping the extra arguments."))))
 
 (DEFUN (BREAKPOINT INFORM) (IGNORE IGNORE)
   (FORMAT T "Breakpoint~%"))
@@ -566,22 +800,88 @@ cannot be RPLACD'ed.  The list is ~S~%"
   (FORMAT T "Step break~%")
   (SETF (SG-INST-DISP SG) 0))
 
+(DEFUN (CALL-TRAP INFORM) (SG IGNORE)
+  (SETQ INNERMOST-FRAME-IS-INTERESTING T)
+  (SETF (SG-FLAGS-TRAP-ON-CALL SG) 0)		;Prevent following traps.
+  (SETF INNERMOST-VISIBLE-FRAME (SG-IPMARK SG))	;Make frame being entered visible.
+  (SETQ CURRENT-FRAME INNERMOST-VISIBLE-FRAME)  ;Select it.
+  (SETF (RP-TRAP-ON-EXIT (SG-REGULAR-PDL SG) INNERMOST-VISIBLE-FRAME) 1)
+  (SETF (RP-NUMBER-ARGS-SUPPLIED (SG-REGULAR-PDL SG) INNERMOST-VISIBLE-FRAME)
+	(- (SG-REGULAR-PDL-POINTER SG) INNERMOST-VISIBLE-FRAME))
+  (FORMAT T "Break on entry to function ~S~%"
+	  (FUNCTION-NAME (RP-FUNCTION-WORD (SG-REGULAR-PDL SG) (SG-IPMARK SG)))))
+
+(DEFUN (EXIT-TRAP INFORM) (SG IGNORE)
+  ;; If exiting from *EVAL, we do want to see its frame.
+  (SETQ INNERMOST-FRAME-IS-INTERESTING T)
+  ;; Make sure we are looking at that frame.
+  ;; Because it may not have been "interesting" until now,
+  ;; current-frame may have been set to something else.
+  (SETQ CURRENT-FRAME INNERMOST-VISIBLE-FRAME)
+  ;; Don't catch this trap again if user tries to return, etc.
+  (SETF (RP-TRAP-ON-EXIT (SG-REGULAR-PDL SG) CURRENT-FRAME) 0)
+  (FORMAT T "Break on exit from marked frame; ")
+  (FORMAT T "value is ~S" (SG-AC-T SG)))
+
+(DEFUN (THROW-EXIT-TRAP INFORM) (SG IGNORE)
+  (SETQ CURRENT-FRAME (- (%POINTER-DIFFERENCE (%P-CONTENTS-AS-LOCATIVE (LOCF (SG-AC-D SG)))
+					      (SG-REGULAR-PDL SG))
+			 2))
+  (FORMAT T "Break on throw through marked frame~%")
+  (SETQ INNERMOST-FRAME-IS-INTERESTING T)
+  (DO ((FRAME CURRENT-FRAME (SG-PREVIOUS-ACTIVE SG FRAME)))
+      ((NULL FRAME))
+    (SETF (RP-TRAP-ON-EXIT (SG-REGULAR-PDL SG) FRAME) 0)))
+
+(DEFPROP CALL-TRAP MICRO-BREAK-PROCEED PROCEED)
+(DEFPROP EXIT-TRAP MICRO-BREAK-PROCEED PROCEED)
+(DEFPROP THROW-EXIT-TRAP MICRO-BREAK-PROCEED PROCEED)
+(DEFUN MICRO-BREAK-PROCEED (SG IGNORE)
+  (SG-PROCEED-MICRO-PC SG NIL)
+  (FORMAT T "Continue from break.~%"))
+
+(DEFPROP :BREAK BREAK-PROCEED PROCEED)
+(DEFUN BREAK-PROCEED (IGNORE IGNORE)
+  (FORMAT T "Continue from break.~%"))
+
+(DEFPROP :BREAK "C proceeds." HELP-MESSAGE)
+(DEFPROP CALL-TRAP "C proceeds." HELP-MESSAGE)
+(DEFPROP EXIT-TRAP "C proceeds." HELP-MESSAGE)
+(DEFPROP THROW-EXIT-TRAP "C proceeds." HELP-MESSAGE)
+
 (DEFUN (:WRONG-TYPE-ARGUMENT PROCEED) (IGNORE ETE)
   (READ-OBJECT
     (FORMAT NIL "Form to be evaluated and used as replacement value for ~A" (NTH 7 ETE))))
 
-(DEFUN (:BREAK PROCEED) (IGNORE IGNORE)
-  NIL)
+(DEFPROP :WRONG-TYPE-ARGUMENT "C asks for a replacement argument and proceeds." HELP-MESSAGE)
 
+(DEFUN (TURD-ALERT INFORM) (SG ETE)
+  (FORMAT T "There was an attempt to draw on the sheet ~S without preparing it first.~%"
+	    (SG-CONTENTS SG (SECOND ETE))))
+
+(DEFUN (TURD-ALERT PROCEED) (SG IGNORE)	;Might as well allow loser to proceed
+  (SG-PROCEED-MICRO-PC SG NIL))
+
+(DEFPROP TURD-ALERT "C proceeds, perhaps writing garbage on the screen." HELP-MESSAGE)
+
 ;;; List problems with currently-loaded error table
 (DEFUN LIST-PROBLEMS ()
   (LET ((ERRORS-WITH-NO-ERROR-MESSAGES NIL)
 	(MISSING-RESTART-TAGS NIL)
+	(ARGTYP-UNKNOWN-TYPES NIL)
 	(TEM))
     (DOLIST (ETE ERROR-TABLE)
       (OR (GET (SETQ TEM (SECOND ETE)) 'INFORM)
 	  (MEMQ TEM ERRORS-WITH-NO-ERROR-MESSAGES)
 	  (PUSH TEM ERRORS-WITH-NO-ERROR-MESSAGES))
+      (IF (EQ TEM 'ARGTYP)
+	  (LET ((TYPE (THIRD ETE)))
+	    (IF (SYMBOLP TYPE)
+		(SETQ TYPE (NCONS TYPE)))
+	    (DOLIST (TYPE TYPE)
+	      (IF (AND (NULL (ASSQ TYPE DATA-TYPE-NAMES))
+		       (NOT (MEMQ (THIRD ETE) ARGTYP-UNKNOWN-TYPES)))
+		  (PUSH (THIRD ETE) ARGTYP-UNKNOWN-TYPES)))))
       (AND (SETQ TEM (ASSQ TEM		;Anything that calls SG-PROCEED-MICRO-PC
 			   '((ARGTYP . 5) (SUBSCRIPT-OOB . 4))))
 	   (SETQ TEM (NTH (CDR TEM) ETE))
@@ -590,6 +890,8 @@ cannot be RPLACD'ed.  The list is ~S~%"
 	   (PUSH TEM MISSING-RESTART-TAGS)))
     (AND ERRORS-WITH-NO-ERROR-MESSAGES
 	 (FORMAT T "~&Errors with no error messages: ~S" ERRORS-WITH-NO-ERROR-MESSAGES))
+    (AND ARGTYP-UNKNOWN-TYPES
+	 (FORMAT T "~&ARGTYP types not on DATA-TYPE-NAMES: ~S" ARGTYP-UNKNOWN-TYPES))
     (AND MISSING-RESTART-TAGS
 	 (FORMAT T "~&Missing RESTART tags: ~S" MISSING-RESTART-TAGS))))
 
@@ -613,6 +915,7 @@ cannot be RPLACD'ed.  The list is ~S~%"
 ;;; out of <message> and <object>, and the condition out of <interrupt>'s
 ;;; CONDITION-NAME property.  The error is proceedable if
 ;;; <interrupt> is given.
+(DEFPROP ERROR T :ERROR-REPORTER)
 (DEFUN ERROR (MESSAGE &OPTIONAL OBJECT INTERRUPT)
   (SIGNAL-ERROR (NOT (NULL INTERRUPT)) NIL
 		(OR (GET INTERRUPT 'CONDITION-NAME)
@@ -633,42 +936,45 @@ cannot be RPLACD'ed.  The list is ~S~%"
 ;;; If <restart> is non-NIL, it is legal for the user or a condition handler
 ;;; to ask to restart.  Restarting works by throwing to ERROR-RESTART.
 ;;; See the definition of the ERROR-RESTART macro.
+(DEFPROP CERROR T :ERROR-REPORTER)
 (DEFUN CERROR (PROCEEDABLE-FLAG RESTARTABLE-FLAG CONDITION FORMAT &REST ARGS)
   (SIGNAL-ERROR PROCEEDABLE-FLAG RESTARTABLE-FLAG CONDITION FORMAT ARGS))
-
-(DEFPROP FERROR 3 BACKTRACE-LENGTH)
-(DEFPROP FERROR 3 BACKTRACE-SKIP)
 
 ;;; (FERROR <condition> <format-control-string> <format-arg1> <format-arg2> ...)
 ;;; indicates an uncorrectable error.  <error-type> is the keyword
 ;;; to be used in signalling the error, together with <format-arg1>, ...
+(DEFPROP FERROR T :ERROR-REPORTER)
 (DEFUN FERROR (CONDITION FORMAT &REST ARGS)
   (SIGNAL-ERROR NIL NIL CONDITION FORMAT ARGS))
 
 (DEFUN (FERROR INFORM) (IGNORE ETE)
   (IF (OR (< (LENGTH ETE) 5)
-	  (NOT (STRINGP (FIFTH ETE))))
+	  (NOT (OR (STRINGP (FIFTH ETE))
+		   (SYMBOLP (FIFTH ETE))
+		   (LISTP (FIFTH ETE))))) ;Maclisp...
       (FORMAT T "Uh-oh, bad arguments to ~S: ~S~%" (CAR ETE) (CDR ETE))
       (LEXPR-FUNCALL 'FORMAT T (CDDDDR ETE))))
 
+(DEFPROP SIGNAL-ERROR T :ERROR-REPORTER)
 (DEFUN SIGNAL-ERROR (PROCEEDABLE-FLAG RESTARTABLE-FLAG CONDITION FORMAT ARGS &AUX TEM1 TEM2)
   (MULTIPLE-VALUE (TEM1 TEM2) (LEXPR-FUNCALL 'SIGNAL CONDITION FORMAT ARGS))
   (COND ((EQ TEM1 'RETURN)
 	 (IF PROCEEDABLE-FLAG TEM2
-	     (FERROR NIL "Error-handler attempted to proceed when that wasn't possible")))
+	     (FERROR NIL "Condition-handler attempted to proceed when that wasn't possible")))
 	((EQ TEM1 'RETURN-VALUE)
 	 TEM2)
 	((EQ TEM1 'ERROR-RESTART)
 	 (AND RESTARTABLE-FLAG (*THROW 'ERROR-RESTART TEM2))
-	 (FERROR NIL "Error-handler attempted to restart when that wasn't possible"))
+	 (FERROR NIL "Condition-handler attempted to restart when that wasn't possible"))
 	((NULL TEM1)
 	 ;; SIGNAL did not find any handler willing to take the buck.
 	 (FUNCALL %ERROR-HANDLER-STACK-GROUP
 		  `(FERROR ,PROCEEDABLE-FLAG ,RESTARTABLE-FLAG
-			   ,CONDITION ,FORMAT . ,ARGS)))
+			   ,CONDITION ,FORMAT . ,ARGS))
+	 NIL)					;This NIL is here for a reason!
 	(T
 	 (FERROR NIL
-		 "Error-handler said it handled an error but returned ~S" TEM1))))
+		 "Condition-handler said it handled an error but returned ~S" TEM1))))
 
 ;CONDITION-HANDLERS is a list of handling specs, each of which
 ;contains first either a condition name, a list of such names, or
@@ -701,8 +1007,13 @@ cannot be RPLACD'ed.  The list is ~S~%"
 	     (APPLY (CADR H) CONDITION-LIST))
 	   (AND TEM1 (RETURN TEM1 TEM2))))))
 
-(DEFMACRO-DISPLACE CONDITION-BIND (HANDLERS . BODY)
-  `(LET ((CONDITION-HANDLERS (APPEND ',HANDLERS CONDITION-HANDLERS)))
+(DEFMACRO-DISPLACE CONDITION-BIND (HANDLERS &BODY BODY)
+  `(LET ((CONDITION-HANDLERS
+	   (APPEND
+	     (LIST . ,(MAPCAR #'(LAMBDA (CLAUSE)
+				  `(LIST ',(FIRST CLAUSE) ,(SECOND CLAUSE)))
+			      HANDLERS))
+	     CONDITION-HANDLERS)))
      . ,BODY))
 
 ;; Does a stack group have anything that could try to handle this condition?
@@ -713,11 +1024,14 @@ cannot be RPLACD'ed.  The list is ~S~%"
 	       (T (MEMQ CONDITION (CAR H))))
 	 (RETURN T))))
 
+(DEFVAR ALLOW-PDL-GROW-MESSAGE T)
+
 ;; Make a stack-group's pdls larger if necessary
 ;; Note that these ROOM numbers need to be large enough to avoid getting into
 ;; a recursive trap situation, which turns out to be mighty big because footholds
 ;; are large and because the microcode is very conservative.
-(DEFUN SG-MAYBE-GROW-PDLS (SG &OPTIONAL (MESSAGE-P T) (REGULAR-ROOM 2000) (SPECIAL-ROOM 400)
+(DEFUN SG-MAYBE-GROW-PDLS (SG &OPTIONAL (MESSAGE-P ALLOW-PDL-GROW-MESSAGE)
+					(REGULAR-ROOM 2000) (SPECIAL-ROOM 400)
 			   &AUX (RPP (SG-REGULAR-PDL-POINTER SG))
 				(RPL (SG-REGULAR-PDL-LIMIT SG))
 				(SPP (SG-SPECIAL-PDL-POINTER SG))
@@ -773,3 +1087,5 @@ cannot be RPLACD'ed.  The list is ~S~%"
 					       TEM))))
 	   (STRUCTURE-FORWARD PDL NEW-PDL)
 	   NEW-PDL)))
+
+

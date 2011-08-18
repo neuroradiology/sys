@@ -29,7 +29,7 @@
 	  SCROLL-BAR-ALWAYS-DISPLAYED SCROLL-BAR-IN SELECTED-PANE
 	  SENSITIVE-ITEM-TYPES SET-EDGES-MODE SHEET SINGLE-RIGHT-MENU STACK-GROUP
 	  STATE SUBSTITUTIONS SUPERIOR TARGET-TOP-ITEM TEMPORARY-BIT-ARRAY
-	  TEMPORARY-WINDOWS-LOCKED TIME-UNTIL-BLINK TOP-ITEM TOP-MARGIN-SIZE
+	  TEMPORARY-WINDOWS-LOCKED TIME-STAMP TIME-UNTIL-BLINK TOP-ITEM TOP-MARGIN-SIZE
 	  TOP-ROW TOTAL-ROWS TRI-HEIGHT TRI-WIDTH TRUNCATION TYPE-ALIST
 	  TYPEOUT-WINDOW VALUE-ARRAY VISIBILITY WIDTH WINDOW-OF-INTEREST
 	  WINDOW-UNDER-MENU X-OFFSET X-ORIGIN X-POS Y-OFFSET Y-ORIGIN
@@ -39,6 +39,14 @@
 (DEFVAR ALL-THE-SCREENS NIL)
 (DEFVAR MORE-PROCESSING-GLOBAL-ENABLE T)
 (DEFVAR MAIN-SCREEN)
+(DEFVAR WHO-LINE-SCREEN NIL)
+(DEFVAR WHO-LINE-RUN-STATE-SHEET NIL)
+(DEFVAR WHO-LINE-FILE-STATE-SHEET NIL)
+(DEFVAR NWATCH-WHO-LINE-SHEET NIL)
+(DEFVAR WHO-LINE-DOCUMENTATION-WINDOW NIL)
+(DEFVAR WHO-LINE-MOUSE-GRABBED-DOCUMENTATION NIL)
+(DEFVAR *DEFAULT-FONT* FONTS:CPTFONT)
+
 (DEFVAR BEEP T)
 (REMPROP 'BEEP ':SOURCE-FILE-NAME)	;Avoid error message when function defined
 (DEFVAR BEEP-DURATION 400000)
@@ -77,7 +85,9 @@
     (FSET' MOUSE-WAKEUP '(LAMBDA () NIL)))
 
 (DEFVAR SHEET-AREA (MAKE-AREA ':NAME 'SHEET-AREA))
-(DEFMACRO SHEET-CONSING (&REST BODY)
+(DEFVAR WHO-LINE-AREA (MAKE-AREA ':NAME 'WHO-LINE-AREA))
+
+(DEFMACRO SHEET-CONSING (&BODY BODY)
   `(LET ((DEFAULT-CONS-AREA SHEET-AREA))
      . ,BODY))
 
@@ -141,20 +151,28 @@
 	    (INVISIBLE-TO-MOUSE-P NIL)
 	    (SCREEN-MANAGER-SCREEN-IMAGE NIL)
 	    (PRIORITY NIL)
+	    (TIME-STAMP NIL)
 	    )
 	   ()
   :ORDERED-INSTANCE-VARIABLES
   :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES
-  (:SETTABLE-INSTANCE-VARIABLES DEEXPOSED-TYPEOUT-ACTION)
+  (:GETTABLE-INSTANCE-VARIABLES NAME SUPERIOR INFERIORS EXPOSED-INFERIORS FONT-MAP
+				CURRENT-FONT BASELINE CHAR-WIDTH LINE-HEIGHT PRIORITY)
+  (:SETTABLE-INSTANCE-VARIABLES DEEXPOSED-TYPEOUT-ACTION CHAR-ALUF ERASE-ALUF)
   (:INITABLE-INSTANCE-VARIABLES
     NAME WIDTH HEIGHT BIT-ARRAY
+    CHAR-ALUF ERASE-ALUF
     LEFT-MARGIN-SIZE TOP-MARGIN-SIZE RIGHT-MARGIN-SIZE BOTTOM-MARGIN-SIZE
-    SUPERIOR FONT-MAP)
-  (:INIT-KEYWORDS :TOP :Y :BOTTOM :LEFT :X :RIGHT :EDGES :BLINKER-P :REVERSE-VIDEO-P
+    SUPERIOR FONT-MAP PRIORITY)
+  (:INIT-KEYWORDS :TOP :Y :BOTTOM :LEFT :X :RIGHT :POSITION :EDGES :BLINKER-P :REVERSE-VIDEO-P
 		  :CHARACTER-WIDTH :CHARACTER-HEIGHT :INSIDE-SIZE :INSIDE-WIDTH :INSIDE-HEIGHT
-		  :MORE-P :VSP :BLINKER-FUNCTION :BLINKER-DESELECTED-VISIBILITY :INTEGRAL-P
+		  :MORE-P :VSP :BLINKER-FLAVOR :BLINKER-DESELECTED-VISIBILITY :INTEGRAL-P
 		  :SAVE-BITS :RIGHT-MARGIN-CHARACTER-FLAG :TRUNCATE-LINE-OUT-FLAG
-		  :BACKSPACE-NOT-OVERPRINTING-FLAG)
+		  :BACKSPACE-NOT-OVERPRINTING-FLAG :CR-NOT-NEWLINE-FLAG :AREA
+		  :DEEXPOSED-TYPEIN-ACTION :TAB-NCHARS)
+  (:DEFAULT-INIT-PLIST :TAB-NCHARS 8)
+  (:METHOD-COMBINATION (:OR :BASE-FLAVOR-LAST :NOTICE) 
+		       (:DAEMON-WITH-OVERRIDE NIL :WHO-LINE-DOCUMENTATION-STRING))
   (:DOCUMENTATION :LOWLEVEL-MIXIN "A lowest level window type
 This is the data structure known about by the microcode."))
 
@@ -169,7 +187,7 @@ This is the data structure known about by the microcode."))
 	    BUFFER		;Virtual memory address of video buffer
 	    CONTROL-ADDRESS	;XBUS I/O address of control register
 	    BUFFER-HALFWORD-ARRAY	;One-dimensional array of 16-bit buffer hunks
-	    (DEFAULT-FONT FONTS:CPTFONT)
+	    (DEFAULT-FONT *DEFAULT-FONT*)
 	    PROPERTY-LIST
 	    (X-OFFSET 0)
 	    (Y-OFFSET 0)
@@ -210,7 +228,12 @@ hardware display."))
   (RIGHT-MARGIN-CHARACTER-FLAG 0501)   ;A special character (!) indicates wraparound
   (TRUNCATE-LINE-OUT-FLAG 0601)        ;SHEET-LINE-OUT should truncate rather than wrap around
   (DONT-BLINK-BLINKERS-FLAG 0701)      ;Don't blink blinkers on this sheet or its inferiors
-  (BACKSPACE-NOT-OVERPRINTING-FLAG 1001))	;Backspace is another losenge character
+  (BACKSPACE-NOT-OVERPRINTING-FLAG 1001)	;Backspace is another losenge character
+  (CR-NOT-NEWLINE-FLAG 1101)			;CR is also
+  (DEEXPOSED-TYPEIN-NOTIFY 1201)	;:DEEXPOSED-TYPEIN-ACTION :NOTIFY
+  (FORCE-SAVE-BITS 1301)		;Force bit saving on first deexposed
+  (TAB-NCHARS 1407)			;Number of character widths in a tab
+  )
 
 ;;;Sizes within margins
 (DEFMACRO SHEET-INSIDE-LEFT (&OPTIONAL SHEET)
@@ -272,6 +295,10 @@ hardware display."))
   `(// (SHEET-INSIDE-HEIGHT ,SHEET)
        ,(IF SHEET `(SHEET-LINE-HEIGHT ,SHEET) 'LINE-HEIGHT)))
 
+(DEFMACRO SHEET-TAB-WIDTH (&OPTIONAL SHEET)
+  `(* (SHEET-TAB-NCHARS ,SHEET)
+      ,(IF SHEET `(SHEET-CHAR-WIDTH ,SHEET) 'CHAR-WIDTH)))
+
 ;;;A blinker is an actor, described as follows:
 (DEFFLAVOR BLINKER
 	((X-POS NIL)		;X position of blinker (left) NIL if should follow sheet
@@ -291,6 +318,7 @@ hardware display."))
 	()
   :ORDERED-INSTANCE-VARIABLES :OUTSIDE-ACCESSIBLE-INSTANCE-VARIABLES
   (:INITABLE-INSTANCE-VARIABLES X-POS Y-POS SHEET VISIBILITY FOLLOW-P)
+  (:GETTABLE-INSTANCE-VARIABLES X-POS Y-POS SHEET VISIBILITY FOLLOW-P)
   (:SETTABLE-INSTANCE-VARIABLES DESELECTED-VISIBILITY HALF-PERIOD)
   (:REQUIRED-METHODS :BLINK :SIZE)
   (:SELECT-METHOD-ORDER :BLINK))
@@ -316,14 +344,32 @@ hardware display."))
 (DEFMACRO BLINKER-SET-SHEET (BLINKER SHEET)
   `(FUNCALL ,BLINKER ':SET-SHEET ,SHEET))
 
+;;; This macro generates the prologue code that most of the
+;;; interesting blinker methods need.
+(DEFMACRO WITH-BLINKER-READY (DO-NOT-OPEN-P &BODY BODY)
+  `(LET ((INHIBIT-SCHEDULING-FLAG T))
+     (DO () ((OR (NOT (SHEET-OUTPUT-HELD-P SHEET))
+		 (NULL PHASE)))
+       (SETQ INHIBIT-SCHEDULING-FLAG NIL)
+       (FUNCALL SHEET ':OUTPUT-HOLD-EXCEPTION)
+       (SETQ INHIBIT-SCHEDULING-FLAG T))
+     ,@(IF (NOT DO-NOT-OPEN-P)
+	   `((OPEN-BLINKER SELF)))
+     . ,BODY))
+
 (DEFFLAVOR RECTANGULAR-BLINKER
 	((WIDTH NIL)		;The width
 	 (HEIGHT NIL))
 	(BLINKER)
   (:INITABLE-INSTANCE-VARIABLES WIDTH HEIGHT))
 
-(DEFFLAVOR MOUSE-BLINKER-MIXIN ((X-OFFSET 0) (Y-OFFSET 0)) ())
+(DEFFLAVOR MOUSE-BLINKER-MIXIN ((X-OFFSET 0) (Y-OFFSET 0)) ()
+  (:DOCUMENTATION :MIXIN "Blinker that is capable of being MOUSE-BLINKER"))
 
+(DEFFLAVOR MOUSE-BLINKER-FAST-TRACKING-MIXIN () (MOUSE-BLINKER-MIXIN)
+  (:INCLUDED-FLAVORS BLINKER)
+  (:DOCUMENTATION :MIXIN
+     "Blinker that is capable of being MOUSE-BLINKER and gets tracked by microcode."))
 
 ;;;Who line variables
 (DEFVAR WHO-LINE-WINDOW)	;Sheet used for writing the who line
@@ -344,8 +390,9 @@ hardware display."))
 ;it is looked at directly by microcode.
 ;Its array leader contains:
 
-(DEFSTRUCT (FONT :NAMED :ARRAY-LEADER)
-	FONT-FILL-POINTER	;0 not used in case might be fill pointer?
+(DEFSTRUCT (FONT :NAMED :ARRAY-LEADER (:SIZE-SYMBOL FONT-LEADER-SIZE))
+	FONT-FILL-POINTER	;1 plus highest character code defined in font.
+				;At present, must be at least 200.
 	FONT-NAME		;Name.  This is supposed to be the symbol in the FONTS
 				; package whose value is this font.
 	FONT-CHAR-HEIGHT	;Character cell height
@@ -358,13 +405,15 @@ hardware display."))
 	FONT-CHAR-WIDTH-TABLE	;NIL or array pointer to character width table
 	FONT-LEFT-KERN-TABLE	;NIL or array pointer to left kern table
 	FONT-INDEXING-TABLE	;NIL or array pointer to index table.  This is
-				;used for characters whose raster is > 16. wide.
+				;used for characters whose raster is > 32 wide.
 				;Use real char code to look up char code for
 				;raster purposes in the indexing table.  Draw
 				;several columns, until raster for succeeding
-				;character is reached.  Index table must be 201
-				;entries long so as to handle end condition right.
-	FONT-NEXT-PLANE		;NIL or font containing next higher plane of this font.
+				;character is reached.  Index table length
+				;must be GREATER than font-fill-pointer
+				;so as to handle end condition right.
+	FONT-NEXT-PLANE		;NIL or font containing next higher plane
+				; of this font.  COMPLETELY OBSOLETE.
 	FONT-BLINKER-WIDTH	;Default width for blinkers.
 	FONT-BLINKER-HEIGHT	;Default height for blinkers.
 	FONT-CHARS-EXIST-TABLE	;Array of bits saying which chars "really exist".
@@ -384,28 +433,40 @@ hardware display."))
 ;by drawing several narrow characters side by side.  See the comment
 ;next to FONT-INDEXING-TABLE for how this is done.
 
-;Named-structure handler, this also makes (TYPEP x 'FONT) happy.
-(DEFUN FONT (OP SLF &OPTIONAL ARG1 &REST IGNORE)
+;Named-structure handler
+(DEFUN (FONT NAMED-STRUCTURE-INVOKE) (OP &OPTIONAL SLF ARG1 &REST IGNORE)
   (SELECTQ OP
-    (:WHICH-OPERATIONS '(:PRINT :PRINT-SELF))
-    ((:PRINT :PRINT-SELF) (FORMAT ARG1 "#<FONT ~A ~O>" (FONT-NAME SLF) (%POINTER SLF)))
+    (:WHICH-OPERATIONS '(:PRINT-SELF))
+    ((:PRINT-SELF)
+     (SI:PRINTING-RANDOM-OBJECT (SLF ARG1)
+       (PRINC (TYPEP SELF) ARG1)
+       (FUNCALL ARG1 ':TYO #\SP)
+       (PRINC (FONT-NAME SLF) ARG1)))
     (OTHERWISE (FERROR NIL "~S unknown message to ~S" OP SLF))))
 
 ;;; Grab the lock on a sheet
-(DEFMACRO LOCK-SHEET ((SHEET) . BODY)
+(DEFMACRO LOCK-SHEET ((SHEET) &BODY BODY)
   `(UNWIND-PROTECT
      (PROGN (SHEET-GET-LOCK ,SHEET)
        . ,BODY)
      (SHEET-RELEASE-LOCK ,SHEET)))
 
+;;; Allow output to a sheet
+(DEFMACRO SHEET-IS-PREPARED ((SHEET) &BODY BODY)
+  `(LET ((SYS:CURRENTLY-PREPARED-SHEET ,SHEET))
+     . ,BODY))
+
 ;;; Open up a sheet
 (DEFVAR PREPARED-SHEET NIL)
-(DEFMACRO PREPARE-SHEET ((SHEET) . BODY)
+(DEFMACRO PREPARE-SHEET ((SHEET) &BODY BODY)
   `(LET ((INHIBIT-SCHEDULING-FLAG T))
-     (AND (OR (NEQ PREPARED-SHEET ,SHEET) (NOT (SHEET-CAN-GET-LOCK ,SHEET)))
+     (AND (OR (NEQ PREPARED-SHEET ,SHEET)
+	      (NOT (ZEROP (SHEET-OUTPUT-HOLD-FLAG ,SHEET)))
+	      (NOT (SHEET-CAN-GET-LOCK ,SHEET)))
 	  (SHEET-PREPARE-SHEET-INTERNAL ,SHEET))
      (SETQ PREPARED-SHEET ,SHEET)
-     . ,BODY))
+     (SHEET-IS-PREPARED (,SHEET)
+       . ,BODY)))
 
 ;;; Redirects a screen array
 (DEFMACRO REDIRECT-ARRAY (&REST ARGS)
@@ -417,7 +478,7 @@ hardware display."))
 ;;; forced, then the code is not executed.  Forcing access means binding off
 ;;; the output hold flag if the sheet is deexposed and has a bit-save array.
 ;;; The code is also executed of the sheet is exposed and not output-held.
-(DEFMACRO SHEET-FORCE-ACCESS ((SHEET DONT-PREPARE-SHEET) . BODY)
+(DEFMACRO SHEET-FORCE-ACCESS ((SHEET DONT-PREPARE-SHEET) &BODY BODY)
   `(LOCK-SHEET (,SHEET)
        ;; Sheet can't have temporary lock here as we own lock, so SHEET-OUTPUT-HELD-P not
        ;; required for proper operation
@@ -431,7 +492,8 @@ hardware display."))
 		  (SETF (SHEET-OUTPUT-HOLD-FLAG ,SHEET) .OLD.OUTPUT.HOLD.)))))))
 
 ;;; I/O buffer stuff
-(DEFSTRUCT (IO-BUFFER :ARRAY-LEADER :NAMED (:CONSTRUCTOR NIL))
+(DEFSTRUCT (IO-BUFFER :ARRAY-LEADER :NAMED (:CONSTRUCTOR NIL)
+		      (:SIZE-SYMBOL IO-BUFFER-LEADER-SIZE))
   IO-BUFFER-FILL-POINTER			;Fill pointer, unused
   IO-BUFFER-SIZE				;Size of IO buffer (max index + 1)
 						; All ptr's are mod this
@@ -467,7 +529,7 @@ hardware display."))
   `(= (\ (+ (IO-BUFFER-INPUT-POINTER ,BUFFER) 2) (IO-BUFFER-SIZE ,BUFFER))
       (IO-BUFFER-OUTPUT-POINTER ,BUFFER)))
 
-(DEFMACRO WITH-SHEET-DEEXPOSED ((SHEET) . BODY)
+(DEFMACRO WITH-SHEET-DEEXPOSED ((SHEET) &BODY BODY)
   `(LET ((.STATUS. (FUNCALL ,SHEET ':STATUS)))
      (DELAYING-SCREEN-MANAGEMENT
       (UNWIND-PROTECT
@@ -475,7 +537,7 @@ hardware display."))
 	       . ,BODY)
 	(FUNCALL ,SHEET ':SET-STATUS .STATUS.)))))
 
-(DEFMACRO WINDOW-BIND ((WINDOW NEW-TYPE . INIT-PAIRS) . BODY)
+(DEFMACRO WINDOW-BIND ((WINDOW NEW-TYPE . INIT-PAIRS) &BODY BODY)
   "Change the type of a window within the body."
   (CHECK-ARG WINDOW SYMBOLP "a symbol which is set to a window")
     `(LET ((.O.WINDOW. ,WINDOW) (.N.WINDOW.) (,WINDOW ,WINDOW) (TERMINAL-IO TERMINAL-IO))
@@ -487,26 +549,36 @@ hardware display."))
 	 (AND .N.WINDOW. (WINDOW-POP .O.WINDOW. .N.WINDOW.)))))
 
 ;;;Temporarily select a window
-(DEFMACRO WINDOW-CALL ((WINDOW FINAL-ACTION . FINAL-ACTION-ARGS) . BODY)
+(DEFMACRO WINDOW-CALL ((WINDOW FINAL-ACTION . FINAL-ACTION-ARGS) &BODY BODY)
   `(LET ((.CURRENT-WINDOW. SELECTED-WINDOW))
      (UNWIND-PROTECT
        (PROGN
 	 (FUNCALL ,WINDOW ':SELECT)
 	 . ,BODY)
-       (AND .CURRENT-WINDOW. (FUNCALL .CURRENT-WINDOW. ':SELECT NIL))
-       ,(AND FINAL-ACTION `(FUNCALL ,WINDOW ',FINAL-ACTION . ,FINAL-ACTION-ARGS)))))
+       ;; Reselect old window -- be careful not to reselect if we aren't still the currently
+       ;; selected window, thus preventing spurious selection
+       ,(IF FINAL-ACTION
+	    `(DELAYING-SCREEN-MANAGEMENT
+	       (LET ((.FLAG. (SHEET-ME-OR-MY-KID-P SELECTED-WINDOW ,WINDOW)))
+		 (FUNCALL ,WINDOW ',FINAL-ACTION . ,FINAL-ACTION-ARGS)
+		 (AND .CURRENT-WINDOW. .FLAG. (FUNCALL .CURRENT-WINDOW. ':SELECT NIL))))
+	    `(AND .CURRENT-WINDOW. (SHEET-ME-OR-MY-KID-P SELECTED-WINDOW ,WINDOW)
+		  (FUNCALL .CURRENT-WINDOW. ':SELECT NIL))))))
 
-(DEFMACRO WINDOW-MOUSE-CALL ((WINDOW FINAL-ACTION . FINAL-ACTION-ARGS) . BODY)
+(DEFMACRO WINDOW-MOUSE-CALL ((WINDOW FINAL-ACTION . FINAL-ACTION-ARGS) &BODY BODY)
   `(LET ((.CURRENT-WINDOW. SELECTED-WINDOW))
      (UNWIND-PROTECT
        (PROGN
 	 (FUNCALL ,WINDOW ':MOUSE-SELECT)
 	 . ,BODY)
-       (AND .CURRENT-WINDOW. (FUNCALL .CURRENT-WINDOW. ':SELECT NIL))
-       ,(AND FINAL-ACTION `(FUNCALL ,WINDOW ',FINAL-ACTION . ,FINAL-ACTION-ARGS)))))
+       ,(IF FINAL-ACTION
+	    `(DELAYING-SCREEN-MANAGEMENT
+	       (FUNCALL ,WINDOW ',FINAL-ACTION . ,FINAL-ACTION-ARGS)
+	       (AND .CURRENT-WINDOW. (FUNCALL .CURRENT-WINDOW. ':SELECT NIL)))
+	    `(AND .CURRENT-WINDOW. (FUNCALL .CURRENT-WINDOW. ':SELECT NIL))))))
 
 ;;;Maybe this should go somewhere else
-(DEFMACRO DOPLIST ((PLIST PROP IND) . BODY)
+(DEFMACRO DOPLIST ((PLIST PROP IND) &BODY BODY)
   `(DO ((PLIST ,PLIST (CDDR PLIST))
 	(,PROP)
 	(,IND))
@@ -514,35 +586,69 @@ hardware display."))
      (SETQ ,IND (CAR PLIST)
 	   ,PROP (CADR PLIST))
      . ,BODY))
+
+;;; There are certain kinds of windows that are associated with screens.  These include
+;;; the system menu, and associated windows.  This a facility for defining those
+;;; kinds of windows, and allocating them automatically.
 
-(DEFMACRO DEFRESOURCE (NAME . CREATOR)
-  (LET ((NOT-FIRST-TIME (AND (LISTP NAME) (SECOND NAME))))
-    (AND (LISTP NAME) (SETQ NAME (FIRST NAME)))
-    `(PROGN 'COMPILE
-       (DECLARE (SPECIAL ,NAME))
-       (SI:SETQ-IF-UNBOUND ,NAME NIL)
-       (DEFUN ,NAME () . ,CREATOR)
-       ,(OR NOT-FIRST-TIME
-	    `(AND (NULL ,NAME) (SETQ ,NAME (NCONS (,NAME))))))))
+;;; Features flushed from the old thing:
+;;;  Having only one of them per screen
+;;;  Waiting for that one to become available
+;;; As far as I can tell these were not being consciously used.
 
-(DEFUN ALLOCATE-RESOURCE (NAME &AUX VAL)
-  (OR (AND (BOUNDP NAME) (FBOUNDP NAME))
-      (FERROR NIL "~S is not a known resource" NAME))
-  (OR (WITHOUT-INTERRUPTS
-       (PROG1 (CAR (SETQ VAL (SYMEVAL NAME))) (SET NAME (CDR VAL))))
-      (FUNCALL (FSYMEVAL NAME))))
+;;; Options to DEFWINDOW-RESOURCE
+;;; :INITIAL-COPIES  (defaults to 1 rather than 0, but only makes one for the default screen)
+;;; :CONSTRUCTOR (form that sees TV:SUPERIOR as an argument, or function as with DEFRESOURCE.)
+;;; :MAKE-WINDOW (list of flavor name followed by keywords and forms for make-window)
+;;; :REUSABLE-WHEN (one of :DEEXPOSED or :DEACTIVATED).  The default is to be
+;;;    reusable when nobody is using it and it is not locked.
+;;; If parameters are specified, they are additional parameters that come before
+;;; the superior.  The superior is always the last parameter, is optional,
+;;; and defaults to mouse-sheet.
 
-(DEFUN DEALLOCATE-RESOURCE (NAME RESOURCE)
-  (WITHOUT-INTERRUPTS
-    (SET NAME (CONS RESOURCE (SYMEVAL NAME)))))
+(DEFMACRO DEFWINDOW-RESOURCE (NAME PARAMETERS &REST OPTIONS
+			      &AUX (CONSTRUCTOR NIL)
+				   (INITIAL-COPIES 1)
+				   (CHECKER 'CHECK-UNLOCKED-WINDOW-RESOURCE))
+  (LOOP FOR (KEYWORD VALUE) ON OPTIONS BY 'CDDR
+	DO (SELECTQ KEYWORD
+	     (:INITIAL-COPIES (SETQ INITIAL-COPIES VALUE))
+	     (:CONSTRUCTOR (SETQ CONSTRUCTOR VALUE))
+	     ((:MAKE-WINDOW :WINDOW-CREATE)  ;:WINDOW-CREATE obsolete old name
+		(SETQ CONSTRUCTOR `(MAKE-WINDOW ',(CAR VALUE)
+				     ':SUPERIOR SUPERIOR
+				     ,@(LOOP FOR (KEYWORD VALUE) ON (CDR VALUE) BY 'CDDR
+					     COLLECT `',KEYWORD
+					     COLLECT VALUE))))
+	     (:REUSABLE-WHEN
+		(SETQ CHECKER (SELECTQ VALUE
+				(:DEEXPOSED 'CHECK-DEEXPOSED-WINDOW-RESOURCE)
+				(:DEACTIVATED 'CHECK-DEACTIVATED-WINDOW-RESOURCE)
+				(OTHERWISE (FERROR NIL "~S ~S - only :DEEXPOSED and ~
+						       :DEACTIVATED are allowed"
+						   KEYWORD VALUE)))))
+	     (OTHERWISE (FERROR NIL "~S invalid DEFWINDOW-RESOURCE option" KEYWORD))))
+  (OR CONSTRUCTOR (FERROR NIL "DEFWINDOW-RESOURCE requires either the :CONSTRUCTOR or~@
+			       the :MAKE-WINDOW option."))
+  `(DEFRESOURCE ,NAME ,(APPEND PARAMETERS
+			       (IF (MEMQ '&OPTIONAL PARAMETERS) 
+				   '((SUPERIOR MOUSE-SHEET))
+				   '(&OPTIONAL (SUPERIOR MOUSE-SHEET))))
+		:INITIAL-COPIES ,INITIAL-COPIES
+		:CONSTRUCTOR ,CONSTRUCTOR
+		:CHECKER ,CHECKER))
 
-(DEFMACRO WITH-RESOURCE ((NAME VAR) . BODY)
-  `(LET ((,VAR NIL))
-     (UNWIND-PROTECT
-       (PROGN
-	(SETF ,VAR (ALLOCATE-RESOURCE ',NAME))
-	. ,BODY)
-       (AND ,VAR (DEALLOCATE-RESOURCE ',NAME ,VAR)))))
+(DEFUN CHECK-UNLOCKED-WINDOW-RESOURCE (IGNORE WINDOW IN-USE-P &REST IGNORE)
+  (AND (NOT IN-USE-P)
+       (SHEET-CAN-GET-LOCK WINDOW)))
+
+(DEFUN CHECK-DEEXPOSED-WINDOW-RESOURCE (IGNORE WINDOW IGNORE &REST IGNORE)
+  (AND (NOT (SHEET-EXPOSED-P WINDOW))
+       (SHEET-CAN-GET-LOCK WINDOW)))
+
+(DEFUN CHECK-DEACTIVATED-WINDOW-RESOURCE (IGNORE WINDOW IGNORE &REST IGNORE)
+  (AND (NOT (MEMQ WINDOW (SHEET-INFERIORS (SHEET-SUPERIOR WINDOW))))
+       (SHEET-CAN-GET-LOCK WINDOW)))
 
 ;;; Defintions for screen management
 (DEFMACRO RECT-SOURCE (R) `(FIRST ,R))
@@ -566,23 +672,7 @@ hardware display."))
 (DEFVAR SCREEN-MANAGER-QUEUE NIL)
 (DEFVAR SCREEN-MANAGER-TOP-LEVEL T)
 
-;(DEFMACRO DELAYING-SCREEN-MANAGEMENT (&REST BODY)
-;  "Collect any screen manages that get queued during its body,
-;and force them to happen at the later.  This code is unwind-
-;protected so that all pending manages get done, as they are
-;necessary to have the screen look correct.  The code tries to
-;remove duplicate screen manages when it finally does them, and
-;after it finishes all the managing does an autoexpose on all
-;superiors that it hacked."
-;  `(LET ((INHIBIT-SCREEN-MANAGEMENT T))
-;     (AND SCREEN-MANAGER-TOP-LEVEL
-;	  (BIND (VALUE-CELL-LOCATION 'SCREEN-MANAGER-QUEUE) NIL))
-;     (UNWIND-PROTECT
-;       (LET ((SCREEN-MANAGER-TOP-LEVEL NIL))
-;	 . ,BODY)
-;       (AND SCREEN-MANAGER-TOP-LEVEL (SCREEN-MANAGE-DEQUEUE-DELAYED-ENTRIES)))))
-
-(DEFMACRO DELAYING-SCREEN-MANAGEMENT (&REST BODY)
+(DEFMACRO DELAYING-SCREEN-MANAGEMENT (&BODY BODY)
   "Collect any screen manages that get queued during its body,
 and force them to happen at the later.  This code is unwind-
 protected so that all pending manages get done, as they are
@@ -590,73 +680,70 @@ necessary to have the screen look correct.  The code tries to
 remove duplicate screen manages when it finally does them, and
 after it finishes all the managing does an autoexpose on all
 superiors that it hacked."
-  `(LET ((INHIBIT-SCREEN-MANAGEMENT T)
-	 (.RESULT.)
-	 (.EXIT.QUEUE. NIL))
-     (LET ((SCREEN-MANAGER-QUEUE NIL)
-	   (SCREEN-MANAGER-TOP-LEVEL NIL))
-       (UNWIND-PROTECT
-	 (SETQ .RESULT. (PROGN . ,BODY)
-	       .EXIT.QUEUE. SCREEN-MANAGER-QUEUE)
-	 (OR .EXIT.QUEUE.
-	     (NULL SCREEN-MANAGER-QUEUE)
-	     (SCREEN-MANAGE-DEQUEUE-DELAYED-ENTRIES))))
-     (AND .EXIT.QUEUE.
-	  (SCREEN-MANAGE-DELAYING-SCREEN-MANAGEMENT-INTERNAL .EXIT.QUEUE.))
-     .RESULT.))
+  `(LET ((.QUEUE-LEFT. T))
+     (UNWIND-PROTECT
+       (LET-IF SCREEN-MANAGER-TOP-LEVEL ((SCREEN-MANAGER-QUEUE NIL))
+	       (UNWIND-PROTECT
+		 (LET ((INHIBIT-SCREEN-MANAGEMENT T)
+		       (SCREEN-MANAGER-TOP-LEVEL NIL))
+		   (PROGN . ,BODY))
+		 (SCREEN-MANAGE-DELAYING-SCREEN-MANAGEMENT-INTERNAL)
+		 (SETQ .QUEUE-LEFT. SCREEN-MANAGER-QUEUE)))
+       (AND (NEQ .QUEUE-LEFT. T)
+	    SCREEN-MANAGER-TOP-LEVEL
+	    (DOLIST (E .QUEUE-LEFT.)
+	      (LEXPR-FUNCALL #'SCREEN-MANAGE-QUEUE (FIRST (FIRST E)) (CDR E)))))))
 
-(DEFMACRO WITHOUT-SCREEN-MANAGEMENT (&REST BODY)
+(DEFMACRO WITHOUT-SCREEN-MANAGEMENT (&BODY BODY)
   "This causes any screen manages that get queued during its
 body to get flushed if the body exits normally.  Abnormal exit
 will cause the screen manages to remain on the queue so that they
 do get done.  This is useful in circumstances when you know
 you'll be doing screen management on the same stuff right away."
-  `(LET ((.FLAG. T)
-	 (INHIBIT-SCREEN-MANAGEMENT T))
-     (LET ((SCREEN-MANAGER-QUEUE NIL)
-	   (SCREEN-MANAGER-TOP-LEVEL NIL))
-       (UNWIND-PROTECT
-	 (PROGN
-	   ,@BODY
-	   ;; Body completed successfully, flag it
-	   (SETQ .FLAG. NIL))
-	 (AND .FLAG.
-	      ;; Body didn't complete successfully, hack the queue unless delaying
-	      (IF (NOT SCREEN-MANAGER-TOP-LEVEL)
-		  (SETQ .FLAG. SCREEN-MANAGER-QUEUE)
-		  (SCREEN-MANAGE-DEQUEUE-DELAYED-ENTRIES)
-		  (SETQ .FLAG. NIL)))))
-     (DOLIST (E .FLAG.)
-       ;; Requeue entries
-       (LEXPR-FUNCALL #'SCREEN-MANAGE-QUEUE (FIRST (FIRST E)) (CDR E)))))
+  `(LET ((.FLAG. NIL))
+     (UNWIND-PROTECT
+       (LET ((SCREEN-MANAGER-QUEUE NIL)
+	     (SCREEN-MANAGER-TOP-LEVEL NIL))
+	 (UNWIND-PROTECT
+	   (LET ((INHIBIT-SCREEN-MANAGEMENT T))
+	     (PROG1 ,@BODY
+		    ;; Body completed successfully, flush any screen manages that got queued
+		    (SETQ SCREEN-MANAGER-QUEUE NIL)))
+	   (SETQ .FLAG. SCREEN-MANAGER-QUEUE)))
+       (DOLIST (E .FLAG.)
+	 ;; Requeue entries
+	 (LEXPR-FUNCALL #'SCREEN-MANAGE-QUEUE (FIRST (FIRST E)) (CDR E))))))
 
 ;;; Macros to help out the squeaking furry things
 ;;; Stop handling (but continue tracking) the mouse.  Things that use this must set the mouse
 ;;; blinker right away, by (MOUSE-STANDARD-BLINKER) or otherwise.
-(DEFMACRO WITH-MOUSE-GRABBED (&REST BODY)
+(DEFMACRO WITH-MOUSE-GRABBED (&BODY BODY)
   `(LET ((.OLD.VALUE. WINDOW-OWNING-MOUSE))
-     (UNWIND-PROTECT
-       (PROGN
-	 (WITH-MOUSE-GRABBED-INTERNAL T)
-	 . ,BODY)
-       (SETQ WINDOW-OWNING-MOUSE .OLD.VALUE.)
-       (SETQ MOUSE-RECONSIDER T))))
+     (LET-GLOBALLY ((WHO-LINE-MOUSE-GRABBED-DOCUMENTATION NIL))
+       (UNWIND-PROTECT
+	 (PROGN
+	   (WITH-MOUSE-GRABBED-INTERNAL T)
+	   . ,BODY)
+	 (SETQ WINDOW-OWNING-MOUSE .OLD.VALUE.)
+	 (SETQ MOUSE-RECONSIDER T)))))
 
 ;;; Stop handling and tracking of the mouse completely
-(DEFMACRO WITH-MOUSE-USURPED (&REST BODY)
+(DEFMACRO WITH-MOUSE-USURPED (&BODY BODY)
   `(LET ((.OLD.VALUE. WINDOW-OWNING-MOUSE))
-     (UNWIND-PROTECT
-       (PROGN
-	 (WITH-MOUSE-GRABBED-INTERNAL 'STOP)
-	 . ,BODY)
-       (SETQ WINDOW-OWNING-MOUSE .OLD.VALUE.)
-       (SETQ MOUSE-RECONSIDER T))))
+     (LET-GLOBALLY ((WHO-LINE-MOUSE-GRABBED-DOCUMENTATION NIL))
+       (UNWIND-PROTECT
+	 (PROGN
+	   (WITH-MOUSE-GRABBED-INTERNAL 'STOP)
+	   . ,BODY)
+	 (SETQ WINDOW-OWNING-MOUSE .OLD.VALUE.)
+	 (SETQ MOUSE-RECONSIDER T)))))
 
 ;; Tell the mouse process to switch "modes" and wait for it to do so
-(DEFUN WITH-MOUSE-GRABBED-INTERNAL (WOM)
+(DEFUN WITH-MOUSE-GRABBED-INTERNAL (WOM &AUX (INHIBIT-SCHEDULING-FLAG T))
   (SETQ WINDOW-OWNING-MOUSE WOM)
-  (SETQ MOUSE-RECONSIDER T)
-  (MOUSE-WAKEUP)
-  (PROCESS-WAIT "Grab Mouse" #'(LAMBDA (WOM) (AND (NULL MOUSE-RECONSIDER)
-						  (EQ MOUSE-WINDOW WOM)))
-			     WOM))
+  (COND ((NEQ WOM MOUSE-WINDOW)
+	 (SETQ MOUSE-RECONSIDER T
+	       INHIBIT-SCHEDULING-FLAG NIL)
+	 (PROCESS-WAIT "Grab Mouse" #'(LAMBDA (WOM) (AND (NULL MOUSE-RECONSIDER)
+							 (EQ MOUSE-WINDOW WOM)))
+		       WOM))))

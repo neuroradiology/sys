@@ -1,3 +1,4 @@
+
 ;;; -*- Mode: LISP;  Package: TV; Base: 8 -*-
 ;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
@@ -52,8 +53,9 @@ use as a menu item-list."
 			 (LET ((MINIMUM-WIDTH (OR (GET INIT-PLIST ':MINIMUM-WIDTH) 0))
 			       (MINIMUM-HEIGHT (OR (GET INIT-PLIST ':MINIMUM-HEIGHT) 0)))
 			   (MULTIPLE-VALUE-LIST
-			     (MOUSE-SPECIFY-RECTANGLE NIL NIL NIL NIL SUPERIOR
-						      MINIMUM-WIDTH MINIMUM-HEIGHT))))
+			     (MOUSE-SPECIFY-RECTANGLE-SET-SHEET NIL NIL NIL NIL SUPERIOR
+								MINIMUM-WIDTH
+								MINIMUM-HEIGHT))))
 			((TYPEP EDGES-FROM 'ESSENTIAL-WINDOW)
 			 ;; A window, use it's edges
 			 (OR (EQ SUPERIOR (SHEET-SUPERIOR EDGES-FROM))
@@ -80,7 +82,7 @@ use as a menu item-list."
 Most windows should include this at the end of their hierachy or all of its components."))
 
 (DEFFLAVOR WINDOW-WITHOUT-LABEL () (STREAM-MIXIN BORDERS-MIXIN SELECT-MIXIN
-				    POP-UP-NOTIFICATION-MIXIN MINIMUM-WINDOW))
+				    POP-UP-NOTIFICATION-MIXIN GRAPHICS-MIXIN MINIMUM-WINDOW))
 
 (DEFFLAVOR WINDOW () (STREAM-MIXIN BORDERS-MIXIN LABEL-MIXIN SELECT-MIXIN
 		      POP-UP-NOTIFICATION-MIXIN GRAPHICS-MIXIN MINIMUM-WINDOW)
@@ -189,9 +191,8 @@ to handle these messages, and should probably include this flavor somewhere."))
 (DEFMETHOD (SELECT-MIXIN :NAME-FOR-SELECTION) (&AUX LABEL)
   (OR (COND ((GET-HANDLER-FOR SELF ':LABEL)
 	     (SETQ LABEL (FUNCALL-SELF ':LABEL))
-	     (IF (STRINGP LABEL)
-		 LABEL
-		 (LABEL-STRING LABEL))))
+	     (OR (STRINGP LABEL) (SETQ LABEL (LABEL-STRING LABEL)))
+	     (AND (STRING-SEARCH-NOT-CHAR #\SP LABEL) LABEL)))
       NAME))
 
 (DEFMETHOD (SELECT-MIXIN :AFTER :DEACTIVATE) (&REST IGNORE)
@@ -235,14 +236,6 @@ to handle these messages, and should probably include this flavor somewhere."))
   (SHEET-FREE-TEMPORARY-LOCKS WINDOW)
   (FUNCALL WINDOW ':SELECT))
 
-(DEFMETHOD (SELECT-MIXIN :BREAK) (&AUX LAST-PROCESS)
-  (AND (SETQ LAST-PROCESS (FUNCALL-SELF ':PROCESS))
-       (FUNCALL LAST-PROCESS ':FORCE-BREAK)))
-
-(DEFMETHOD (SELECT-MIXIN :ABORT) (&AUX LAST-PROCESS)
-  (AND (SETQ LAST-PROCESS (FUNCALL-SELF ':PROCESS))
-       (FUNCALL LAST-PROCESS ':RESET)))
-
 (DEFMETHOD (SELECT-MIXIN :ARREST) (&AUX LAST-PROCESS)
   (AND (SETQ LAST-PROCESS (FUNCALL-SELF ':PROCESS))
        (FUNCALL LAST-PROCESS ':ARREST-REASON)))
@@ -261,6 +254,7 @@ to handle these messages, and should probably include this flavor somewhere."))
 (DEFMETHOD (SELECT-MIXIN :MOUSE-SELECT) (&REST ARGS)
   "Form of select used when 'mouseing' windows.  Clears all temp locks that are on the
 window, as well as failing if the window is not fully within its superior."
+  (FUNCALL-SELF ':ACTIVATE)		;Maybe our size has to get adjusted first
   (COND ((SHEET-WITHIN-SHEET-P SELF SUPERIOR)
 	 (SHEET-FREE-TEMPORARY-LOCKS SELF)	;Flush all temp windows that cover us
 	 (LEXPR-FUNCALL-SELF ':SELECT ARGS))))
@@ -285,8 +279,10 @@ window, as well as failing if the window is not fully within its superior."
   (OR EXPOSED-P (FUNCALL-SELF ':EXPOSE T))
   (DO SHEET SUPERIOR (SHEET-SUPERIOR SHEET) (NULL SHEET)	;Really onto the screen
     (OR (SHEET-EXPOSED-P SHEET) (FUNCALL SHEET ':EXPOSE)))
-  (AND OSW SAVE-SELECTED (NEQ SELF OSW)
-       (ADD-TO-PREVIOUSLY-SELECTED-WINDOWS OSW)))
+  (WITHOUT-INTERRUPTS
+    (AND OSW SAVE-SELECTED (NEQ SELF OSW)
+	 (NEQ (FUNCALL OSW ':STATUS) ':DEACTIVATED)	;Deexposing can deactivate
+	 (ADD-TO-PREVIOUSLY-SELECTED-WINDOWS OSW))))
 
 (DEFMETHOD (SELECT-MIXIN :AFTER :SELECT) (&REST IGNORE)
   (SETF (IO-BUFFER-LAST-OUTPUT-PROCESS IO-BUFFER) (FUNCALL-SELF ':PROCESS))
@@ -437,6 +433,11 @@ similar ways."))
 Provides :SET-EDGES and related messages such as :SET-SIZE, :SET-POSITION, :FULL-SCREEN,
 and :CENTER-AROUND."))
 
+(DEFMETHOD (ESSENTIAL-SET-EDGES :AFTER :INIT) (IGNORE)
+  (LET ((ERROR-MESSAGE (FUNCALL-SELF ':VERIFY-NEW-EDGES X-OFFSET Y-OFFSET WIDTH HEIGHT)))
+    (IF (NOT (NULL ERROR-MESSAGE))
+	(FERROR NIL ERROR-MESSAGE))))
+
 (DEFMETHOD (ESSENTIAL-SET-EDGES :SET-EDGES) (&REST ARGS) (APPLY #'SYSTEM-SET-EDGES ARGS))
 
 (DEFMETHOD (ESSENTIAL-SET-EDGES :VERIFY-NEW-EDGES) (NL NT NW NH)
@@ -473,6 +474,9 @@ enough room for the margins, or the window is exposed and will not fit within it
 (DEFMETHOD (ESSENTIAL-SET-EDGES :CENTER-AROUND) (X Y)
   (CENTER-WINDOW-AROUND SELF X Y))
 
+(DEFMETHOD (ESSENTIAL-SET-EDGES :EXPOSE-NEAR) (MODE &OPTIONAL (WARP-MOUSE-P T))
+  (EXPOSE-WINDOW-NEAR SELF MODE WARP-MOUSE-P))
+
 (DEFUN CENTER-WINDOW-AROUND (WINDOW X Y &AUX (W (SHEET-WIDTH WINDOW))
 					     (H (SHEET-HEIGHT WINDOW))
 					     (SUPERIOR (SHEET-SUPERIOR WINDOW))
@@ -480,9 +484,9 @@ enough room for the margins, or the window is exposed and will not fit within it
   (SETQ X (MAX (SHEET-INSIDE-LEFT SUPERIOR) (- X (// W 2)))
 	Y (MAX (SHEET-INSIDE-TOP SUPERIOR) (- Y (// H 2))))
   (AND (> (+ X W) (SETQ SW (SHEET-INSIDE-RIGHT SUPERIOR)))
-       (SETQ X (- SW W)))
+       (SETQ X (MAX (SHEET-INSIDE-LEFT SUPERIOR) (- SW W))))
   (AND (> (+ Y H) (SETQ SH (SHEET-INSIDE-BOTTOM SUPERIOR)))
-       (SETQ Y (- SH H)))
+       (SETQ Y (MAX (SHEET-INSIDE-TOP SUPERIOR) (- SH H))))
   (FUNCALL WINDOW ':SET-POSITION X Y)
   (PROG () (RETURN (+ X (// W 2)) (+ Y (// H 2)))))
 
@@ -490,67 +494,87 @@ enough room for the margins, or the window is exposed and will not fit within it
 (DEFUN SYSTEM-SET-EDGES (NEW-LEFT NEW-TOP NEW-RIGHT NEW-BOTTOM &OPTIONAL OPTION
 			 &AUX (NEW-WIDTH (- NEW-RIGHT NEW-LEFT))
 			      (NEW-HEIGHT (- NEW-BOTTOM NEW-TOP))
-			      ERROR)
-  ;; As long as the new edges are within the superior, let it get set
-  (LOCK-SHEET (SELF)
-    (COND ((SETQ ERROR (FUNCALL-SELF ':VERIFY-NEW-EDGES NEW-LEFT NEW-TOP
-				     NEW-WIDTH NEW-HEIGHT))
-	   ;; Can't put window there
-	   (SELECTQ OPTION
-	     (:VERIFY NIL)
-	     (OTHERWISE
-	       (FERROR NIL ERROR))))
-	  ((EQ OPTION ':VERIFY)
-	   ;; "Only want to know"
-	   T)
-	  ((AND (= NEW-WIDTH WIDTH)
-		(= NEW-HEIGHT HEIGHT)
-		(= NEW-LEFT X-OFFSET)
-		(= NEW-TOP Y-OFFSET))
-	   ;;Not changing size or position, just return T (we do the verify anyway in case
-	   ;; something in the environment has made the current size no longer "ok", such as
-	   ;; having the size of the superior change.)
-	   T)
-	  ((AND (= NEW-WIDTH WIDTH)
-		(= NEW-HEIGHT HEIGHT))
-	   ;; Only moving the window, move it's bits behind its back
-	   (LET ((OX X-OFFSET)
-		 (OY Y-OFFSET)
-		 (SUPERIOR-ARRAY (SHEET-SUPERIOR-SCREEN-ARRAY))
-		 (CURRENT-RECTANGLE (LIST X-OFFSET Y-OFFSET
-					  (+ X-OFFSET WIDTH)
-					  (+ Y-OFFSET HEIGHT))))
-	     (DELAYING-SCREEN-MANAGEMENT
-	       (COND ((OR (NOT EXPOSED-P) (SHEET-TEMPORARY-P))
-		      ;; In the case of temporary windows, this will deexpose/expose
-		      (SHEET-SET-POSITION NEW-LEFT NEW-TOP))
-		     (T
-		      (PREPARE-SHEET (SELF)
-			(SHEET-SET-POSITION NEW-LEFT NEW-TOP)
-			(BITBLT ALU-SETA
-				(IF (> OX NEW-LEFT) NEW-WIDTH (- NEW-WIDTH))
-				(IF (> OY NEW-TOP) NEW-HEIGHT (- NEW-HEIGHT))
-				SUPERIOR-ARRAY OX OY
-				SUPERIOR-ARRAY NEW-LEFT NEW-TOP))
-		      (SETQ MOUSE-RECONSIDER T)))
-	       (LEXPR-FUNCALL #'SCREEN-AREA-HAS-CHANGED SELF CURRENT-RECTANGLE)
-	       (SCREEN-CONFIGURATION-HAS-CHANGED SELF))))
-	  (T 
-	   (DELAYING-SCREEN-MANAGEMENT
-	     (LET ((CURRENT-RECTANGLE (LIST X-OFFSET Y-OFFSET
-					    (+ X-OFFSET WIDTH)
-					    (+ Y-OFFSET HEIGHT))))
-	        (WITH-SHEET-DEEXPOSED (SELF)
-		  (AND BIT-ARRAY (SI:PAGE-IN-ARRAY BIT-ARRAY NIL (LIST WIDTH HEIGHT)))
-		  (FUNCALL-SELF ':CHANGE-OF-SIZE-OR-MARGINS
-				':LEFT NEW-LEFT ':TOP NEW-TOP
-				':WIDTH NEW-WIDTH ':HEIGHT NEW-HEIGHT)
-		  (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
-		    (FUNCALL-SELF ':REFRESH ':SIZE-CHANGED)))
-		(AND BIT-ARRAY (SI:PAGE-OUT-ARRAY BIT-ARRAY))
-		(SETQ MOUSE-RECONSIDER T)
-		(LEXPR-FUNCALL #'SCREEN-AREA-HAS-CHANGED SELF CURRENT-RECTANGLE)
-		(SCREEN-CONFIGURATION-HAS-CHANGED SELF)))))))
+			      ERROR WINDOW-TO-BE-DEEXPOSED)
+  (DELAYING-SCREEN-MANAGEMENT
+    (DO (DONE RESULT) (())
+      (SETQ WINDOW-TO-BE-DEEXPOSED
+	  (*CATCH 'SET-EDGES
+	    (LOCK-SHEET (SELF)
+	      (SETQ RESULT
+		(COND ((SETQ ERROR (FUNCALL-SELF ':VERIFY-NEW-EDGES NEW-LEFT NEW-TOP
+						 NEW-WIDTH NEW-HEIGHT))
+		       ;; Can't put window there
+		       (SELECTQ OPTION
+			 (:VERIFY NIL)
+			 (OTHERWISE
+			  (FERROR NIL ERROR))))
+		      ((EQ OPTION ':VERIFY)
+		       ;; "Only want to know"
+		       T)
+		      ((AND (= NEW-WIDTH WIDTH)
+			    (= NEW-HEIGHT HEIGHT)
+			    (= NEW-LEFT X-OFFSET)
+			    (= NEW-TOP Y-OFFSET))
+		       ;;Not changing size or position, just return T (we do the verify 
+		       ;; anyway in case something in the environment has made the current
+		       ;; size no longer "ok", such as having the size of the
+		       ;; superior change.)
+		       T)
+		      ((AND (= NEW-WIDTH WIDTH)
+			    (= NEW-HEIGHT HEIGHT))
+		       ;; Only moving the window, move it's bits behind its back
+		       (LET ((CURRENT-RECTANGLE (LIST X-OFFSET Y-OFFSET
+						      (+ X-OFFSET WIDTH)
+						      (+ Y-OFFSET HEIGHT))))
+			 (COND ((NOT EXPOSED-P)
+				(SHEET-SET-DEEXPOSED-POSITION NEW-LEFT NEW-TOP)
+				(LEXPR-FUNCALL #'SCREEN-AREA-HAS-CHANGED SELF
+					       CURRENT-RECTANGLE)
+				(SCREEN-CONFIGURATION-HAS-CHANGED SELF))
+			       ((SHEET-TEMPORARY-P)
+				;; For temporary windows, just deexpose and reexpose
+				(LET ((SELECT-P (EQ SELF SELECTED-WINDOW)))
+				  (FUNCALL-SELF ':DEEXPOSE)
+				  (FUNCALL-SELF ':EXPOSE NIL NIL NEW-LEFT NEW-TOP)
+				  (AND SELECT-P (FUNCALL-SELF ':SELECT))))
+			       (T
+				(OR (SHEET-BOUNDS-WITHIN-SHEET-P NEW-LEFT NEW-TOP
+								 WIDTH HEIGHT
+								 SUPERIOR)
+				    (FERROR NIL
+					    "Attempt to move sheet ~S outside of superior"
+					    SELF))
+				;; Make sure everyone under us is deexposed
+				(WITHOUT-INTERRUPTS
+				  (DOLIST (SISTER (SHEET-EXPOSED-INFERIORS SUPERIOR))
+				    (COND ((AND (NEQ SELF SISTER)
+						(SHEET-OVERLAPS-P SISTER NEW-LEFT NEW-TOP
+								  WIDTH HEIGHT))
+					   (*THROW 'SET-EDGES SISTER)))))
+				(SHEET-SET-EXPOSED-POSITION NEW-LEFT NEW-TOP)
+				(LEXPR-FUNCALL #'SCREEN-AREA-HAS-CHANGED SELF
+					       CURRENT-RECTANGLE)
+				(SCREEN-CONFIGURATION-HAS-CHANGED SELF)))))
+		      (T
+		       (LET ((CURRENT-RECTANGLE (LIST X-OFFSET Y-OFFSET
+						      (+ X-OFFSET WIDTH)
+						      (+ Y-OFFSET HEIGHT))))
+			 (WITH-SHEET-DEEXPOSED (SELF)
+			   (AND BIT-ARRAY
+				(SI:PAGE-IN-ARRAY BIT-ARRAY NIL (LIST WIDTH HEIGHT)))
+			   (FUNCALL-SELF ':CHANGE-OF-SIZE-OR-MARGINS
+					 ':LEFT NEW-LEFT ':TOP NEW-TOP
+					 ':WIDTH NEW-WIDTH ':HEIGHT NEW-HEIGHT)
+			   (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
+			     (FUNCALL-SELF ':REFRESH ':SIZE-CHANGED)))
+			 (AND BIT-ARRAY (SI:PAGE-OUT-ARRAY BIT-ARRAY))
+			 (SETQ MOUSE-RECONSIDER T)
+			 (LEXPR-FUNCALL #'SCREEN-AREA-HAS-CHANGED SELF CURRENT-RECTANGLE)
+			 (SCREEN-CONFIGURATION-HAS-CHANGED SELF)))))
+	      (SETQ DONE T))))
+      (IF DONE
+	  (RETURN RESULT ERROR)
+	  (FUNCALL WINDOW-TO-BE-DEEXPOSED ':DEEXPOSE)))))
 )  ;End declare
 
 ;;; Expose the window next to the rectangle, to the right if it will fit
@@ -579,12 +603,13 @@ enough room for the margins, or the window is exposed and will not fit within it
 		(SETQ NBOTTOM TOP NTOP TEM))
 	       (( (SHEET-INSIDE-BOTTOM SUPERIOR) (SETQ TEM (+ BOTTOM HEIGHT)))
 		(SETQ NTOP BOTTOM NBOTTOM TEM))
-	       (T (FERROR NIL "No screen space available")))))
+	       (T (SETQ NTOP (SHEET-INSIDE-TOP SUPERIOR)
+			NBOTTOM (+ NTOP HEIGHT))))))
   (FUNCALL WINDOW ':SET-EDGES NLEFT NTOP NRIGHT NBOTTOM)
   (AND EXPOSE-P (FUNCALL WINDOW ':EXPOSE))
   (AND WARP-MOUSE-P (FUNCALL WINDOW ':SET-MOUSE-POSITION (// WIDTH 2) (// HEIGHT 2))))
 
-(DEFUN EXPOSE-WINDOW-NEAR (WINDOW MODE &OPTIONAL (WARP-MOUSE-P T))
+(DEFUN EXPOSE-WINDOW-NEAR (WINDOW MODE &OPTIONAL (WARP-MOUSE-P T) (EXPOSE-P T))
   (COND ((NOT (SHEET-EXPOSED-P WINDOW))
 	 (SELECTQ (FIRST MODE)
 	   (:POINT
@@ -600,17 +625,25 @@ enough room for the margins, or the window is exposed and will not fit within it
 				(SECOND MODE) (THIRD MODE) (FOURTH MODE) (FIFTH MODE)
 				NIL WARP-MOUSE-P))
 	   (:WINDOW
-	    (MULTIPLE-VALUE-BIND (LEFT TOP RIGHT BOTTOM)
-		(FUNCALL (SECOND MODE) ':EDGES)
-	      (DOLIST (W (CDDR MODE))
-		(MULTIPLE-VALUE-BIND (LEFT1 TOP1 RIGHT1 BOTTOM1) (FUNCALL W ':EDGES)
-		  (SETQ LEFT (MIN LEFT LEFT1)
-			TOP (MIN TOP TOP1)
-			RIGHT (MAX RIGHT RIGHT1)
-			BOTTOM (MAX BOTTOM BOTTOM1))))
-	      (MOVE-WINDOW-NEAR-RECTANGLE WINDOW LEFT TOP RIGHT BOTTOM NIL WARP-MOUSE-P)))
+	    (LOOP FOR NEAR-WINDOW IN (CDR MODE) WITH (LEFT1 RIGHT1 TOP1 BOTTOM1 X-OFF Y-OFF)
+		  DO (MULTIPLE-VALUE (LEFT1 TOP1 RIGHT1 BOTTOM1)
+		       (FUNCALL NEAR-WINDOW ':EDGES))
+		     (MULTIPLE-VALUE-BIND (X-OFF-1 Y-OFF-1)
+			 (SHEET-CALCULATE-OFFSETS (SHEET-SUPERIOR WINDOW)
+						  (SHEET-GET-SCREEN WINDOW))
+		       (MULTIPLE-VALUE-BIND (X-OFF-2 Y-OFF-2)
+			   (SHEET-CALCULATE-OFFSETS (SHEET-SUPERIOR NEAR-WINDOW)
+						    (SHEET-GET-SCREEN NEAR-WINDOW))
+			 (SETQ X-OFF (- X-OFF-1 X-OFF-2)
+			       Y-OFF (- Y-OFF-1 Y-OFF-2))))
+		  MINIMIZE (- LEFT1 X-OFF) INTO LEFT
+		  MINIMIZE (- TOP1 Y-OFF) INTO TOP
+		  MAXIMIZE (- RIGHT1 X-OFF) INTO RIGHT
+		  MAXIMIZE (- BOTTOM1 Y-OFF) INTO BOTTOM
+		  FINALLY (MOVE-WINDOW-NEAR-RECTANGLE WINDOW LEFT TOP RIGHT BOTTOM
+						      NIL WARP-MOUSE-P)))
 	   (OTHERWISE (FERROR NIL "~S invalid mode" (FIRST MODE))))
-	 (FUNCALL WINDOW ':EXPOSE))))
+	 (AND EXPOSE-P (FUNCALL WINDOW ':EXPOSE)))))
 
 ;;;Things that hack margins (borders and labels)
 
@@ -636,7 +669,7 @@ See the section on margins for what to do when you mix this in."))
 	 (WITH-SHEET-DEEXPOSED (SELF)
 	   (AND BIT-ARRAY (SI:PAGE-IN-ARRAY BIT-ARRAY))
 	   (LET ((INSIDE-SIZE-CHANGED
-		   (LEXPR-FUNCALL-SELF ':CHANGE-OF-SIZE-OR-MARGINS (CAR PLIST))))
+		   (LEXPR-FUNCALL-SELF ':CHANGE-OF-SIZE-OR-MARGINS (CDR PLIST))))
 	     (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
 	       (FUNCALL-SELF ':REFRESH (IF INSIDE-SIZE-CHANGED
 					   ':SIZE-CHANGED
@@ -706,21 +739,23 @@ variable."))
 (DEFUN DRAW-BORDERS (ALU)
   (SHEET-FORCE-ACCESS (SELF)
     (DOLIST (BORDER BORDERS)
-      (LET ((LEFT (SECOND BORDER))
-	    (TOP (THIRD BORDER))
-	    (RIGHT (FOURTH BORDER))
-	    (BOTTOM (FIFTH BORDER)))
-	(FUNCALL (FIRST BORDER) SELF ALU
-		 (IF (MINUSP LEFT) (+ LEFT WIDTH) LEFT)
-		 (IF (MINUSP TOP) (+ TOP HEIGHT) TOP)
-		 (IF (PLUSP RIGHT) RIGHT (+ RIGHT WIDTH))
-		 (IF (PLUSP BOTTOM) BOTTOM (+ BOTTOM HEIGHT))))))))
+      (AND BORDER
+	   (NEQ BORDER ':ZERO)
+	   (LET ((LEFT (SECOND BORDER))
+		 (TOP (THIRD BORDER))
+		 (RIGHT (FOURTH BORDER))
+		 (BOTTOM (FIFTH BORDER)))
+	     (FUNCALL (FIRST BORDER) SELF ALU
+		      (IF (MINUSP LEFT) (+ LEFT WIDTH) LEFT)
+		      (IF (MINUSP TOP) (+ TOP HEIGHT) TOP)
+		      (IF (PLUSP RIGHT) RIGHT (+ RIGHT WIDTH))
+		      (IF (PLUSP BOTTOM) BOTTOM (+ BOTTOM HEIGHT)))))))))
 
 ;;;This is called with the new border specification and the current (relative to this
 ;;;redefining) margins, and should return the canonical form of the border, and the four new
 ;;;margins.
 (DECLARE-FLAVOR-INSTANCE-VARIABLES (BORDERS-MIXIN)
-(DEFUN PARSE-BORDERS-SPEC (SPEC LM TM RM BM FUNCTION)
+(DEFUN PARSE-BORDERS-SPEC (SPEC LM TM RM BM FUNCTION &OPTIONAL DEFAULT-SIZE)
   (COND ;;NIL means no borders at all
 	(SPEC
 	 ;;A symbol or an number means that type for each of the four, else make a copy
@@ -742,14 +777,16 @@ variable."))
 	 (DO ((SPEC SPEC (CDR SPEC))
 	      (ITEM))
 	     ((NULL SPEC))
-	   (COND ((NULL (SETQ ITEM (CAR SPEC))))
+	   (COND ((OR (NULL (SETQ ITEM (CAR SPEC)))
+		      (EQ ITEM ':ZERO)))
 		 ;;A number means that width of the default function
 		 ((NUMBERP ITEM)
 		  (SETF (CAR SPEC) (CONS FUNCTION ITEM)))
 		 ;;A symbol means that function and its default width
 		 ((SYMBOLP ITEM)
 		  (AND (EQ ITEM T) (SETQ ITEM FUNCTION))
-		  (SETF (CAR SPEC) (CONS ITEM (GET ITEM 'DEFAULT-BORDER-SIZE))))))
+		  (SETF (CAR SPEC) (CONS ITEM (OR DEFAULT-SIZE
+						  (GET ITEM 'DEFAULT-BORDER-SIZE)))))))
 	 (DO ((SPEC SPEC (CDR SPEC))
 	      (TYPES '(:LEFT :TOP :RIGHT :BOTTOM) (CDR TYPES))
 	      (TYPE)
@@ -757,7 +794,7 @@ variable."))
 	      (WIDTH))
 	     ((NULL SPEC))
 	   ;;A cons of a symbol and a number is the CAR function with the CDR width
-	   (AND (SETQ ITEM (CAR SPEC)) (SETQ WIDTH (CDR ITEM))
+	   (AND (SETQ ITEM (CAR SPEC)) (LISTP ITEM) (SETQ WIDTH (CDR ITEM))
 		(IF (ATOM WIDTH)
 		    (SETF (CDR ITEM) (LIST (IF (EQ (SETQ TYPE (CAR TYPES)) ':RIGHT) WIDTH 0)
 					   (IF (EQ TYPE ':BOTTOM) WIDTH 0)
@@ -773,30 +810,42 @@ variable."))
 		      (SETF (FIFTH ITEM) (IF (EQ TYPE ':TOP) HEIGHT 0))))))
 	 ;;Now adjust all non-NIL items for the current margins
 	 (DO ((SPEC SPEC (CDR SPEC))
-	      (NEGATE-P '(NIL NIL T T) (CDR NEGATE-P))
 	      (TYPES '(:LEFT :TOP :RIGHT :BOTTOM) (CDR TYPES))
 	      (TYPE)
 	      (ITEM)
 	      (WIDTH)
 	      (HEIGHT))
 	     ((NULL SPEC))
-	   (COND ((SETQ ITEM (CAR SPEC))
+	   (COND ((AND (SETQ ITEM (CAR SPEC)) (LISTP ITEM))
 		  (SETQ TYPE (CAR TYPES))
 		  (SETQ WIDTH (ABS (- (FOURTH ITEM) (SECOND ITEM)))
 			HEIGHT (ABS (- (FIFTH ITEM) (THIRD ITEM))))
-		  (SETF (SECOND ITEM)
-			(IF (EQ TYPE ':RIGHT) (- (+ (SECOND ITEM) RM)) (+ (SECOND ITEM) LM)))
-		  (SETF (THIRD ITEM)
-			(IF (EQ TYPE ':BOTTOM) (- (+ (THIRD ITEM) BM)) (+ (THIRD ITEM) TM)))
-		  (SETF (FOURTH ITEM)
-			(IF (EQ TYPE ':LEFT) (+ (FOURTH ITEM) LM) (- (+ (FOURTH ITEM) RM))))
-		  (SETF (FIFTH ITEM)
-			(IF (EQ TYPE ':TOP) (+ (FIFTH ITEM) TM) (- (+ (FIFTH ITEM) BM))))
-		  (SELECTQ TYPE
-		    (:LEFT (SETQ LM (+ LM WIDTH)))
-		    (:TOP (SETQ TM (+ TM HEIGHT)))
-		    (:RIGHT (SETQ RM (+ RM WIDTH)))
-		    (:BOTTOM (SETQ BM (+ BM HEIGHT)))))))
+		  (COND ((SELECTQ TYPE
+			   ((:LEFT :RIGHT) (ZEROP WIDTH))
+			   ((:TOP :BOTTOM) (ZEROP HEIGHT)))
+			 (SETF (CAR SPEC) ':ZERO))
+			(T ;; Order here is L R T B to give symmetry
+			   (SETF (SECOND ITEM)
+				 (IF (EQ TYPE ':RIGHT)
+				     (- (+ (SECOND ITEM) RM))
+				     (+ (SECOND ITEM) LM)))
+			   (SETF (FOURTH ITEM)
+				 (IF (EQ TYPE ':LEFT)
+				     (+ (FOURTH ITEM) LM)
+				     (- (+ (FOURTH ITEM) RM))))
+			   (SETF (THIRD ITEM)
+				 (IF (EQ TYPE ':BOTTOM)
+				     (- (+ (THIRD ITEM) BM))
+				     (+ (THIRD ITEM) TM)))
+			   (SETF (FIFTH ITEM)
+				 (IF (EQ TYPE ':TOP)
+				     (+ (FIFTH ITEM) TM)
+				     (- (+ (FIFTH ITEM) BM))))
+			   (SELECTQ TYPE
+			     (:LEFT (SETQ LM (+ LM WIDTH)))
+			     (:TOP (SETQ TM (+ TM HEIGHT)))
+			     (:RIGHT (SETQ RM (+ RM WIDTH)))
+			     (:BOTTOM (SETQ BM (+ BM HEIGHT)))))))))
 	 ;;Now account for the extra margin
 	 (AND (FIRST SPEC) (SETQ LM (+ LM BORDER-MARGIN-WIDTH)))
 	 (AND (SECOND SPEC) (SETQ TM (+ TM BORDER-MARGIN-WIDTH)))
@@ -879,7 +928,7 @@ Mix this with a special type of label mixin to get the simplest usable case of t
 ;;;This designed to be a subroutine of :PARSE-LABEL-SPEC messages, it makes the label
 ;;;into a list, onto which other things can then be added.
 (DECLARE-FLAVOR-INSTANCE-VARIABLES (ESSENTIAL-LABEL-MIXIN)
-(DEFUN PARSE-LABEL-SPEC (SPEC LM TM RM BM &OPTIONAL HEIGHT TOP-P)
+(DEFUN PARSE-LABEL-SPEC (SPEC LM TM RM BM &OPTIONAL (HEIGHT NIL HEIGHT-P) TOP-P)
   (OR HEIGHT (SETQ HEIGHT (FONT-CHAR-HEIGHT (SCREEN-DEFAULT-FONT (SHEET-GET-SCREEN SELF)))))
   (COND (SPEC
 	 (SETQ TOP-P (COND ((MEMQ SPEC '(:TOP :BOTTOM))
@@ -890,7 +939,7 @@ Mix this with a special type of label mixin to get the simplest usable case of t
 			    TOP-P)))
 	 (SETQ SPEC (IF (LISTP SPEC) (APPEND SPEC NIL) (MAKE-LIST NIL 4)))
 	 (LET ((BOTTOM (LABEL-BOTTOM SPEC)) (TOP (LABEL-TOP SPEC)))
-	   (AND BOTTOM TOP (SETQ HEIGHT (- BOTTOM TOP))))
+	   (AND BOTTOM TOP (NOT HEIGHT-P) (SETQ HEIGHT (- BOTTOM TOP))))
 	 (SETF (LABEL-LEFT SPEC) LM)
 	 (SETF (LABEL-RIGHT SPEC) (- RM))
 	 (LET ((TOP (IF TOP-P TM (- (+ BM HEIGHT)))))
@@ -899,7 +948,8 @@ Mix this with a special type of label mixin to get the simplest usable case of t
 	 (IF TOP-P (SETQ TM (LABEL-BOTTOM SPEC)) (SETQ BM (- (LABEL-TOP SPEC))))))
   (PROG () (RETURN SPEC LM TM RM BM))))
 
-(DEFSTRUCT (LABEL-MIXIN :LIST (:INCLUDE ESSENTIAL-LABEL-MIXIN) (:CONSTRUCTOR NIL))
+(DEFSTRUCT (LABEL-MIXIN :LIST (:INCLUDE ESSENTIAL-LABEL-MIXIN) (:CONSTRUCTOR NIL)
+			(:SIZE-SYMBOL LABEL-DEFSTRUCT-SIZE))
   LABEL-FONT
   LABEL-STRING)
 
@@ -913,20 +963,34 @@ in an arbitrary font."))
 
 (DEFMETHOD (LABEL-MIXIN :PARSE-LABEL-SPEC) (SPEC LM TM RM BM &OPTIONAL TOP-P &AUX FONT NSPEC)
   (COND (SPEC
-	 (SETQ FONT (OR (AND (EQ (TYPEP SPEC) 'FONT) SPEC)
+	 (AND (LISTP SPEC) (MEMQ (CAR SPEC) '(:STRING :FONT :TOP :BOTTOM))
+	      (DO ((LIST SPEC (CDR LIST))
+		   (STRING NIL))
+		  ((NULL LIST)
+		   (SETQ SPEC (LIST NIL NIL NIL NIL FONT STRING)))
+		(SELECTQ (CAR LIST)
+		  (:STRING (SETQ STRING (CADR LIST)
+				 LIST (CDR LIST)))
+		  (:FONT (SETQ FONT (CADR LIST)
+			       LIST (CDR LIST)))
+		  (:TOP (SETQ TOP-P T))
+		  (:BOTTOM (SETQ TOP-P NIL))
+		  (OTHERWISE (FERROR NIL "~S is not a recognized keyword" (CAR LIST))))))
+	 (SETQ FONT (OR (AND (EQ (TYPEP SPEC) 'FONT) (PROG1 SPEC (SETQ SPEC T)))
 			(AND (LISTP SPEC) (LABEL-FONT SPEC))
 			(SCREEN-DEFAULT-FONT (SHEET-GET-SCREEN SELF))))
 	 (SETQ FONT (FUNCALL (SHEET-GET-SCREEN SELF) ':PARSE-FONT-DESCRIPTOR FONT))
 	 (AND (LISTP SPEC) (LABEL-TOP SPEC) (SETQ TOP-P (NOT (MINUSP (LABEL-TOP SPEC)))))
 	 (MULTIPLE-VALUE (NSPEC LM TM RM BM)
 	   (PARSE-LABEL-SPEC SPEC LM TM RM BM (FONT-CHAR-HEIGHT FONT) TOP-P))
-	 (LET ((TEM (- (GET 'LABEL-MIXIN 'SI:DEFSTRUCT-SIZE) (LENGTH NSPEC))))
+	 (LET ((TEM (- LABEL-DEFSTRUCT-SIZE (LENGTH NSPEC))))
 	   (AND (> TEM 0) (RPLACD (LAST NSPEC) (MAKE-LIST NIL TEM))))
 	 (SETF (LABEL-FONT NSPEC) FONT)
 	 (OR (LABEL-STRING NSPEC)
 	     (SETF (LABEL-STRING NSPEC) (COND ((STRINGP SPEC) SPEC)
 					      ((AND (LISTP SPEC) (LABEL-STRING SPEC))
 					       (LABEL-STRING SPEC))
+					      ((NEQ SPEC T) (STRING SPEC))
 					      (T NAME))))
 	 (SETQ SPEC NSPEC)))
   (PROG () (RETURN SPEC LM TM RM BM)))
@@ -934,7 +998,7 @@ in an arbitrary font."))
 (DEFMETHOD (LABEL-MIXIN :DRAW-LABEL) (SPEC LEFT TOP RIGHT BOTTOM)
   BOTTOM
   (AND SPEC
-       (SHEET-STRING-OUT-EXPLICIT SELF (LABEL-STRING SPEC) LEFT TOP (- RIGHT LEFT)
+       (SHEET-STRING-OUT-EXPLICIT SELF (LABEL-STRING SPEC) LEFT TOP RIGHT
 				  (LABEL-FONT SPEC) CHAR-ALUF)))
 
 (DEFMETHOD (LABEL-MIXIN :LABEL-SIZE) ()
@@ -943,6 +1007,11 @@ in an arbitrary font."))
 					   (LABEL-FONT LABEL))
 		      (- (LABEL-BOTTOM LABEL) (LABEL-TOP LABEL)))
 	      (RETURN 0 0))))
+
+(DEFMETHOD (LABEL-MIXIN :AFTER :CHANGE-OF-DEFAULT-FONT) (OLD-FONT NEW-FONT)
+  (COND ((AND LABEL (EQ (LABEL-FONT LABEL) OLD-FONT))
+	 (SETF (LABEL-FONT LABEL) NEW-FONT)
+	 (FUNCALL-SELF ':SET-LABEL LABEL))))
 
 (DEFFLAVOR DELAYED-REDISPLAY-LABEL-MIXIN ((LABEL-NEEDS-UPDATING NIL)) ()
   (:INCLUDED-FLAVORS LABEL-MIXIN)
@@ -967,7 +1036,7 @@ If the label is specified only as a string or defaults to the name of the window
 will be at the top of the window."))
 
 (DEFMETHOD (TOP-LABEL-MIXIN :PARSE-LABEL-SPEC) (SPEC LM TM RM BM)
-  (LABEL-MIXIN-PARSE-LABEL-SPEC-METHOD ':PARSE-LABEL-SPEC SPEC LM TM RM BM T))
+  (FUNCALL #'(:METHOD LABEL-MIXIN :PARSE-LABEL-SPEC) ':PARSE-LABEL-SPEC SPEC LM TM RM BM T))
 
 (DEFFLAVOR TOP-BOX-LABEL-MIXIN () (LABEL-MIXIN)
   (:DOCUMENTATION :MIXIN "Label at the top, with a line underneath
@@ -976,7 +1045,8 @@ When combined with BORDERS-MIXIN, the label will be surrounded by a box."))
 
 (DEFMETHOD (TOP-BOX-LABEL-MIXIN :PARSE-LABEL-SPEC) (SPEC LM TM RM BM)
   (MULTIPLE-VALUE (SPEC LM TM RM BM)
-    (LABEL-MIXIN-PARSE-LABEL-SPEC-METHOD ':PARSE-LABEL-SPEC SPEC LM TM RM BM T))
+    (FUNCALL #'(:METHOD LABEL-MIXIN :PARSE-LABEL-SPEC) ':PARSE-LABEL-SPEC
+	     SPEC LM TM RM BM T))
   (AND SPEC (SETQ TM (1+ TM)))
   (PROG () (RETURN SPEC LM TM RM BM)))
 
@@ -984,6 +1054,22 @@ When combined with BORDERS-MIXIN, the label will be surrounded by a box."))
   SPEC TOP
   (SHEET-FORCE-ACCESS (SELF)
     (%DRAW-RECTANGLE (- RIGHT LEFT) 1 LEFT (1- BOTTOM) CHAR-ALUF SELF)))
+
+(DEFFLAVOR BOTTOM-BOX-LABEL-MIXIN () (LABEL-MIXIN)
+  (:DOCUMENTATION :MIXIN "Label at the bottom, with a line above.
+If the label is a string or defaults to the name, it is at the bottom.
+When combined with BORDERS-MIXIN, the label will be surrounded by a box."))
+
+(DEFMETHOD (BOTTOM-BOX-LABEL-MIXIN :PARSE-LABEL-SPEC) (SPEC LM TM RM BM)
+  (MULTIPLE-VALUE (SPEC LM TM RM BM)
+    (FUNCALL #'(:METHOD LABEL-MIXIN :PARSE-LABEL-SPEC) ':PARSE-LABEL-SPEC SPEC LM TM RM BM))
+  (AND SPEC (SETQ BM (+ 2 BM)))
+  (PROG () (RETURN SPEC LM TM RM BM)))
+
+(DEFMETHOD (BOTTOM-BOX-LABEL-MIXIN :AFTER :DRAW-LABEL) (SPEC LEFT TOP RIGHT BOTTOM)
+  SPEC BOTTOM
+  (SHEET-FORCE-ACCESS (SELF)
+    (%DRAW-RECTANGLE (- RIGHT LEFT) 1 LEFT (1- TOP) CHAR-ALUF SELF)))
 
 ;;; Flavor that allows you to change the name of the window, and 
 ;;; if the label is the same as the name, changes the label, too.
@@ -1043,7 +1129,7 @@ superior.   Creates one if none is available."
 	     (AND (EQ (FUNCALL I ':LISP-LISTENER-P) ':IDLE)
 		  (EQUAL FULL-SCREEN (MULTIPLE-VALUE-LIST (FUNCALL I ':SIZE)))
 		  (RETURN I))))
-  (OR LL (WINDOW-CREATE 'LISP-LISTENER ':SUPERIOR SUPERIOR)))
+  (OR LL (MAKE-WINDOW 'LISP-LISTENER ':SUPERIOR SUPERIOR)))
 
 (DEFFLAVOR TEMPORARY-WINDOW-MIXIN () ()
   (:INCLUDED-FLAVORS ESSENTIAL-WINDOW)
@@ -1072,7 +1158,7 @@ behave appropriately."))
       (AND (SI:FLAVOR-ALLOWS-INIT-KEYWORD-P NEW-TYPE ':PROCESS)
 	   (GET-HANDLER-FOR WINDOW ':PROCESS)
 	   (PUTPROP INIT-PLIST (FUNCALL WINDOW ':PROCESS) ':PROCESS))
-      (SETQ NEW-WINDOW (LEXPR-FUNCALL #'WINDOW-CREATE NEW-TYPE (CAR INIT-PLIST)))
+      (SETQ NEW-WINDOW (LEXPR-FUNCALL #'MAKE-WINDOW NEW-TYPE (CAR INIT-PLIST)))
       (CHANGE-IN-PREVIOUSLY-SELECTED-WINDOWS WINDOW NEW-WINDOW)
       (FUNCALL WINDOW ':DEACTIVATE)
       (SCREEN-CONFIGURATION-HAS-CHANGED WINDOW)
@@ -1157,19 +1243,36 @@ ok for the PROCESS to be NIL even when this flavor is included."))
 (DEFMETHOD (PROCESS-MIXIN :AFTER :INIT) (IGNORE)
   (AND (LISTP PROCESS)
        (LET ((PRESET PROCESS))
-	 (SETQ PROCESS (LEXPR-FUNCALL #'PROCESS-CREATE NAME (CDR PRESET)))
+	 (SETQ PROCESS (LEXPR-FUNCALL #'MAKE-PROCESS NAME (CDR PRESET)))
 	 (PROCESS-PRESET PROCESS (CAR PRESET) SELF))))
 
+;;; *** This is a horrible crock.  If the "program system" is ever implemented,
+;;; *** this should be flushed and replaced by the concept that selecting a program
+;;; *** does something appropriate to its processes.
 ;;; I dont know if this is really the right thing
 (DEFMETHOD (PROCESS-MIXIN :BEFORE :EXPOSE) MAYBE-RESET-PROCESS)
 (DEFMETHOD (PROCESS-MIXIN :BEFORE :SELECT) MAYBE-RESET-PROCESS)
 (DECLARE-FLAVOR-INSTANCE-VARIABLES (PROCESS-MIXIN)
-(DEFUN MAYBE-RESET-PROCESS (&REST IGNORE)
-  (COND ((AND PROCESS (= (%DATA-TYPE PROCESS) DTP-INSTANCE)
-	      (EQ (PROCESS-WAIT-FUNCTION PROCESS) #'FALSE))
-	 ;; Reset the process, then make sure it has a run reason
-	 (FUNCALL PROCESS ':RESET)))
-  (AND PROCESS (FUNCALL PROCESS ':RUN-REASON SELF))))
+(DEFUN MAYBE-RESET-PROCESS (MESSAGE &REST IGNORE)
+  (COND ((OR (EQ MESSAGE ':SELECT)
+	     (LOOP FOR SUP = SUPERIOR THEN (SHEET-SUPERIOR SUP) UNTIL (NULL SUP)
+		   ALWAYS (SHEET-EXPOSED-P SUP)))
+	 ;; Only touch the process if the window is going to become visible.  This
+	 ;; makes many of the processes in the initial cold-load not have run reasons
+	 ;; until you first select their window.  This makes booting faster (pages less).
+	 ;; Also this is necessary to make the editor work:
+	 ;; What was happening was that when the editor created its first
+	 ;; pane and exposed it within its deactivated frame, the editor's process was
+	 ;; being prematurely started up when it didn't even have all its instance
+	 ;; variables yet, never mind enough editor environment set up.  The editor
+	 ;; process would thus immediately get an error, which would later be reset
+	 ;; asynchronously, leaving a second-level error handler around forever.
+	 (COND ((TYPEP PROCESS 'SI:PROCESS)
+		;; If we really have a process (not just NIL or something),
+		;; Reset the process if it is flushed, then make sure it has a run reason.
+		(IF (EQ (PROCESS-WAIT-FUNCTION PROCESS) #'FALSE)
+		    (FUNCALL PROCESS ':RESET))
+		(FUNCALL PROCESS ':RUN-REASON SELF)))))))
 
 ;Don't kill the process until all methods
 ;and wrappers have run first.  This is because we might be
@@ -1177,18 +1280,25 @@ ok for the PROCESS to be NIL even when this flavor is included."))
 ;and we don't want to go away before finishing.
 (DEFWRAPPER (PROCESS-MIXIN :KILL) (() . BODY)
   `(PROGN ,@BODY
-	  (AND PROCESS (FUNCALL PROCESS ':KILL))))
+	  (AND PROCESS
+	       (FUNCALL PROCESS ':KILL))))
 
-(DEFFLAVOR LISTENER-MIXIN () (PROCESS-MIXIN)
+(DEFFLAVOR LISTENER-MIXIN-INTERNAL () (PROCESS-MIXIN)
   (:DOCUMENTATION :SPECIAL-PURPOSE "An actual LISP window
-Includes a process that will run the lisp top level read-eval-print loop."))
+Includes a process that will run the lisp top level read-eval-print loop.
+Use this rather than LISTENER-MIXIN when you want to be invisible to the SYSTEM L key."))
 
-(DEFMETHOD (LISTENER-MIXIN :BEFORE :INIT) (IGNORE)
+(DEFMETHOD (LISTENER-MIXIN-INTERNAL :BEFORE :INIT) (IGNORE)
   (OR PROCESS (SETQ PROCESS '(SI:LISP-TOP-LEVEL1 :REGULAR-PDL-SIZE 40000
 						 :SPECIAL-PDL-SIZE 4000))))
 
+(DEFFLAVOR LISTENER-MIXIN () (LISTENER-MIXIN-INTERNAL)
+  (:DOCUMENTATION :SPECIAL-PURPOSE "An actual LISP window
+Includes a process that will run the lisp top level read-eval-print loop.
+Use this when you want to be visible to the SYSTEM L key."))
 
-(DEFFLAVOR LISP-INTERACTOR () (NOTIFICATION-MIXIN LISTENER-MIXIN WINDOW)
+
+(DEFFLAVOR LISP-INTERACTOR () (NOTIFICATION-MIXIN LISTENER-MIXIN-INTERNAL WINDOW)
   (:DEFAULT-INIT-PLIST :SAVE-BITS T)
   (:DOCUMENTATION :COMBINATION "LISP window, but not LISP-LISTENER-P"))
 
@@ -1232,55 +1342,158 @@ disturb things underneath."))
 (DEFFLAVOR TRUNCATING-POP-UP-TEXT-WINDOW () (TEMPORARY-WINDOW-MIXIN TRUNCATING-WINDOW)
   (:DOCUMENTATION :COMBINATION "A pop up window what truncates lines"))
 
-;;; Some notification stuff
-(DEFFLAVOR NOTIFICATION-MIXIN () ()
-  (:DOCUMENTATION :MIXIN "Prints :NOTIFY messages on itself
-Windows such as a lisp-listener which can easily accomodate unsolicted typeout in a
-more or less random place since they generally have the users attention at the end
-should include this to print notification messages there."))
+(DEFFLAVOR RESET-ON-OUTPUT-HOLD-FLAG-MIXIN () ()
+  (:DEFAULT-INIT-PLIST :DEEXPOSED-TYPEOUT-ACTION '(:RESET-ON-OUTPUT-HOLD-FLAG)))
 
-(DEFMETHOD (NOTIFICATION-MIXIN :NOTIFY-STREAM) (&OPTIONAL IGNORE)
-  "Return a stream useable for notifing the user about some sort of condition.  Default
-is to use the window itself.  Some things, such as the editor, may wish to shadow this."
-  SELF)
+(DEFMETHOD (RESET-ON-OUTPUT-HOLD-FLAG-MIXIN :RESET-ON-OUTPUT-HOLD-FLAG) ()
+  (FUNCALL CURRENT-PROCESS ':RESET ':ALWAYS))
+
+(DEFFLAVOR TRUNCATING-POP-UP-TEXT-WINDOW-WITH-RESET ()
+	   (RESET-ON-OUTPUT-HOLD-FLAG-MIXIN TRUNCATING-POP-UP-TEXT-WINDOW))
+
+;;; This mixin is useful for those windows that are created during the world-load.
+;;; It is disconcerting when you suddenly see them appearing after you reshape
+;;; some window.  This mixin causes them to be invisible and immune to autoexposure.
+;;; They don't appear on the screen until you explicitly ask for them.  However, they
+;;; are still active and appear on the Select menu.
+(DEFFLAVOR INITIALLY-INVISIBLE-MIXIN () ()
+  (:DEFAULT-INIT-PLIST :PRIORITY -2))
+
+(DEFMETHOD (INITIALLY-INVISIBLE-MIXIN :BEFORE :EXPOSE) (&REST IGNORE)
+  (FUNCALL-SELF ':SET-PRIORITY NIL))
+
+
+;;; Some notification stuff
+
+(DEFFLAVOR NOTIFICATION-MIXIN () ()
+  (:REQUIRED-METHODS :PROCESS)
+  (:INCLUDED-FLAVORS STREAM-MIXIN ESSENTIAL-WINDOW)
+  (:DOCUMENTATION :MIXIN "Prints notifications on itself when selected.
+A window which can easily accomodate unsolicited typeout, such as a Lisp listener,
+uses this mixin to cause notifications to be printed on it when it is selected.
+The user's attention is assumed to be at the cursor of the selected window.
+This mixin also interacts with the rubout-handler of STREAM-MIXIN."))
+
+;;; Note: this does not try to do anything smart with the prompt, because doing
+;;; that right requires resolving some hairy issues which simply are not worth it.
+(DEFMETHOD (NOTIFICATION-MIXIN :PRINT-NOTIFICATION) (TIME STRING WINDOW-OF-INTEREST)
+  WINDOW-OF-INTEREST ;ignored
+  (LET ((RUBOUT-X NIL) (RUBOUT-Y NIL)	;Cursorpos of start of current rubout-handler input
+	PROCESS SG)
+    (LOCK-SHEET (SELF)
+      (WITHOUT-INTERRUPTS
+	(AND (SETQ PROCESS (FUNCALL-SELF ':PROCESS))
+	     (SETQ SG (FUNCALL PROCESS ':STACK-GROUP))
+	     (SYMEVAL-IN-STACK-GROUP 'RUBOUT-HANDLER-INSIDE SG)
+	     (SETQ RUBOUT-X (SYMEVAL-IN-STACK-GROUP 'RUBOUT-HANDLER-STARTING-X SG)
+		   RUBOUT-Y (SYMEVAL-IN-STACK-GROUP 'RUBOUT-HANDLER-STARTING-Y SG))))
+      ;; If the process is in the rubout-handler, back up over the echoed input and erase it.
+      (COND (RUBOUT-X (FUNCALL-SELF ':SET-CURSORPOS RUBOUT-X RUBOUT-Y)
+		      (FUNCALL-SELF ':CLEAR-EOL)))
+      (FUNCALL-SELF ':FRESH-LINE)
+      (FUNCALL-SELF ':BEEP)
+      (FUNCALL-SELF ':TYO #/[)
+      (TIME:PRINT-BRIEF-UNIVERSAL-TIME TIME SELF)
+      (FUNCALL-SELF ':TYO #\SP)
+      (FUNCALL-SELF ':STRING-OUT STRING)
+      (FUNCALL-SELF ':TYO #/])
+      (FUNCALL-SELF ':TYO #\CR)
+      ;; Reprint rubout-handler buffer if necessary, and change the rubout-handler's
+      ;; starting cursorpos
+      (COND (RUBOUT-X (MULTIPLE-VALUE-BIND (X Y) (FUNCALL-SELF ':READ-CURSORPOS)
+			(WITHOUT-INTERRUPTS
+			  (EH:REBIND-IN-STACK-GROUP 'RUBOUT-HANDLER-STARTING-X X SG)
+			  (EH:REBIND-IN-STACK-GROUP 'RUBOUT-HANDLER-STARTING-Y Y SG))
+			(FUNCALL-SELF ':STRING-OUT RUBOUT-HANDLER-BUFFER)))))))
 
 (DEFFLAVOR POP-UP-NOTIFICATION-MIXIN () ()
   (:INCLUDED-FLAVORS ESSENTIAL-WINDOW)
-  (:DOCUMENTATION :MIXIN "Pops up a window for :NOTIFY messages
+  (:DOCUMENTATION :MIXIN "Pops up a window for notifications.
 This is the default sort of notify, it pops up a small window with the notify message
-in it.  See the basic-notification mixin for an alternative behaviour."))
+in it.  See the NOTIFICATION-MIXIN for an alternative behaviour."))
 
-(DEFMETHOD (POP-UP-NOTIFICATION-MIXIN :NOTIFY-STREAM) (&OPTIONAL WINDOW-OF-INTEREST &AUX NOTE-WINDOW)
-  (SETQ NOTE-WINDOW (ALLOCATE-RESOURCE 'POP-UP-NOTIFICATION-WINDOW-RESOURCE))
-  (FUNCALL NOTE-WINDOW ':SET-SUPERIOR SUPERIOR)
-  (FUNCALL NOTE-WINDOW ':SET-WINDOW-OF-INTEREST WINDOW-OF-INTEREST)
-  (FUNCALL NOTE-WINDOW ':SET-EDGES
-	   X-OFFSET Y-OFFSET
-	   (+ X-OFFSET WIDTH) (+ Y-OFFSET (MIN HEIGHT (* (SHEET-LINE-HEIGHT NOTE-WINDOW) 5))))
-  (FUNCALL NOTE-WINDOW ':SET-LABEL (STRING-APPEND "Notification: "
-						  (COND ((GET-HANDLER-FOR SELF ':LABEL)
-							 (LET ((LABEL (FUNCALL-SELF ':LABEL)))
-							   (IF (STRINGP LABEL)
-							       LABEL
-							       (LABEL-STRING LABEL))))
-							(T NAME))))
-  (IF (EQ SELF SELECTED-WINDOW)
-      (FUNCALL NOTE-WINDOW ':SELECT)
-      (FUNCALL NOTE-WINDOW ':EXPOSE))
-  NOTE-WINDOW)
+(DEFWINDOW-RESOURCE POP-UP-NOTIFICATION-WINDOW ()
+	:MAKE-WINDOW (POP-UP-NOTIFICATION-WINDOW)
+	:REUSABLE-WHEN :DEACTIVATED
+	:INITIAL-COPIES 0)	;No initial copies, would bomb during system loading
 
+(DEFMETHOD (POP-UP-NOTIFICATION-MIXIN :PRINT-NOTIFICATION) (TIME STRING WINDOW-OF-INTEREST)
+  ;; Now we must spawn a process and return.  See comments in CAREFUL-NOTIFY.
+  (PROCESS-RUN-FUNCTION "Notify"
+    #'(LAMBDA (TIME STRING WINDOW-OF-INTEREST SLF START-TIME NOTE-WINDOW)
+	(FUNCALL NOTE-WINDOW ':SET-WINDOW-OF-INTEREST WINDOW-OF-INTEREST)
+		;Above sets up for mouse click.  Caller has already set up for Terminal-0-S
+	(FUNCALL NOTE-WINDOW ':SET-LABEL (FORMAT NIL "Notification: ~A" SLF))
+	(MULTIPLE-VALUE-BIND (X Y) (SHEET-CALCULATE-OFFSETS SLF (SHEET-SUPERIOR NOTE-WINDOW))
+	  (FUNCALL NOTE-WINDOW ':CENTER-AROUND (+ X (// (SHEET-WIDTH SLF) 2))
+					       (+ Y (// (SHEET-HEIGHT SLF) 2))))
+	;If window gets deexposed while we're typing out, typically because
+	;user types Terminal-0-S before we finish cranking out our message, punt.
+	(*CATCH ':DEEXPOSE
+	  (CONDITION-BIND ((OUTPUT-ON-DEEXPOSED-SHEET
+			     #'(LAMBDA (&REST IGNORE) (*THROW  ':DEEXPOSE NIL))))
+	    (LET ((OSW SELECTED-WINDOW))		;Almost certainly SLF
+	      (FUNCALL NOTE-WINDOW ':SELECT)	;Exposes blank with homed cursor
+	      (TIME:PRINT-BRIEF-UNIVERSAL-TIME TIME NOTE-WINDOW)
+	      (FUNCALL NOTE-WINDOW ':TYO #\SP)
+	      (FUNCALL NOTE-WINDOW ':STRING-OUT STRING)
+	      (FUNCALL NOTE-WINDOW ':TYO #\CR)
+	      (FINISH-UNEXPECTED-SELECT START-TIME OSW)) ;By now user has seen what's up
+	    (FUNCALL NOTE-WINDOW ':CLEAR-INPUT)	;Flush typeahead before inviting typein
+	    (IF WINDOW-OF-INTEREST
+		(FORMAT NOTE-WINDOW
+			"Select ~A by typing Terminal-0-S or by clicking the mouse here,~@
+			 or type any character to get rid of this notification."
+			WINDOW-OF-INTEREST)
+		(FUNCALL NOTE-WINDOW ':STRING-OUT
+			 "Type any character to get rid of this notification."))
+	    (FUNCALL NOTE-WINDOW ':TYI)))
+	(FUNCALL NOTE-WINDOW ':DEACTIVATE))
+    TIME STRING WINDOW-OF-INTEREST SELF
+    (START-UNEXPECTED-SELECT)
+    (ALLOCATE-RESOURCE 'POP-UP-NOTIFICATION-WINDOW (SHEET-GET-SCREEN SELF))))
+
+;;; These two functions are for unexpected pop-up selectable windows
+;;; They give the user a chance to get his typing straightened out
+
+(DEFVAR UNEXPECTED-SELECT-DELAY 180.)	;Give user 3 seconds to notice beep and stop typing
+
+;Beep, return time to be passed back in to FINISH-UNEXPECTED-SELECT
+(DEFUN START-UNEXPECTED-SELECT ()
+  (BEEP)
+  (TIME))
+
+;Sleep until enough time has passed, then snarf typeahead into old-selected-window
+;which is no longer selected-window because by now the new thing has been exposed
+(DEFUN FINISH-UNEXPECTED-SELECT (START-TIME OLD-SELECTED-WINDOW &AUX BUF)
+  (PROCESS-WAIT "Sleep" #'(LAMBDA (START-TIME) (> (TIME-DIFFERENCE (TIME) START-TIME)
+						  UNEXPECTED-SELECT-DELAY))
+			START-TIME)
+  (WITHOUT-INTERRUPTS
+    (AND OLD-SELECTED-WINDOW
+	 (SETQ BUF (FUNCALL OLD-SELECTED-WINDOW ':IO-BUFFER))
+	 (KBD-SNARF-INPUT BUF))))
 
 (DEFFLAVOR POP-UP-NOTIFICATION-WINDOW
-  ((WINDOW-OF-INTEREST NIL)
-   (RECURSION NIL))
+  ((WINDOW-OF-INTEREST NIL))
   (POP-UP-TEXT-WINDOW)
   (:SETTABLE-INSTANCE-VARIABLES WINDOW-OF-INTEREST)
   (:GETTABLE-INSTANCE-VARIABLES WINDOW-OF-INTEREST)
-  (:DOCUMENTATION :SPECIAL-PURPOSE "Pops down and selects window in error when clicked on
+  (:DEFAULT-INIT-PLIST :SAVE-BITS NIL  ;Thus will not come up with old garbage contents
+		       :CHARACTER-HEIGHT 5	;5 lines.  Width is full width of sup.
+		       :DEEXPOSED-TYPEOUT-ACTION ':ERROR)
+  (:DOCUMENTATION :SPECIAL-PURPOSE "Pops down and selects window of interest when clicked on
 One of these is created when a notify message is sent to a normal window, it pops up, prints
 the notification, and when it is selected with the mouse, pops back down and exposes the
 window that got the error, which for background processes will be a slightly larger
 pop-up type window."))
+
+;;; When clicked on, always send a :MOUSE-SELECT message, even if already selected
+;;; so that WINDOW-OF-INTEREST will get selected.
+(DEFMETHOD (POP-UP-NOTIFICATION-WINDOW :MOUSE-CLICK) (BUTTON IGNORE IGNORE)
+  (COND ((= BUTTON #\MOUSE-1-1)
+	 (MOUSE-SELECT SELF)
+	 T)))
 
 (DEFMETHOD (POP-UP-NOTIFICATION-WINDOW :MOUSE-SELECT) (&REST ARGS)
   "If selected with the mouse, then deexpose us and really select the guy that we are
@@ -1289,27 +1502,29 @@ notifying about."
   (AND WINDOW-OF-INTEREST
        (LEXPR-FUNCALL WINDOW-OF-INTEREST ':MOUSE-SELECT ARGS)))
 
+;This wakes up the process which is sitting around waiting for the user
+;to type something to flush the notification window.  It will deactivate us.
 (DEFMETHOD (POP-UP-NOTIFICATION-WINDOW :AFTER :DEEXPOSE) (&REST IGNORE)
-  (WITHOUT-INTERRUPTS
-    (OR (MEMQ SELF POP-UP-NOTIFICATION-WINDOW-RESOURCE)
-	(DEALLOCATE-RESOURCE 'POP-UP-NOTIFICATION-WINDOW-RESOURCE SELF)))
-  (OR RECURSION
-      (LET-GLOBALLY ((RECURSION T))
-	(FUNCALL-SELF ':DEACTIVATE))))
+  (FUNCALL-SELF ':FORCE-KBD-INPUT ':DEEXPOSE))
 
-(DEFMETHOD (POP-UP-NOTIFICATION-WINDOW :NOTIFY-STREAM) (&REST IGNORE) SELF)
-
-(DEFRESOURCE (POP-UP-NOTIFICATION-WINDOW-RESOURCE T)
-  (WINDOW-CREATE 'POP-UP-NOTIFICATION-WINDOW
-		 ':HEIGHT (* (SHEET-LINE-HEIGHT DEFAULT-SCREEN) 5)))
-
-
+;While a notification window is up, additional notifications are printed on it.
+;I guess I don't need to reprint the self-documentation.
+(DEFMETHOD (POP-UP-NOTIFICATION-WINDOW :PRINT-NOTIFICATION) (TIME STRING WINDOW-OF-INTEREST)
+  WINDOW-OF-INTEREST ;ignored
+  (FUNCALL-SELF ':FRESH-LINE)
+  (FUNCALL-SELF ':BEEP)
+  (TIME:PRINT-BRIEF-UNIVERSAL-TIME TIME SELF)
+  (FUNCALL-SELF ':TYO #\SP)
+  (FUNCALL-SELF ':STRING-OUT STRING)
+  (FUNCALL-SELF ':TYO #\CR))
+
 ;;; Resource to supply reasonably sized bit arrays.  This is especially useful
 ;;; for window-bind type windows that don't want to go through the overhead of
 ;;; creating a new bit array every time they get invoked
-(DEFRESOURCE (BIT-ARRAYS T)
-  (MAKE-ARRAY NIL 'ART-1B
-	      (LIST (SHEET-WIDTH DEFAULT-SCREEN) (SHEET-HEIGHT DEFAULT-SCREEN))))
+(DEFRESOURCE BIT-ARRAYS (&OPTIONAL (WIDTH (SHEET-WIDTH DEFAULT-SCREEN))
+				   (HEIGHT (SHEET-HEIGHT DEFAULT-SCREEN)))
+  :CONSTRUCTOR (MAKE-ARRAY (LIST WIDTH HEIGHT) ':TYPE 'ART-1B)
+  :INITIAL-COPIES 0)
 
 (DEFUN AWAIT-WINDOW-EXPOSURE ()
   "To be called by functions like ED.

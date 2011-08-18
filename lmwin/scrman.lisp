@@ -104,9 +104,10 @@ is not also in RPRIME.  The set is garunteed to be canonical."
 	 SET)))
 
 ;;; The real screen manager:
-(DEFRESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE T)
-	     (MAKE-ARRAY NIL 'ART-1B (LIST (SHEET-WIDTH DEFAULT-SCREEN)
-					   (SHEET-HEIGHT DEFAULT-SCREEN))))
+(DEFRESOURCE SCREEN-MANAGER-BIT-ARRAY-RESOURCE ()
+   :CONSTRUCTOR (MAKE-ARRAY (LIST (SHEET-WIDTH DEFAULT-SCREEN) (SHEET-HEIGHT DEFAULT-SCREEN))
+			    ':TYPE 'ART-1B)
+   :INITIAL-COPIES 0)
 
 (DEFUN SCREEN-MANAGE-SHEET (SHEET &OPTIONAL BOUND-RECTANGLES ARRAY-TO-DRAW-ON (X 0) (Y 0) ALU
 				  &AUX RECTANGLE-LIST NOT-WHOLE)
@@ -265,7 +266,7 @@ might have bit save arrays and get screen managed, such as LISP-LISTENERS with i
 	(T
 	 ;; If no saved bits, Refresh into a temporary array and use that as the bits
 	 (UNWIND-PROTECT
-	   (WITH-RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE ARRAY)
+	   (USING-RESOURCE (ARRAY SCREEN-MANAGER-BIT-ARRAY-RESOURCE)
 	     (SETQ SCREEN-ARRAY ARRAY)
 	     (SI:PAGE-IN-ARRAY ARRAY NIL (LIST WIDTH HEIGHT))
 	     (SHEET-FORCE-ACCESS (SELF T)
@@ -305,8 +306,15 @@ might have bit save arrays and get screen managed, such as LISP-LISTENERS with i
 
 ;;; Deexposed sheets are defaultly "visible" -- they will show through if they can
 ;;; and if their priority allows them to
+;;; If you redefine this to return T even if there is no bit-array, the right thing
+;;; will happen (the window will be refreshed into a temporary array and the
+;;; results of that will show through).
+(DEFWRAPPER (SHEET :SCREEN-MANAGE-DEEXPOSED-VISIBILITY) (IGNORE . BODY)
+  `(AND (OR (NULL PRIORITY) ( PRIORITY 0))
+	(PROGN . ,BODY)))
+
 (DEFMETHOD (SHEET :SCREEN-MANAGE-DEEXPOSED-VISIBILITY) ()
-  (AND BIT-ARRAY (OR (NULL PRIORITY) ( PRIORITY 0))))
+  (NOT (NULL BIT-ARRAY)))
 
 (DEFMETHOD (SHEET :SCREEN-MANAGE) (&REST ARGS)
   "This performs screen management on a sheet.  This always works, even if screen management
@@ -336,14 +344,22 @@ each time.  It is expected that autoexposure gets run explicitly in this case."
   RECTS)
 
 (DEFMETHOD (SHEET :SCREEN-MANAGE-RESTORE-AREA) (RECTS ARRAY X Y ALU)
-  "Default way to restore bits."
-  (SCREEN-MANAGE-RESTORE-AREA RECTS ARRAY X Y ALU T))
+  "Default way to restore bits.
+If there is a bit array, restore from there.  If there is no bit array, simply
+clear the area, unless :SCREEN-MANAGE-DEEXPOSED-VISIBILITY returns T in which
+case refresh the bits into a temporary array and restore from that"
+  (SCREEN-MANAGE-RESTORE-AREA RECTS ARRAY X Y ALU
+			      (NOT (FUNCALL-SELF ':SCREEN-MANAGE-DEEXPOSED-VISIBILITY))))
 
 
 (DEFFLAVOR NO-SCREEN-MANAGING-MIXIN () ())
 
 (DEFMETHOD (NO-SCREEN-MANAGING-MIXIN :SCREEN-MANAGE) (&REST IGNORE) NIL)
 (DEFMETHOD (NO-SCREEN-MANAGING-MIXIN :SCREEN-MANAGE-UNCOVERED-AREA) (&REST IGNORE) NIL)
+
+(DEFFLAVOR SHOW-PARTIALLY-VISIBLE-MIXIN () ())
+
+(DEFMETHOD (SHOW-PARTIALLY-VISIBLE-MIXIN :SCREEN-MANAGE-DEEXPOSED-VISIBILITY) () T)
 
 ;;; Graying stuff
 
@@ -417,7 +433,7 @@ each time.  It is expected that autoexposure gets run explicitly in this case."
 
 (DEFWRAPPER (GRAY-DEEXPOSED-RIGHT-MIXIN :SCREEN-MANAGE-RESTORE-AREA)
 	        ((RECTS ARRAY X Y ALU) . BODY)
-  `(WITH-RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE KLUDGE-ARRAY)
+  `(USING-RESOURCE (KLUDGE-ARRAY SCREEN-MANAGER-BIT-ARRAY-RESOURCE)
      (SI:PAGE-IN-ARRAY KLUDGE-ARRAY NIL (LIST WIDTH HEIGHT))
      ;; This is a kludge -- fudge the arguments to all methods inside
      (LET ((SI:.DAEMON-CALLER-ARGS. (LIST NIL (COPYLIST RECTS) KLUDGE-ARRAY
@@ -536,34 +552,22 @@ to (0, 0) on the sheet that the rectangle is on."
 	 (OR INHIBIT-SCREEN-MANAGEMENT
 	     (SCREEN-MANAGE-DEQUEUE-ENTRY E)))))
 
-(DEFUN SCREEN-MANAGE-DELAYING-SCREEN-MANAGEMENT-INTERNAL (DELAYED-ENTRIES
-							   &AUX (INHIBIT-SCHEDULING-FLAG T))
-  "Called if stuff got queued during a DELAYING-SCREEN-MANAGEMENT.  Add to queue,
-and if now at top level dequeue them all, but never wait for a lock."
-  (DOLIST (DE DELAYED-ENTRIES)
-    (SCREEN-MANAGE-QUEUE DE))
-  (AND SCREEN-MANAGER-TOP-LEVEL
-       ;; Only try to dequeue if not delaying anymore
-       (DO ((Q SCREEN-MANAGER-QUEUE))
-	   ((NULL Q))
-	 (COND ((SHEET-CAN-GET-LOCK (CAR (RECT-SOURCE (CAR Q))))
-		;; INHIBIT-SCHEDULING-FLAG can get turned off, munging the list we're DO'ing
-		;; over, however that can't cause anything worse than redundant redisplay.
-		(SCREEN-MANAGE-DEQUEUE-ENTRY (CAR Q) T)
-		(SETQ Q SCREEN-MANAGER-QUEUE))
-	       (T
-		(SETQ Q (CDR Q)))))))
+(DEFUN SCREEN-MANAGE-DELAYING-SCREEN-MANAGEMENT-INTERNAL (;&OPTIONAL OLD-STYLE
+							  &AUX (INHIBIT-SCHEDULING-FLAG T))
+  "Called if stuff got queued during a DELAYING-SCREEN-MANAGEMENT.
+If now at top level dequeue them all, but never wait for a lock."
+  (OR INHIBIT-SCREEN-MANAGEMENT
+      ;; Only try to dequeue if not delaying anymore
+      (SCREEN-MANAGE-DEQUEUE)))
 
 (DEFUN SCREEN-MANAGE-DEQUEUE (&AUX (INHIBIT-SCHEDULING-FLAG T))
   (DO ((Q SCREEN-MANAGER-QUEUE))
       ((NULL Q))
-    (COND ((SHEET-CAN-GET-LOCK (CAR (RECT-SOURCE (CAR Q))))
-	   ;; INHIBIT-SCHEDULING-FLAG can get turned off, munging the list we're DO'ing
-	   ;; over, however that can't cause anything worse than redundant redisplay.
-	   (SCREEN-MANAGE-DEQUEUE-ENTRY (CAR Q) T)
-	   (SETQ Q SCREEN-MANAGER-QUEUE))
-	  (T
-	   (SETQ Q (CDR Q))))))
+    (IF (SCREEN-MANAGE-DEQUEUE-ENTRY (CAR Q))
+	;; If the entry actually got dequeued, then interrupts were allowed and so the
+	;; queue might have gotten hacked.  Restart from the beginning.
+	(SETQ Q SCREEN-MANAGER-QUEUE)
+	(SETQ Q (CDR Q)))))
 
 ;The difference from the above is that this one will wait for a lock, rather than punting
 (DEFUN SCREEN-MANAGE-DEQUEUE-DELAYED-ENTRIES (&AUX (INHIBIT-SCHEDULING-FLAG T))
@@ -572,7 +576,9 @@ and if now at top level dequeue them all, but never wait for a lock."
     (SCREEN-MANAGE-DEQUEUE-ENTRY (CAR Q) T)))	;This reenables scheduling if it does anything
 
 (DEFUN SCREEN-MANAGE-DEQUEUE-ENTRY (ENTRY &OPTIONAL UNCOND &AUX ALL)
-  "Handle one entry from the screen manager's queue.  Interrupts must be bound and inhibit."
+  "Handle one entry from the screen manager's queue.  Interrupts must be bound and inhibit.
+Though it may turn off INHIBIT-SCHEDULING-FLAG, this routine will always return with
+it turned back on.  The code returns T if it actually dequeued the entry, else NIL."
   (COND ((OR UNCOND (SHEET-CAN-GET-LOCK (CAR (RECT-SOURCE ENTRY))))
 	 ;; May as well do all rectangles on this sheet together.  ALL gets a list of them.
 	 (SETQ SCREEN-MANAGER-QUEUE (DELQ ENTRY SCREEN-MANAGER-QUEUE)
@@ -596,7 +602,9 @@ and if now at top level dequeue them all, but never wait for a lock."
 	         (SETQ INHIBIT-SCHEDULING-FLAG NIL)
 		 (FUNCALL SHEET ':ORDER-INFERIORS)
 		 (FUNCALL SHEET ':SCREEN-MANAGE-AUTOEXPOSE-INFERIORS)))
-	   (SETQ INHIBIT-SCHEDULING-FLAG T)))))
+	   (SETQ INHIBIT-SCHEDULING-FLAG T)
+	   T))
+	(T NIL)))
 
 ;;; Note that this message does not mean automatically expose this sheet.
 ;;; It means consider the inferiors of this sheet for automatic exposing.
@@ -683,11 +691,13 @@ deexposed.  Should be called with the sheet locked."
     (AND SCREEN-MANAGE-UPDATE-PERMITTED-WINDOWS
 	 (WITHOUT-INTERRUPTS
 	   (DOLIST (S ALL-THE-SCREENS)
-	     (SCREEN-MANAGE-UPDATE-PERMITTED-WINDOWS S))))))
+	     (AND (SHEET-EXPOSED-P S)
+		  (SCREEN-MANAGE-UPDATE-PERMITTED-WINDOWS S)))))))
 
 (DEFUN SCREEN-MANAGE-UPDATE-PERMITTED-WINDOWS (SHEET &AUX (EXPSD-INFS
 							    (SHEET-EXPOSED-INFERIORS SHEET)))
   (DOLIST (I (SHEET-INFERIORS SHEET))
+    (SCREEN-MANAGE-UPDATE-PERMITTED-WINDOWS I)
     (COND ((AND (NOT (MEMQ I EXPSD-INFS))
 		( (OR (SHEET-PRIORITY I) 0) 0)
 		(EQ (SHEET-DEEXPOSED-TYPEOUT-ACTION I) ':PERMIT)
@@ -697,8 +707,5 @@ deexposed.  Should be called with the sheet locked."
 	   (SCREEN-CONFIGURATION-HAS-CHANGED I)))))
 
 (DEFVAR SCREEN-MANAGER-BACKGROUND-PROCESS
-	(PROCESS-RUN-FUNCTION "Screen Manager Background"
-			      'SCREEN-MANAGE-BACKGROUND-TOP-LEVEL))
-
-(ADD-INITIALIZATION "Screen Manager Background"
-		    '(<- SCREEN-MANAGER-BACKGROUND-PROCESS ':RESET))
+	(PROCESS-RUN-RESTARTABLE-FUNCTION "Screen Manager Background"
+					  'SCREEN-MANAGE-BACKGROUND-TOP-LEVEL))

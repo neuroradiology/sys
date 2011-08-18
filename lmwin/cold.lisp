@@ -12,11 +12,12 @@ TV:(PROGN 'COMPILE
 (DEFVAR DEFAULT-BACKGROUND-STREAM 'TV:BACKGROUND-STREAM)
 (DEFVAR WHO-LINE-RUN-LIGHT-LOC 51765)	;Where the run-light goes, in Xbus I/O space
 (DEFVAR KBD-LAST-ACTIVITY-TIME 0)	;Time user last typed a key or clicked mouse
-(DEFVAR ALU-SETA #.ALU-SETA)
-(DEFVAR ALU-XOR #.ALU-XOR)
-(DEFVAR ALU-ANDCA #.ALU-ANDCA)
-(DEFVAR ALU-IOR #.ALU-IOR)
-(DEFVAR ALU-SETZ #.ALU-SETZ)
+(DEFVAR ALU-SETA 5)	;Magic BOOLE numbers
+(DEFVAR ALU-XOR 6)
+(DEFVAR ALU-ANDCA 2)
+(DEFVAR ALU-IOR 7)
+(DEFVAR ALU-SETZ 0)
+(DEFVAR ALU-AND 1)
 );TV:
 
 ;;; Call this when the state of a process may have changed.
@@ -108,11 +109,11 @@ TV:
 	HEIGHT (GET PLIST ':HEIGHT)
 	BUFFER (GET PLIST ':BUFFER)
 	TV:CONTROL-ADDRESS (GET PLIST ':CONTROL-ADDRESS)
-	ARRAY (MAKE-ARRAY NIL 'ART-1B (LIST WIDTH HEIGHT) BUFFER)
+	ARRAY (MAKE-ARRAY (LIST WIDTH HEIGHT) ':TYPE 'ART-1B ':DISPLACED-TO BUFFER)
 	LOCATIONS-PER-LINE (// WIDTH 32.)
 	CHAR-WIDTH (FONT-CHAR-WIDTH FONT)
 	LINE-HEIGHT (+ 2 (FONT-CHAR-HEIGHT FONT))
-	RUBOUT-HANDLER-BUFFER (MAKE-ARRAY NIL ART-STRING 1000 NIL '(0 0))))
+	RUBOUT-HANDLER-BUFFER (MAKE-ARRAY 1000 ':TYPE ART-STRING ':LEADER-LIST '(0 0))))
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :READ-CURSORPOS) (&OPTIONAL (UNITS ':PIXEL)
 					       &AUX (X CURSOR-X) (Y CURSOR-Y))
@@ -136,70 +137,75 @@ TV:
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :HANDLE-EXCEPTIONS) ())
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :TYO) (CH)
-  (COND ((< CH 200)
-	 (LET ((CHAR-WIDTHS (FONT-CHAR-WIDTH-TABLE FONT))
-	       (FIT-ENTRY (FONT-INDEXING-TABLE FONT))
-	       (DELTA-X))
-	   (SETQ DELTA-X (IF CHAR-WIDTHS (AREF CHAR-WIDTHS CH) (FONT-CHAR-WIDTH FONT)))
-	   (AND (> (+ CURSOR-X DELTA-X) WIDTH)	;End of line exception
-		(FUNCALL-SELF ':TYO #\CR))
-	   (IF (NULL FIT-ENTRY)
-	       (%DRAW-CHAR FONT CH CURSOR-X CURSOR-Y TV:ALU-IOR SELF)
-	       (DO ((CH (AREF FIT-ENTRY CH) (1+ CH))
-		    (LIM (AREF FIT-ENTRY (1+ CH)))
-		    (XPOS CURSOR-X (+ XPOS (FONT-RASTER-WIDTH FONT))))
-		   ((= CH LIM))
-		 (%DRAW-CHAR FONT CH XPOS CURSOR-Y TV:ALU-IOR SELF)))
-	   (SETQ CURSOR-X (+ CURSOR-X DELTA-X))))
-	((= CH #\CR)
-	 (SETQ CURSOR-X 0
-	       CURSOR-Y (+ CURSOR-Y LINE-HEIGHT))
-	 (COND (( CURSOR-Y (- HEIGHT LINE-HEIGHT))	;End of page exception
-		(FUNCALL-SELF ':STRING-OUT "**MORE**")
-		(FUNCALL-SELF ':TYI)
-		(SETQ CURSOR-X 0)
-		(FUNCALL-SELF ':CLEAR-EOL)
-		(SETQ CURSOR-Y 0)))
-	 (FUNCALL-SELF ':CLEAR-EOL))
-	((= CH #\TAB)
-	 (DOTIMES (I (- 8 (\ (// CURSOR-X CHAR-WIDTH) 8)))
-	   (FUNCALL-SELF ':TYO #\SP)))
-	((AND (< CH 240) (BOUNDP 'FONTS:5X5))
-	 ;; This won't work in the initial cold-load environment, hopefully no one
-	 ;; will touch those keys then, but if they do we just type nothing.
-	 ;; This code is like SHEET-DISPLAY-LOSENGED-STRING
-	 (LET* ((CHNAME (GET-PNAME (CAR (RASSOC CH XR-SPECIAL-CHARACTER-NAMES))))
-		(CHWIDTH (+ (* (ARRAY-ACTIVE-LENGTH CHNAME) 6) 10.)))
-	   (AND (> (+ CURSOR-X CHWIDTH) WIDTH)	;Won't fit on line
-		(FUNCALL-SELF ':TYO #\CR))
-	   ;; Put the string then the box around it
-	   (LET ((X0 CURSOR-X)
-		 (Y0 (1+ CURSOR-Y))
-		 (X1 (+ CURSOR-X (1- CHWIDTH)))
-		 (Y1 (+ CURSOR-Y 9)))
-	     (DO ((X (+ X0 5) (+ X 6))
-		  (I 0 (1+ I))
-		  (N (ARRAY-ACTIVE-LENGTH CHNAME)))
-		 (( I N))
-	       (%DRAW-CHAR FONTS:5X5 (AREF CHNAME I) X (+ Y0 2) TV:ALU-IOR SELF))
-	     (%DRAW-RECTANGLE (- CHWIDTH 8) 1 (+ X0 4) Y0 TV:ALU-IOR SELF)
-	     (%DRAW-RECTANGLE (- CHWIDTH 8) 1 (+ X0 4) Y1 TV:ALU-IOR SELF)
-	     (%DRAW-LINE X0 (+ Y0 4) (+ X0 3) (1+ Y0) TV:ALU-IOR T SELF)
-	     (%DRAW-LINE (1+ X0) (+ Y0 5) (+ X0 3) (1- Y1) TV:ALU-IOR T SELF)
-	     (%DRAW-LINE X1 (+ Y0 4) (- X1 3) (1+ Y0) TV:ALU-IOR T SELF)
-	     (%DRAW-LINE (1- X1) (+ Y0 5) (- X1 3) (1- Y1) TV:ALU-IOR T SELF)
-	     (SETQ CURSOR-X (1+ X1))))))
-  CH)
+  (LET ((CURRENTLY-PREPARED-SHEET SELF))
+    (COND ((< CH 200)
+	   (LET ((CHAR-WIDTHS (FONT-CHAR-WIDTH-TABLE FONT))
+		 (FIT-ENTRY (FONT-INDEXING-TABLE FONT))
+		 (DELTA-X))
+	     (SETQ DELTA-X (IF CHAR-WIDTHS (AREF CHAR-WIDTHS CH) (FONT-CHAR-WIDTH FONT)))
+	     (AND (> (+ CURSOR-X DELTA-X) WIDTH)	;End of line exception
+		  (FUNCALL-SELF ':TYO #\CR))
+	     (IF (NULL FIT-ENTRY)
+		 (%DRAW-CHAR FONT CH CURSOR-X CURSOR-Y TV:ALU-IOR SELF)
+		 (DO ((CH (AREF FIT-ENTRY CH) (1+ CH))
+		      (LIM (AREF FIT-ENTRY (1+ CH)))
+		      (XPOS CURSOR-X (+ XPOS (FONT-RASTER-WIDTH FONT))))
+		     ((= CH LIM))
+		   (%DRAW-CHAR FONT CH XPOS CURSOR-Y TV:ALU-IOR SELF)))
+	     (SETQ CURSOR-X (+ CURSOR-X DELTA-X))))
+	  ((= CH #\CR)
+	   (SETQ CURSOR-X 0
+		 CURSOR-Y (+ CURSOR-Y LINE-HEIGHT))
+	   (COND (( CURSOR-Y (- HEIGHT LINE-HEIGHT))	;End of page exception
+		  (FUNCALL-SELF ':CLEAR-EOL)	;In case wholine is there
+		  (FUNCALL-SELF ':STRING-OUT "**MORE**")
+		  (FUNCALL-SELF ':TYI)
+		  (SETQ CURSOR-X 0)
+		  (FUNCALL-SELF ':CLEAR-EOL)
+		  (SETQ CURSOR-Y 0)))
+	   (FUNCALL-SELF ':CLEAR-EOL))
+	  ((= CH #\TAB)
+	   (DOTIMES (I (- 8 (\ (// CURSOR-X CHAR-WIDTH) 8)))
+	     (FUNCALL-SELF ':TYO #\SP)))
+	  ((AND (< CH 240) (BOUNDP 'FONTS:5X5))
+	   ;; This won't work in the initial cold-load environment, hopefully no one
+	   ;; will touch those keys then, but if they do we just type nothing.
+	   ;; This code is like SHEET-DISPLAY-LOSENGED-STRING
+	   (LET* ((CHNAME (GET-PNAME (CAR (RASSOC CH XR-SPECIAL-CHARACTER-NAMES))))
+		  (CHWIDTH (+ (* (ARRAY-ACTIVE-LENGTH CHNAME) 6) 10.)))
+	     (AND (> (+ CURSOR-X CHWIDTH) WIDTH)	;Won't fit on line
+		  (FUNCALL-SELF ':TYO #\CR))
+	     ;; Put the string then the box around it
+	     (LET ((X0 CURSOR-X)
+		   (Y0 (1+ CURSOR-Y))
+		   (X1 (+ CURSOR-X (1- CHWIDTH)))
+		   (Y1 (+ CURSOR-Y 9)))
+	       (DO ((X (+ X0 5) (+ X 6))
+		    (I 0 (1+ I))
+		    (N (ARRAY-ACTIVE-LENGTH CHNAME)))
+		   (( I N))
+		 (%DRAW-CHAR FONTS:5X5 (AREF CHNAME I) X (+ Y0 2) TV:ALU-IOR SELF))
+	       (%DRAW-RECTANGLE (- CHWIDTH 8) 1 (+ X0 4) Y0 TV:ALU-IOR SELF)
+	       (%DRAW-RECTANGLE (- CHWIDTH 8) 1 (+ X0 4) Y1 TV:ALU-IOR SELF)
+	       (%DRAW-LINE X0 (+ Y0 4) (+ X0 3) (1+ Y0) TV:ALU-IOR T SELF)
+	       (%DRAW-LINE (1+ X0) (+ Y0 5) (+ X0 3) (1- Y1) TV:ALU-IOR T SELF)
+	       (%DRAW-LINE X1 (+ Y0 4) (- X1 3) (1+ Y0) TV:ALU-IOR T SELF)
+	       (%DRAW-LINE (1- X1) (+ Y0 5) (- X1 3) (1- Y1) TV:ALU-IOR T SELF)
+	       (SETQ CURSOR-X (1+ X1))))))
+    CH))
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :CLEAR-EOL) ()
-  (%DRAW-RECTANGLE (- WIDTH CURSOR-X) LINE-HEIGHT CURSOR-X CURSOR-Y TV:ALU-ANDCA SELF))
+  (LET ((CURRENTLY-PREPARED-SHEET SELF))
+    (%DRAW-RECTANGLE (- WIDTH CURSOR-X) LINE-HEIGHT CURSOR-X CURSOR-Y TV:ALU-ANDCA SELF)))
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :CLEAR-SCREEN) ()
   (SETQ CURSOR-X 0 CURSOR-Y 0)
-  (%DRAW-RECTANGLE WIDTH HEIGHT 0 0 TV:ALU-ANDCA SELF))
+  (LET ((CURRENTLY-PREPARED-SHEET SELF))
+    (%DRAW-RECTANGLE WIDTH HEIGHT 0 0 TV:ALU-ANDCA SELF)))
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :FRESH-LINE) ()
-  (OR (ZEROP CURSOR-X) (FUNCALL-SELF ':TYO #\CR)))
+  (IF (ZEROP CURSOR-X) (FUNCALL-SELF ':CLEAR-EOL)
+      (FUNCALL-SELF ':TYO #\CR)))
 
 (DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :STRING-OUT) (STRING &OPTIONAL (START 0) END)
   (DO ((I START (1+ I))
@@ -238,12 +244,17 @@ TV:
 	(T
 	 (COLD-LOAD-STREAM-RUBOUT-HANDLER))))
 
+(DEFMETHOD-IMMEDIATE (COLD-LOAD-STREAM :TYI-NO-HANG) ()
+  (AND (FUNCALL-SELF ':LISTEN)
+       (FUNCALL-SELF ':TYI)))
+
 (DEFVAR COLD-LOAD-STREAM-BLINKER-TIME 15.)
 (DEFVAR COLD-LOAD-STREAM-WAIT-TIME 1000.)
 (DECLARE-INSTANCE-IMMEDIATE-INSTANCE-VARIABLES (COLD-LOAD-STREAM)
 (DEFUN COLD-LOAD-STREAM-WAIT-FOR-CHAR ()
   (DO ((PHASE NIL)
-       (BLINKER-COUNT 0))
+       (BLINKER-COUNT 0)
+       (CURRENTLY-PREPARED-SHEET SELF))
       ((KBD-HARDWARE-CHAR-AVAILABLE)
        (AND PHASE
 	    (%DRAW-RECTANGLE (FONT-BLINKER-WIDTH FONT) (FONT-BLINKER-HEIGHT FONT) CURSOR-X
@@ -254,6 +265,8 @@ TV:
 	   (SETQ PHASE (NOT PHASE)
 		 BLINKER-COUNT COLD-LOAD-STREAM-BLINKER-TIME)))
     (DOTIMES (I COLD-LOAD-STREAM-WAIT-TIME)))))
+
+(DEFVAR RUBOUT-HANDLER-OPTIONS)
 
 ;;; Give a single character, or do rubout processing, throws to RUBOUT-HANDLER on editting.
 (DECLARE-INSTANCE-IMMEDIATE-INSTANCE-VARIABLES (COLD-LOAD-STREAM)
@@ -272,6 +285,9 @@ TV:
 	  ((OR (= CH #\FORM) (= CH #\VT))	;Retype buffered input
 	   (FUNCALL-SELF ':TYO CH)		;Echo it
 	   (IF (= CH #\FORM) (FUNCALL-SELF ':CLEAR-SCREEN) (FUNCALL-SELF ':TYO #\CR))
+	   (LET ((PROMPT (OR (ASSQ ':REPROMPT RUBOUT-HANDLER-OPTIONS)
+			     (ASSQ ':PROMPT RUBOUT-HANDLER-OPTIONS))))
+	     (AND PROMPT (FUNCALL (CADR PROMPT) SELF CH)))
 	   (FUNCALL-SELF ':STRING-OUT RUBOUT-HANDLER-BUFFER))
 	  ((= CH #\RUBOUT)
 	   (COND ((NOT (ZEROP (SETQ LEN (ARRAY-LEADER RUBOUT-HANDLER-BUFFER 0))))
@@ -286,9 +302,6 @@ TV:
 	   (%BEEP 1350 400000))
 	  (T
 	   (FUNCALL-SELF ':TYO CH)
-	   ;; This is not in the cold load, fake it until it gets loaded
-	   (OR (FBOUNDP 'ARRAY-PUSH-EXTEND)
-	       (FSET 'ARRAY-PUSH-EXTEND 'ARRAY-PUSH))
 	   (ARRAY-PUSH-EXTEND RUBOUT-HANDLER-BUFFER CH)
 	   (COND (RUBBED-OUT-SOME
 		  (STORE-ARRAY-LEADER 0 RUBOUT-HANDLER-BUFFER 1)
@@ -302,6 +315,9 @@ TV:
 		     (RUBOUT-HANDLER-OPTIONS FUNCTION &REST ARGS)
   (STORE-ARRAY-LEADER 0 RUBOUT-HANDLER-BUFFER 0)
   (STORE-ARRAY-LEADER 0 RUBOUT-HANDLER-BUFFER 1)
+  (LET ((PROMPT-OPTION (ASSQ ':PROMPT RUBOUT-HANDLER-OPTIONS)))
+    (AND PROMPT-OPTION				;Prompt if desired
+	 (FUNCALL (CADR PROMPT-OPTION) SELF NIL)))
   (COND (UNRCHF				;If there is unread input, force it in
 	 (ARRAY-PUSH RUBOUT-HANDLER-BUFFER UNRCHF)
 	 (FUNCALL-SELF ':TYO UNRCHF)
@@ -311,7 +327,7 @@ TV:
       (NIL)
     (*CATCH 'RUBOUT-HANDLER			;Throw here when rubbing out
       (PROGN
-	(ERRSET (RETURN (APPLY FUNCTION ARGS)))	;Call read type function
+	(CATCH-ERROR (RETURN (APPLY FUNCTION ARGS)))	;Call read type function
 	(FUNCALL-SELF ':STRING-OUT RUBOUT-HANDLER-BUFFER)	;On error, retype buffered
 	(DO () (NIL) (FUNCALL-SELF ':TYI))))		;and force user to edit it
     ;;Maybe return when user rubs all the way back
@@ -347,7 +363,11 @@ TV:
 
 (DEFUN KBD-CONVERT-TO-SOFTWARE-CHAR (HARD-CHAR &AUX ASC SHIFT BUCKY)
   "Convert hardware character to software character, or NIL to ignore"
-  (IF (= (LDB 2003 HARD-CHAR) 1) (KBD-CONVERT-NEW HARD-CHAR)
+  (SELECTQ (LDB 2003 HARD-CHAR)			;Source ID
+    (1 (KBD-CONVERT-NEW HARD-CHAR))		;New keyboard
+    (6 (SET-MOUSE-MODE 'VIA-KBD)		;Mouse via keyboard - turn on remote mouse
+       NIL)					; enable bit in IOB
+    (7						;Old keyboard
       (SETQ SHIFT (COND ((BIT-TEST 1400 HARD-CHAR) 2)	;TOP
 			((BIT-TEST 300 HARD-CHAR) 1)	;SHIFT
 			(T 0)))				;VANILLA
@@ -358,27 +378,39 @@ TV:
 	   (IF (AND SHIFT-LOCK-XORS (BIT-TEST 300 HARD-CHAR))
 	       (AND ( ASC #/A) ( ASC #/Z) (SETQ ASC (+ ASC 40)))
 	       (AND ( ASC #/a) ( ASC #/z) (SETQ ASC (- ASC 40)))))
-      (+ ASC BUCKY)))
+      (AND (NOT (ZEROP BUCKY)) ( ASC #/a) ( ASC #/z)
+	   (SETQ ASC (- ASC 40)))		;Control characters always uppercase
+      (+ ASC BUCKY))))
 
-;; Sys com locations 500-577 are reserved for the wired keyboard buffer:
-;; Locations 501 through 511 contain the buffer header; 520-577 are the buffer (48. chars)
+;; Sys com locations 500-511 are reserved for the wired keyboard buffer:
+;; Locations 501 through 511 contain the buffer header; the actual buffer
+;; is in locations 200-377 (128. chars, 64. on new-keyboards)
 ;;
 ;; This is called when the machine is booted, warm or cold.  It's not an
 ;; initialization because it has to happen before all other initializations.
 (DEFUN INITIALIZE-WIRED-KBD-BUFFER ()
-  (DO I 500 (1+ I) (= I 600)
+  (DO I 500 (1+ I) (= I 512)
+    (%P-STORE-TAG-AND-POINTER I 0 0))
+  (DO I 200 (1+ I) (= I 400)
     (%P-STORE-TAG-AND-POINTER I 0 0))
   (%P-DPB 260 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-VECTOR-ADDRESS))
   (%P-DPB (VIRTUAL-UNIBUS-ADDRESS 764112) %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-CSR-ADDRESS))
   (%P-DPB 40 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-CSR-BITS))
   (%P-DPB (VIRTUAL-UNIBUS-ADDRESS 764100) %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-DATA-ADDRESS))
   (%P-DPB 1 %%Q-FLAG-BIT (+ 500 %UNIBUS-CHANNEL-DATA-ADDRESS))
-  (%P-DPB 520 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-START))
-  (%P-DPB 600 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-END))
-  (%P-DPB 520 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-IN-PTR))
-  (%P-DPB 520 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-OUT-PTR))
+  (%P-DPB 200 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-START))
+  (%P-DPB 400 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-END))
+  (%P-DPB 1 %%Q-FLAG-BIT (+ 500 %UNIBUS-CHANNEL-BUFFER-END))	;Enable seq breaks.
+  (%P-DPB 200 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-IN-PTR))
+  (%P-DPB 200 %%Q-POINTER (+ 500 %UNIBUS-CHANNEL-BUFFER-OUT-PTR))
   (STORE (SYSTEM-COMMUNICATION-AREA %SYS-COM-UNIBUS-INTERRUPT-LIST) 500)
-  (%UNIBUS-WRITE 764112 4))	;Keyboard interrupt enable, local mouse
+  (SET-MOUSE-MODE 'DIRECT))
+
+(DEFUN SET-MOUSE-MODE (MODE)
+  (SELECTQ MODE
+    (DIRECT (%UNIBUS-WRITE 764112 4)) 	;Keyboard interrupt enable, local mouse
+    (VIA-KBD (%UNIBUS-WRITE 764112 5))
+    (OTHERWISE (FERROR NIL "UNKNOWN MOUSE MDDE"))))
 
 ;; Translate from a Unibus address to a Lisp machine virtual address, returning a fixnum.
 (DEFUN VIRTUAL-UNIBUS-ADDRESS (ADR)
@@ -390,7 +422,9 @@ TV:
 ;The function KBD-INITIALIZE is only called once, in order to setup this array.
 
 (DEFUN KBD-INITIALIZE ()
-  (SETQ KBD-TRANSLATE-TABLE (MAKE-ARRAY WORKING-STORAGE-AREA 'ART-8B '(3 100)))
+  (SETQ KBD-TRANSLATE-TABLE (MAKE-ARRAY '(3 100)
+					':AREA  WORKING-STORAGE-AREA
+					':TYPE 'ART-8B))
   (DO ((I 0 (1+ I))  ;2ND DIMENSION
        (L '(
 	#\BREAK	#\BREAK	#\NETWORK
@@ -427,8 +461,10 @@ TV:
 	#/]	#/}	#/}
 	#/\	#/|	#/|
 	#//	#/	#/
-	#/å	#/ç	#/ 
-	#/ä	#/â	#/â
+	#/	#/
+	#/ 
+	#/
+	#/		#/	
 	#\FORM	#\FORM	#\FORM
 	#\VT	#\VT	#\VT
 	#\RUBOUT #\RUBOUT #\RUBOUT
@@ -449,7 +485,7 @@ TV:
 	#/z	#/Z	#/
 	#/x	#/X	#/
 	#/c	#/C	#/
-	#/v	#/V	#/à
+	#/v	#/V	#/
 	#/b	#/B	#/
 	#/n	#/N	#/
 	#/m	#/M	#/
@@ -530,34 +566,44 @@ TV:
 		    NIL)
 		   ((BIT-TEST 1_8 CH)
 		    (ASET 0 KBD-KEY-STATE-ARRAY NCH0)
-		    (AND (BIT-TEST 1_9 KBD-SHIFTS)	 ;Mode lock
-			 (SELECTQ NCH
-			   (#\I (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 1)))
-			   (#\II (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 2)))
-			   (#\III (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 4)))))
+		    (COND ((BIT-TEST 1_9 KBD-SHIFTS)	 ;Mode lock
+			   (SELECTQ NCH
+			     (#\ROMAN-I (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 1)))
+			     (#\ROMAN-II (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 2)))
+			     (#\ROMAN-III (SETQ TV:KBD-BUTTONS (BOOLE 4 TV:KBD-BUTTONS 4))))
+			   (SETQ MOUSE-WAKEUP T)))
 		    NIL)	 ;Just an up-code
 		   ((AND (BIT-TEST 1_9 KBD-SHIFTS)	 ;Mode lock
-			 (MEMQ NCH '(#\I #\II #\III)))
+			 (MEMQ NCH '(#\ROMAN-I #\ROMAN-II #\ROMAN-III)))
 		    (ASET 1 KBD-KEY-STATE-ARRAY NCH0)
 		    (SETQ TV:KBD-BUTTONS (LOGIOR TV:KBD-BUTTONS
-						 (SELECTQ NCH (#\I 1) (#\II 2) (T 4))))
+						 (SELECTQ NCH (#\ROMAN-I 1)
+							  (#\ROMAN-II 2)
+							  (T 4))))
+		    (SETQ MOUSE-WAKEUP T)
 		    NIL)
 		   (T ;A real key depression.  Check for caps-lock.
 		    (ASET 1 KBD-KEY-STATE-ARRAY NCH0)
+		    (SETQ NCH0 (LDB 0404 KBD-SHIFTS))	;Hyper, Super, Meta, Control bits
+		    (AND (BIT-TEST 3 NCH0)		;Control/Shift/letter, Meta/Shift/let
+			 ( NCH #/A)
+			 ( NCH #/Z)
+			 (SETQ NCH0 (+ NCH0 10)))	;becomes Control/Hyper/Letter
 		    (AND (BIT-TEST 10 KBD-SHIFTS)	;Caps lock
 			 (IF (AND SHIFT-LOCK-XORS (BIT-TEST 1 KBD-SHIFTS))
 			     (AND ( NCH #/A) ( NCH #/Z) (SETQ NCH (+ NCH 40)))
 			     (AND ( NCH #/a) ( NCH #/z) (SETQ NCH (- NCH 40)))))
-		    (DPB (LDB 0404 KBD-SHIFTS) ;Hyper, Super, Meta, Control
-			 %%KBD-CONTROL-META NCH))))))) ;A real character pushed down
+		    (AND (NOT (ZEROP NCH0)) ( NCH #/a) ( NCH #/z)
+			 (SETQ NCH (- NCH 40)))		;Control characters always uppercase
+		    (DPB NCH0 %%KBD-CONTROL-META NCH)))))))
 
 (DEFUN KBD-MAKE-NEW-TABLE ()
-  (LET ((TBL (MAKE-ARRAY PERMANENT-STORAGE-AREA 'ART-16B '(5 200))))
+  (LET ((TBL (MAKE-ARRAY '(5 200) ':AREA  PERMANENT-STORAGE-AREA ':TYPE 'ART-16B)))
     (DO ((J 0 (1+ J))
 	 (L '( 
 	()					 ;0 not used
-	#\II					 ;1 Roman II
-	#\IV					 ;2 Roman IV
+	#\ROMAN-II				 ;1 Roman II
+	#\ROMAN-IV				 ;2 Roman IV
 	100011					 ;3 Mode lock
 	()					 ;4 not used
 	100006					 ;5 Left super
@@ -620,8 +666,8 @@ TV:
 	()					 ;76 not used
 	(#/` #/~ #/~ #/)			 ;77 back quote
 	#\BACK-NEXT				 ;100 macro
-	#\I					 ;101 Roman I
-	#\III					 ;102 Roman III
+	#\ROMAN-I				 ;101 Roman I
+	#\ROMAN-III				 ;102 Roman III
 	()					 ;103 not used
 	100002					 ;104 Left Top
 	()					 ;105 not used
@@ -681,10 +727,12 @@ TV:
 	(#/; #/: #/:)				 ;173 Semicolon
 	(#// #/? #/? 177)			 ;174 Question/Integral
 	100047					 ;175 Right Hyper
-	(#\HAND-DOWN #\HAND-DOWN #\HAND-DOWN #/ä #/ä)	;176 Down Thumb
+	(#\HAND-DOWN #\HAND-DOWN #\HAND-DOWN #/
+ #/
+)	;176 Down Thumb
 	()					 ;177 Not used
 	      ) (CDR L)))
-	((= J 200) (SETQ KBD-NEW-TABLE TBL))
+	((= J 200) TBL)
       (DO ((I 0 (1+ I))
 	   (K (CAR L)))
 	  ((= I 5))
@@ -729,10 +777,28 @@ TV:
 	  (T (DO N (CAR X) (1- N) (ZEROP N)
 		 (SETQ ADR (FILL-SYNC (CDR X) ADR TV-ADR)))))))
 
-;;; Set up sync for CPT monitor 768. x 896.
+(DEFUN CHECK-SYNC (L &OPTIONAL (ADR 0)  (TV-ADR TV:(SCREEN-CONTROL-ADDRESS DEFAULT-SCREEN))
+		   &AUX X)
+  (DO ((L L (CDR L))) ((NULL L) ADR)
+    (SETQ X (CAR L))
+    (COND ((ATOM X)
+	   (CHECK-SYNC-WD ADR X TV-ADR)
+	   (SETQ ADR (1+ ADR)))
+	  (T (DO N (CAR X) (1- N) (ZEROP N)
+	       (SETQ ADR (CHECK-SYNC (CDR X) ADR TV-ADR)))))))
+
+(DEFUN CHECK-SYNC-WD (ADR DATA TV-ADR &AUX MACH)
+  (COND ((NOT (= DATA (SETQ MACH (READ-SYNC ADR TV-ADR))))
+	 (FORMAT T "~%ADR:~S MACH: ~S should be ~S" ADR MACH DATA))))
+
+
+;Initialize the TV.  Name of this function is obsolete.
+;If FORCE-P is T, then SYNC-PROG is always loaded.
+;Otherwise, it is a default to be loaded only if there is no prom.
 (DEFUN SETUP-CPT (&OPTIONAL (SYNC-PROG CPT-SYNC2)
-			    (TV-ADR TV:(SCREEN-CONTROL-ADDRESS DEFAULT-SCREEN))
+			    (TV-ADR NIL)
 			    (FORCE-P NIL))
+  (IF (NULL TV-ADR) (SETQ TV-ADR TV:(SCREEN-CONTROL-ADDRESS DEFAULT-SCREEN)))
   ;; Always turn on vertical sync interrupts if this is the first TV controller.
   ;; The microcode relies on these as a periodic clock for various purposes.
   ;; If not the first controller, leave the interrupt enable the way it is.
@@ -740,15 +806,26 @@ TV:
     (LET ((INTERRUPT-ENABLE (IF (= TV-ADR 377760) 10	;This is the number UCADR knows
 				(LOGAND (%XBUS-READ TV-ADR) 10)))
 	  (STATUS (%XBUS-READ TV-ADR)))
-      (COND ((AND (NOT FORCE-P) (BIT-TEST STATUS 200))
-	     ;; Running in PROM, so stay there
+      (COND ((AND (NOT FORCE-P)			;Unless forced, try to use the PROM
+		  (OR (ZEROP (LOGAND STATUS 200))	;Good, PROM already on
+		      (PROGN (PROM-SETUP TV-ADR)	;Try turning it on
+			     (ZEROP (LOGAND (%XBUS-READ TV-ADR) 200)))))  ;On now?
+	     ;; The hardware at least claims the PROM is turned on.  Actually
+	     ;; checking for working sync does not work for some reason, so just
+	     ;; assume that any board which can have a PROM does have one, and
+	     ;; always use the PROM if it is there, since it is more likely to
+	     ;; be right than the default sync program.
+	     ;; Now turn on black-on-white mode, and interrupt enable if desired.
 	     (%XBUS-WRITE TV-ADR (+ 4 INTERRUPT-ENABLE)))
-	    (T (STOP-SYNC TV-ADR)
+	    (T ;; Must be an ancient TV board at MIT, or else forced
+	       ;; Use default (or forced) sync program
+	       (STOP-SYNC TV-ADR)
 	       (FILL-SYNC SYNC-PROG 0 TV-ADR)
 	       (START-SYNC INTERRUPT-ENABLE 1 0 TV-ADR))))))  ;Clock 0, BOW 1, VSP 0
 
 (DEFUN PROM-SETUP (&OPTIONAL (TV-ADR TV:(SCREEN-CONTROL-ADDRESS DEFAULT-SCREEN)))
   (%XBUS-WRITE (+ TV-ADR 3) 0))
+
 
 ;sync program bits
 ;1  HSYNC
@@ -834,7 +911,7 @@ TV:
 (DEFUN FAKE-UP-INSTANCE (TYPENAME INSTANCE-VARIABLES METHOD-ALIST INIT-OPTIONS
 			 &AUX SIZE BINDINGS INSTANCE DESCRIPTOR)
   ;; Note that the length of this array must agree with INSTANCE-DESCRIPTOR-OFFSETS in QCOM
-  (SETQ DESCRIPTOR (MAKE-ARRAY PERMANENT-STORAGE-AREA 'ART-Q 5))
+  (SETQ DESCRIPTOR (MAKE-ARRAY 5 ':AREA PERMANENT-STORAGE-AREA))
   (ASET (SETQ SIZE (1+ (LENGTH INSTANCE-VARIABLES)))
 	DESCRIPTOR (1- %INSTANCE-DESCRIPTOR-SIZE))
   (SETQ BINDINGS (MAKE-LIST PERMANENT-STORAGE-AREA (LENGTH INSTANCE-VARIABLES)))

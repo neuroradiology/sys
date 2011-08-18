@@ -26,8 +26,11 @@
 ;			were before the menu popped up.
 ;		:KBD - argument is forced into keyboard input of appropriate process.
 ;		:MENU - argument is a new menu to choose from.
+;		:BUTTONS - argument is 3 items, which one is used depends on
+;			which mouse button was clicked
 ;The following are the known modifier keywords:
 ;		:FONT - the font in which to display the item
+;		:DOCUMENTATION - a string documenting this item
 ;This stuff is largely although not entirely controlled by the :EXECUTE method,
 ;which you may redefine.
 
@@ -73,11 +76,12 @@
 					; be sticky with respect to new sizes
 	   )
 	   (MENU-EXECUTE-MIXIN)
-  (:INCLUDED-FLAVORS BASIC-SCROLL-BAR)
+  (:REQUIRED-FLAVORS BASIC-SCROLL-BAR)	;Position in component list decided at higher level
   (:GETTABLE-INSTANCE-VARIABLES ITEM-LIST CURRENT-ITEM LAST-ITEM CHOSEN-ITEM GEOMETRY)
   (:SETTABLE-INSTANCE-VARIABLES LAST-ITEM CHOSEN-ITEM)
-  (:INITABLE-INSTANCE-VARIABLES ITEM-LIST GEOMETRY)
-  (:INIT-KEYWORDS :ROWS :COLUMNS :FILL-P)  ;Set specific parts of geometry
+  (:INITABLE-INSTANCE-VARIABLES ITEM-LIST)
+  (:INIT-KEYWORDS :ROWS :COLUMNS :FILL-P :GEOMETRY :DEFAULT-FONT)  ;Set parts of geometry
+  (:DEFAULT-INIT-PLIST :BLINKER-FLAVOR 'TV:HOLLOW-RECTANGULAR-BLINKER)
   (:DOCUMENTATION :MIXIN "Regular menu messages
 Provides methods and instance variables common to all menus, such as the item-list,
 the geometry hacking, a default :choose message, and a scroll bar if necessary."))
@@ -98,7 +102,8 @@ the geometry hacking, a default :choose message, and a scroll bar if necessary."
 	 ((GEOMETRY-FILL-P GEO) . (SETF (GEOMETRY-N-COLUMNS GEO) (IF SI:VAL 0 NIL)))
 	 SETF))
 
-(DEFFLAVOR MENU ((LABEL NIL)) (BASIC-MENU BORDERS-MIXIN TOP-BOX-LABEL-MIXIN MINIMUM-WINDOW)
+(DEFFLAVOR MENU ((LABEL NIL))
+		(BASIC-MENU BORDERS-MIXIN TOP-BOX-LABEL-MIXIN BASIC-SCROLL-BAR MINIMUM-WINDOW)
   (:DOCUMENTATION :COMBINATION "The simplest instantiatable menu.
 Defaults to not having a label, a label whose position is not initially specified will
 be at the top, in a small auxiliary box, unlike most windows."))
@@ -113,8 +118,20 @@ the state beneath itself when exposed."))
 (DEFMETHOD (BASIC-MENU :BEFORE :INIT) (INIT-PLIST &AUX (SUP SUPERIOR) TEM)
   (SETQ SUP (OR SUP (GET INIT-PLIST ':SUPERIOR) DEFAULT-SCREEN))
   (OR (BOUNDP 'FONT-MAP)
-      (SETQ FONT-MAP (LIST (FUNCALL (SHEET-GET-SCREEN SUP) ':MENU-FONT))))
+      (SETQ FONT-MAP
+	    (MENU-COMPUTE-FONT-MAP (GET INIT-PLIST ':ITEM-LIST)
+				   (OR (GET INIT-PLIST ':DEFAULT-FONT)
+				       (FUNCALL (SHEET-GET-SCREEN SUP) ':MENU-FONT)))))
   (PUTPROP INIT-PLIST NIL ':MORE-P)
+  (SETQ TEM (GET INIT-PLIST ':GEOMETRY))
+  (IF (> (LENGTH TEM) (LENGTH GEOMETRY))
+      ;; Longer than we need, take a copy of the list
+      (SETQ GEOMETRY (COPYLIST TEM))
+      ;; Else copy the appropriate piece of user specified list into our list
+      (DO ((TEM TEM (CDR TEM))
+	   (GEO GEOMETRY (CDR GEO)))
+	  ((NULL TEM))
+	(SETF (CAR GEO) (CAR TEM))))
   (AND (GET INIT-PLIST ':FILL-P)
        ;(SETF (GEOMETRY-FILL-P GEOMETRY) T)  ;Compiler gives a gratuitous warning for this
        (SETF (GEOMETRY-N-COLUMNS GEOMETRY) 0))
@@ -159,8 +176,13 @@ the state beneath itself when exposed."))
   (SETQ ITEM-LIST NEW-ITEM-LIST
 	LAST-ITEM NIL
 	CURRENT-ITEM NIL)
+  (FUNCALL-SELF ':SET-FONT-MAP (MENU-COMPUTE-FONT-MAP NEW-ITEM-LIST))
   (MENU-COMPUTE-GEOMETRY T)		;Recompute parameters, and redraw menu
   NEW-ITEM-LIST)
+
+(DEFMETHOD (BASIC-MENU :SET-DEFAULT-FONT) (FONT)
+  (FUNCALL-SELF ':SET-FONT-MAP (MENU-COMPUTE-FONT-MAP ITEM-LIST FONT))
+  (MENU-COMPUTE-GEOMETRY T))
 
 (DEFMETHOD (BASIC-MENU :SET-GEOMETRY) (&REST NEW-GEOMETRY)
   (DECLARE (ARGLIST (&OPTIONAL N-COLUMNS N-ROWS INSIDE-WIDTH INSIDE-HEIGHT
@@ -187,7 +209,7 @@ the state beneath itself when exposed."))
 
 (DEFMETHOD (BASIC-MENU :MOUSE-STANDARD-BLINKER) ()
   ;; Change the mouse cursor to a small X so it doesn't get in the way
-  (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 3 3 ':ON
+  (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 4 5 ':ON
 				':SET-CHARACTER 7))
 
 ;;; Mouse handler for menus
@@ -206,12 +228,24 @@ the state beneath itself when exposed."))
 
 (DEFMETHOD (BASIC-MENU :MOUSE-BUTTONS) (BD X Y)
   BD X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
-  (COND ((NOT EXPOSED-P)	;Button pushed while not exposed, expose self.
-	 (FUNCALL-SELF ':EXPOSE))
-	((NULL CURRENT-ITEM))
-	(T			;Any button, select item.
-	 (SETQ LAST-ITEM CURRENT-ITEM
-	       CHOSEN-ITEM CURRENT-ITEM))))
+  (COND (CURRENT-ITEM				;Any button, select item.
+	  (SETQ LAST-ITEM CURRENT-ITEM
+		CHOSEN-ITEM CURRENT-ITEM)
+	  (COND ((AND (LISTP CHOSEN-ITEM)
+		      ( (LENGTH CHOSEN-ITEM) 3)
+		      (EQ (SECOND CHOSEN-ITEM) ':BUTTONS))
+		 (SETQ CHOSEN-ITEM (NTH (1- (HAULONG BD)) (THIRD CHOSEN-ITEM))))))
+	((AND ( X (SHEET-INSIDE-LEFT)) (< X (SHEET-INSIDE-RIGHT))
+	      ( Y (SHEET-INSIDE-TOP)) (< Y (SHEET-INSIDE-BOTTOM))))
+	(T
+	 ;; Here, clicked on the window, but outside of the window proper.
+	 ;; Send a :MOUSE-CLICK message so things like margin regions can work.
+	 (FUNCALL-SELF ':MOUSE-CLICK BD X Y))))
+
+(DEFMETHOD (BASIC-MENU :MOUSE-CLICK) (BD X Y)
+  ;; If we get to here, punt: default action is to do nothing
+  BD X Y
+  T)
 
 (DEFMETHOD (BASIC-MENU :CHOOSE) ()
   (SETQ CHOSEN-ITEM NIL)
@@ -236,13 +270,32 @@ the state beneath itself when exposed."))
 	((SYMBOLP FONT)
 	 (SETQ FONT (FUNCALL (SHEET-GET-SCREEN SELF) ':PARSE-FONT-DESCRIPTOR FONT)))
 	((NUMBERP FONT) (SETQ FONT (AREF FONT-MAP FONT))))
-  (PROG () (RETURN (STRING STRING) FONT))))
+  (VALUES (STRING STRING) FONT)))
 
 (DECLARE-FLAVOR-INSTANCE-VARIABLES (BASIC-MENU)
 (DEFUN MENU-ITEM-STRING-WIDTH (ITEM &OPTIONAL STOP-X)
   (MULTIPLE-VALUE-BIND (STRING FONT)
       (MENU-ITEM-STRING ITEM)
     (SHEET-STRING-LENGTH SELF STRING 0 NIL STOP-X FONT))))
+
+(DECLARE-FLAVOR-INSTANCE-VARIABLES (BASIC-MENU)
+(DEFUN MENU-COMPUTE-FONT-MAP (ITEMS &OPTIONAL (DEFAULT CURRENT-FONT)
+			            &AUX (MAP (NCONS DEFAULT)) FONT)
+  (DOLIST (ITEM ITEMS)
+    (SETQ FONT (AND (LISTP ITEM)
+		    (LISTP (CDR ITEM))
+		    (GET (CDDR ITEM) ':FONT)))
+    (AND FONT (NOT (MEMQ FONT MAP))
+	 (PUSH FONT MAP)))
+  (NREVERSE MAP)))
+
+;;; This is called from the scheduler
+(DEFMETHOD (BASIC-MENU :WHO-LINE-DOCUMENTATION-STRING) ()
+  (AND (BOUNDP 'CURRENT-ITEM) (MENU-ITEM-WHO-LINE-DOCUMENTATION CURRENT-ITEM)))
+
+(DEFUN MENU-ITEM-WHO-LINE-DOCUMENTATION (ITEM)
+  (AND (LISTP ITEM) (LISTP (CDR ITEM))
+       (GET (CDDR ITEM) ':DOCUMENTATION)))
 
 ;;; This is the guts.  Given a menu and a set of coordinates, it finds
 ;;; the corresponding item, if any, sets CURRENT-ITEM to it, and sets up
@@ -256,43 +309,43 @@ the state beneath itself when exposed."))
   (SETQ ROW (// (- Y (SHEET-INSIDE-TOP)) ROW-HEIGHT)
 	XREL (- X (SHEET-INSIDE-LEFT))
 	BLINKER (CAR BLINKER-LIST))
-  (COND (( 0 ROW)
-         (COND ((NOT EXPOSED-P))	 ;If not exposed, must not blink
-               ((AND ( XREL 0)	;If inside the menu
-                     (< X (SHEET-INSIDE-RIGHT)))
-                ;;If mouse is past the last displayed row, blink item on that row.
-                (AND (OR (>= (+ TOP-ROW ROW) TOTAL-ROWS) (>= ROW SCREEN-ROWS))
-                     (SETQ ROW (1- (MIN SCREEN-ROWS (- TOTAL-ROWS TOP-ROW)))))
-                (IF (MINUSP ROW) (SETQ ITEMS NIL STOP-ITEM NIL) ;No items visible
-		    (SETQ ITEMS (AREF ROW-MAP (+ TOP-ROW ROW))
-			  STOP-ITEM (AREF ROW-MAP (+ TOP-ROW ROW 1))))
-                (COND (FILL-P	;Fill mode, cogitate
-                       (SETQ BLX 0)
-                       (DO ((L ITEMS (CDR L))
-                            (ITM) (OITM NIL ITM)
-			    (X 0 (+ X
-				    (SETQ BLWIDTH (MENU-ITEM-STRING-WIDTH ITM))
-				    MENU-INTERWORD-SPACING)))
-                           ((OR (NULL L)
-                                (> X XREL))  ;If this string crosses the mouse, it's the one
-                            (SETQ ITEM OITM
-				  BLX (1- BLX)
-				  BLWIDTH (+ BLWIDTH 1)))
-			 (AND (EQ L STOP-ITEM)
-			      ;; The next item on next line -- punt
-			      (RETURN NIL))
-			 (SETQ ITM (CAR L)
-			       BLX X)))
-                      (T	;Columnated, find which column
-                       (SETQ COLN (// XREL COLUMN-WIDTH))		;Column selected
-                       (SETQ ITEM (CAR (NTHCDR COLN ITEMS)))		;This may be NIL
-                       (SETQ BLWIDTH (1+ (MENU-ITEM-STRING-WIDTH ITEM COLUMN-WIDTH)))
-                       (SETQ BLX (+ (* COLN COLUMN-WIDTH)		;Start of column
-				    -1
-                                    (MAX 0 (// (- COLUMN-WIDTH	;Centering
-                                                  MENU-INTERCOLUMN-SPACING
-                                                  BLWIDTH)
-                                               2))))))))))
+  (COND ((AND ( XREL 0)	;If inside the menu
+	      (< X (SHEET-INSIDE-RIGHT))
+	      ( Y (SHEET-INSIDE-TOP))
+	      (< Y (SHEET-INSIDE-BOTTOM)))
+	 ;;If mouse is past the last displayed row, blink item on that row.
+	 (AND (OR (>= (+ TOP-ROW ROW) TOTAL-ROWS) (>= ROW SCREEN-ROWS))
+	      (SETQ ROW (1- (MIN SCREEN-ROWS (- TOTAL-ROWS TOP-ROW)))))
+	 (IF (MINUSP ROW) (SETQ ITEMS NIL STOP-ITEM NIL)	;No items visible
+	     (SETQ ITEMS (AREF ROW-MAP (+ TOP-ROW ROW))
+		   STOP-ITEM (AREF ROW-MAP (+ TOP-ROW ROW 1))))
+	 (COND (FILL-P				;Fill mode, cogitate
+		(SETQ BLX 0)
+		(DO ((L ITEMS (CDR L))
+		     (ITM) (OITM NIL ITM)
+		     (X 0 (+ X
+			     (SETQ BLWIDTH (MENU-ITEM-STRING-WIDTH ITM))
+			     MENU-INTERWORD-SPACING)))
+		    ((OR (NULL L)
+			 (> X XREL))	    ;If this string crosses the mouse, it's the one
+		     (SETQ ITEM OITM
+			   BLX (1- BLX)
+			   BLWIDTH (+ BLWIDTH 1)))
+		  (AND (EQ L STOP-ITEM)
+		       ;; The next item on next line -- punt
+		       (RETURN NIL))
+		  (SETQ ITM (CAR L)
+			BLX X)))
+	       (T				;Columnated, find which column
+		(SETQ COLN (// XREL COLUMN-WIDTH))	;Column selected
+		(SETQ ITEM (CAR (NTHCDR COLN ITEMS)))	;This may be NIL
+		(SETQ BLWIDTH (1+ (MENU-ITEM-STRING-WIDTH ITEM COLUMN-WIDTH)))
+		(SETQ BLX (+ (* COLN COLUMN-WIDTH)	;Start of column
+			     -1
+			     (MAX 0 (// (- COLUMN-WIDTH	;Centering
+					   MENU-INTERCOLUMN-SPACING
+					   BLWIDTH)
+					2))))))))
   ;; If this item is non-selectable, don't select it.
   (AND (NOT (ATOM ITEM)) (NOT (ATOM (CDR ITEM))) (NOT (ATOM (CDDR ITEM)))
        (EQ (CADR ITEM) ':NO-SELECT)
@@ -301,12 +354,12 @@ the state beneath itself when exposed."))
   (BLINKER-SET-VISIBILITY BLINKER (NOT (NULL ITEM)))
   (SETQ CURRENT-ITEM ITEM)
   (COND (ITEM
-	 (BLINKER-SET-CURSORPOS BLINKER BLX (1- (* ROW ROW-HEIGHT)))
-	 (BLINKER-SET-SIZE BLINKER BLWIDTH
-			   (+ (FONT-CHAR-HEIGHT (AREF FONT-MAP 0)) 2)))))
+	 (FUNCALL BLINKER ':SET-SIZE-AND-CURSORPOS 
+		  BLWIDTH (+ (FONT-CHAR-HEIGHT (AREF FONT-MAP 0)) 2)
+		  BLX (1- (* ROW ROW-HEIGHT))))))
 
 (DEFMETHOD (BASIC-MENU :SCROLL-POSITION) ()
-  (PROG () (RETURN TOP-ROW TOTAL-ROWS ROW-HEIGHT)))
+  (VALUES TOP-ROW TOTAL-ROWS ROW-HEIGHT))
 
 (DEFMETHOD (BASIC-MENU :SCROLL-TO) (LINE MODE)
   (SELECTQ MODE
@@ -367,7 +420,10 @@ item-list instance variable."))
 
 ;Same as above but returns NIL if getting the value would require side-effects.
 ;This is used by MENU-HIGHLIGHTING-MIXIN
-(DEFMETHOD (MENU-EXECUTE-MIXIN :EXECUTE-NO-SIDE-EFFECTS) (ITEM &AUX OP ARG)
+(DEFMETHOD (MENU-EXECUTE-MIXIN :EXECUTE-NO-SIDE-EFFECTS) (ITEM)
+  (MENU-EXECUTE-NO-SIDE-EFFECTS ITEM))
+
+(DEFUN MENU-EXECUTE-NO-SIDE-EFFECTS (ITEM &AUX OP ARG)
   (COND ((ATOM ITEM) ITEM)
 	((ATOM (CDR ITEM)) (CDR ITEM))
 	((ATOM (CDDR ITEM)) (CADR ITEM))
@@ -396,13 +452,23 @@ is redrawn if DRAW-P is T."
 	 (SETQ COLUMN-WIDTH
 	       (AND (NOT (GEOMETRY-FILL-P GEOMETRY))
 		    (// (+ INSIDE-WIDTH MENU-INTERCOLUMN-SPACING) COLUMNS)))
-	 (IF (OR ( INSIDE-HEIGHT (SHEET-INSIDE-HEIGHT))
-		 ( INSIDE-WIDTH (SHEET-INSIDE-WIDTH)))
-	     (LET-GLOBALLY ((SET-EDGES-MODE T))
-	       (FUNCALL-SELF ':SET-INSIDE-SIZE INSIDE-WIDTH INSIDE-HEIGHT))
-	     (AND DRAW-P
-		  (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
-		    (FUNCALL-SELF ':MENU-DRAW))))))
+	 (COND ((AND (= INSIDE-HEIGHT (SHEET-INSIDE-HEIGHT))
+		     (= INSIDE-WIDTH (SHEET-INSIDE-WIDTH)))
+		(AND DRAW-P
+		     (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
+		       (FUNCALL-SELF ':MENU-DRAW))))
+	       ((FUNCALL-SELF ':SET-INSIDE-SIZE INSIDE-WIDTH INSIDE-HEIGHT ':VERIFY)
+		;; Room to do this in current place.
+		(LET-GLOBALLY ((SET-EDGES-MODE T))
+		  (FUNCALL-SELF ':SET-INSIDE-SIZE INSIDE-WIDTH INSIDE-HEIGHT)))
+	       (T
+		;; Else try to be approximately in the same place
+		(LET ((CX (+ X-OFFSET (// WIDTH 2)))
+		      (CY (+ Y-OFFSET (// HEIGHT 2))))
+		  (WITH-SHEET-DEEXPOSED (SELF)
+		    (LET-GLOBALLY ((SET-EDGES-MODE T))
+		      (FUNCALL-SELF ':SET-INSIDE-SIZE INSIDE-WIDTH INSIDE-HEIGHT))
+		    (CENTER-WINDOW-AROUND SELF CX CY)))))))
   NIL))
 
 ;;; This function, given a bunch of parameters some of which are NIL meaning
@@ -474,10 +540,12 @@ is redrawn if DRAW-P is T."
 
   ;; Compute the horizontal parameters.
   (COND ((AND INSIDE-WIDTH (OR N-COLUMNS FILL-P)) )		;It's fully-determined
-	(INSIDE-WIDTH	;We have the width, and it's not in fill mode, compute N-COLUMNS
-	 (SETQ N-COLUMNS (MAX (// (+ INSIDE-WIDTH MENU-INTERCOLUMN-SPACING)
-				  (+ (MENU-MAX-WIDTH ITEM-LIST) MENU-INTERCOLUMN-SPACING))
-			      1)))
+	(INSIDE-WIDTH		;We have the width, and it's not in fill mode, compute
+	 (SETQ N-COLUMNS	; N-COLUMNS based on widest item, but always fill the space
+	       (MAX (MIN (// (+ INSIDE-WIDTH MENU-INTERCOLUMN-SPACING)
+			     (+ (MENU-MAX-WIDTH ITEM-LIST) MENU-INTERCOLUMN-SPACING))
+			 (IF N-ROWS (// (+ N-ITEMS (1- N-ROWS)) N-ROWS) N-ITEMS))
+		    1)))
 	(N-COLUMNS  ;We don't have the width, but do know how many columns, compute width
 	 (SETQ INSIDE-WIDTH (MIN (- (* (+ (MENU-MAX-WIDTH ITEM-LIST)
 					  MENU-INTERCOLUMN-SPACING)
@@ -538,7 +606,7 @@ is redrawn if DRAW-P is T."
   ;; provided that the user's original parameters were not illegally huge.
 
   ;; Return all the dependent parameters as multiple values
-  (PROG () (RETURN (IF FILL-P 0 N-COLUMNS) N-ROWS INSIDE-WIDTH INSIDE-HEIGHT)))
+  (VALUES (IF FILL-P 0 N-COLUMNS) N-ROWS INSIDE-WIDTH INSIDE-HEIGHT))
 )
 
 ;;; This function computes the ROW-MAP, which determines how many strings per line, & c.
@@ -551,8 +619,8 @@ is redrawn if DRAW-P is T."
 				  (FILL-P (GEOMETRY-FILL-P GEOMETRY)))
   (DO ((ITEMS ITEM-LIST) (ROW 0 (1+ ROW)))
       ((NULL ITEMS)
-       (PROG () (RETURN (ADJUST-ARRAY-SIZE MAP (1+ ROW))  ;Last element always contains NIL
-			ROW)))
+       (VALUES (ADJUST-ARRAY-SIZE MAP (1+ ROW))  ;Last element always contains NIL
+	       ROW))
     (ASET ITEMS MAP ROW)	;This is where this row starts
     (IF FILL-P		;Fill mode, we have some hairy calculation to do
 	(DO ((SPACE INSIDE-WIDTH))
@@ -621,10 +689,13 @@ is redrawn if DRAW-P is T."
 
 ;;; Return the x and y co-ordinates (inside the margins)
 ;;; of the center of the specified item, NIL if scrolled off display
-(DEFMETHOD (BASIC-MENU :ITEM-CURSORPOS) (ITEM)
-  (DO ((ROW (+ TOP-ROW SCREEN-ROWS -1) (1- ROW)))
+(DEFMETHOD (BASIC-MENU :ITEM-CURSORPOS) (ITEM &AUX (ALEN (ARRAY-LENGTH ROW-MAP)))
+  (DO ((ROW (1- (MIN (+ TOP-ROW SCREEN-ROWS)	;last row on screen
+		     ALEN))			;last row that exists
+	    (1- ROW)))
       ((< ROW TOP-ROW) NIL)
     (AND (MEMQ ITEM (AREF ROW-MAP ROW))
+	 (OR (= ROW (1- ALEN)) (NOT (MEMQ ITEM (AREF ROW-MAP (1+ ROW)))))
 	 (RETURN (IF (NOT (GEOMETRY-FILL-P GEOMETRY))
 		     (+ (* (FIND-POSITION-IN-LIST ITEM (AREF ROW-MAP ROW)) COLUMN-WIDTH)
 			(// COLUMN-WIDTH 2))
@@ -642,10 +713,13 @@ is redrawn if DRAW-P is T."
 ;;; margin all around, or NIL if scrolled off the display.
 ;;; Note that because of the one bit of margin, returned values can be outside
 ;;; the window.
-(DEFMETHOD (BASIC-MENU :ITEM-RECTANGLE) (ITEM &AUX (X 0) SWIDTH)
-  (DO ((ROW (+ TOP-ROW SCREEN-ROWS -1) (1- ROW)))
+(DEFMETHOD (BASIC-MENU :ITEM-RECTANGLE) (ITEM &AUX (X 0) SWIDTH (ALEN (ARRAY-LENGTH ROW-MAP)))
+  (DO ((ROW (1- (MIN (+ TOP-ROW SCREEN-ROWS)	;last row on screen
+		     ALEN))			;last row that exists
+	    (1- ROW)))
       ((< ROW TOP-ROW) NIL)
-    (COND ((MEMQ ITEM (AREF ROW-MAP ROW))
+    (COND ((AND (MEMQ ITEM (AREF ROW-MAP ROW))
+		(OR (= ROW (1- ALEN)) (NOT (MEMQ ITEM (AREF ROW-MAP (1+ ROW))))))
 	   (IF (NOT (GEOMETRY-FILL-P GEOMETRY))
 	       (SETQ SWIDTH (MENU-ITEM-STRING-WIDTH ITEM COLUMN-WIDTH)
 		     X (+ (* (FIND-POSITION-IN-LIST ITEM (AREF ROW-MAP ROW)) COLUMN-WIDTH)
@@ -666,14 +740,15 @@ is redrawn if DRAW-P is T."
        ;; let XI and YI get the offsets from that item to the center.
        (MULTIPLE-VALUE-BIND (X1 Y1)
 	   (FUNCALL-SELF ':ITEM-CURSORPOS LAST-ITEM)
-	 (SETQ XI (- (// WIDTH 2) X1)
-	       YI (- (// HEIGHT 2) Y1))))
+	 (AND X1 Y1
+	      (SETQ XI (- (// WIDTH 2) X1 (SHEET-INSIDE-LEFT))
+		    YI (- (// HEIGHT 2) Y1 (SHEET-INSIDE-TOP))))))
   (MULTIPLE-VALUE-BIND (X1 Y1)
       (CENTER-WINDOW-AROUND SELF (+ X XI) (+ Y YI))
-    (PROG () (RETURN (- X1 XI) (- Y1 YI)))))
+    (VALUES (- X1 XI) (- Y1 YI))))
 
 (DEFMETHOD (BASIC-MENU :COLUMN-ROW-SIZE) ()
-  (PROG () (RETURN COLUMN-WIDTH ROW-HEIGHT)))
+  (VALUES COLUMN-WIDTH ROW-HEIGHT))
 
 ;; Permanent menus for giving "keyboard" commands from a menu alist
 (DEFFLAVOR COMMAND-MENU-MIXIN (IO-BUFFER) ()
@@ -686,12 +761,21 @@ is redrawn if DRAW-P is T."
 	 (SETQ CHOSEN-ITEM NIL))))
 
 (DEFFLAVOR COMMAND-MENU () (COMMAND-MENU-MIXIN MENU))
+
+(DEFFLAVOR COMMAND-MENU-ABORT-ON-DEEXPOSE-MIXIN () ()
+  (:INCLUDED-FLAVORS COMMAND-MENU)
+  (:DOCUMENTATION :MIXIN "Automatically clicks on the ABORT item if the menu is deexposed"))
+
+(DEFMETHOD (COMMAND-MENU-ABORT-ON-DEEXPOSE-MIXIN :BEFORE :DEEXPOSE) (&REST IGNORE)
+  (IF EXPOSED-P
+      (DOLIST (ITEM ITEM-LIST)
+	(IF (STRING-EQUAL (MENU-ITEM-STRING ITEM) "ABORT")
+	    (RETURN (IO-BUFFER-PUT IO-BUFFER `(:MENU ,ITEM 1 ,SELF)))))))
 
 (DEFFLAVOR MENU-HIGHLIGHTING-MIXIN ((HIGHLIGHTED-ITEMS NIL)) ()
   (:INCLUDED-FLAVORS TV:BASIC-MENU)
   (:GETTABLE-INSTANCE-VARIABLES HIGHLIGHTED-ITEMS)
   (:INITABLE-INSTANCE-VARIABLES HIGHLIGHTED-ITEMS)
-  (:DEFAULT-INIT-PLIST :BLINKER-FUNCTION 'TV:HOLLOW-RECTANGULAR-BLINKER)
   (:DOCUMENTATION :MIXIN "Provides for highlighting of items with inverse video"))
 
 ; This does not remember it on the list, you probably don't want to use it yourself
@@ -826,20 +910,17 @@ Clicking on a choice box simulates clicking on a menu item")
 
 ;Modified mouse-button handler.  Does normal thing for special-choices, otherwise
 ;just complements highlight state.
-(DEFMETHOD (MULTIPLE-MENU-MIXIN :MOUSE-BUTTONS) (BD X Y &AUX ITEM)
-  BD X Y ;ignored, we don't care where the mouse is, the :MOUSE-MOVES method took care of that
-  (COND ((NOT EXPOSED-P)	;Button pushed while not exposed, expose self.
-	 (FUNCALL-SELF ':EXPOSE))
-	((NULL (SETQ ITEM CURRENT-ITEM)))
-	((AND (NOT (ATOM ITEM))	;Special-choice selected?
-	      (NOT (ATOM (CDR ITEM)))
-	      (GET (CDDR ITEM) ':SPECIAL-CHOICE))
-	 (SETQ LAST-ITEM CURRENT-ITEM
-	       CHOSEN-ITEM CURRENT-ITEM))
-	(T			;Ordinary item, highlight or un-highlight it
+(DEFWRAPPER (MULTIPLE-MENU-MIXIN :MOUSE-BUTTONS) (IGNORE . BODY)
+  `(LET ((ITEM CURRENT-ITEM))
+     (COND ((NULL ITEM))
+	   ((AND (NOT (ATOM ITEM))	;Special-choice selected?
+		 (NOT (ATOM (CDR ITEM)))
+		 (GET (CDDR ITEM) ':SPECIAL-CHOICE))
+	    . ,BODY)			;Yes, do normal action
+	(T				;Ordinary item, highlight or un-highlight it
 	 (FUNCALL-SELF (IF (MEMQ ITEM HIGHLIGHTED-ITEMS) ':REMOVE-HIGHLIGHTED-ITEM
 			   ':ADD-HIGHLIGHTED-ITEM)
-		       ITEM))))
+		       ITEM)))))
 
 (DEFFLAVOR MULTIPLE-MENU () (MULTIPLE-MENU-MIXIN MENU))
 
@@ -851,6 +932,9 @@ Menus of this type handle the mouse for a small area outside of their
 actual edges.  They also are automatically deactivated whenever an item
 is chosen or the mouse moves even further, out of its control."))
 
+(DEFWRAPPER (BASIC-MOMENTARY-MENU :CHOOSE) (IGNORE . BODY)
+  `(*CATCH 'ABORT (PROGN . ,BODY)))
+
 (DEFMETHOD (BASIC-MOMENTARY-MENU :BEFORE :CHOOSE) ()
   (COND ((NOT EXPOSED-P)
 	 (MULTIPLE-VALUE-BIND (X-OFF Y-OFF)
@@ -859,11 +943,19 @@ is chosen or the mouse moves even further, out of its control."))
 	       (FUNCALL-SELF ':CENTER-AROUND (- MOUSE-X X-OFF) (- MOUSE-Y Y-OFF))
 	     (MOUSE-WARP (+ X X-OFF) (+ Y Y-OFF))))
 	 ;; Expose self, and seize the mouse.
-	 (FUNCALL-SELF ':EXPOSE))))
+	 (WITH-MOUSE-GRABBED
+	   (FUNCALL-SELF ':EXPOSE)
+	   (COND ((NEQ SELF (LOWEST-SHEET-UNDER-POINT MOUSE-SHEET MOUSE-X MOUSE-Y
+						      NIL ':EXPOSED))
+		  (FUNCALL-SELF ':DEACTIVATE)
+		  (*THROW 'ABORT NIL)))))))
 
 ;;; When no selection, but mouse moved out of range, deexpose menu
 (DEFMETHOD (BASIC-MOMENTARY-MENU :AFTER :HANDLE-MOUSE) ()
   (OR CHOSEN-ITEM
+      ;; Don't flush if mouse being usurped
+      WINDOW-OWNING-MOUSE
+      ;; Only flush us if either not explicitly flushing or we don't own mouse
       (AND MOUSE-RECONSIDER (EQ SELF (WINDOW-OWNING-MOUSE)))
       ;; This is called in the mouse process.  We don't want to take the chance that
       ;; we might go blocked, so run in another process.
@@ -871,7 +963,7 @@ is chosen or the mouse moves even further, out of its control."))
 
 ;;; Make MOUSE-DEFAULT-HANDLER return so menu gets deactivated.
 (DEFMETHOD (BASIC-MOMENTARY-MENU :AFTER :MOUSE-BUTTONS) (IGNORE IGNORE IGNORE)
-  (SETQ MOUSE-RECONSIDER T))
+  (AND CHOSEN-ITEM (SETQ MOUSE-RECONSIDER T)))
 
 (DEFMETHOD (BASIC-MOMENTARY-MENU :BEFORE :EXECUTE) (&REST IGNORE)
   (FUNCALL-SELF ':DEACTIVATE))
@@ -888,16 +980,39 @@ and then used if a :window-op type item is selected."))
 
 (DEFMETHOD (WINDOW-HACKING-MENU-MIXIN :EXECUTE-WINDOW-OP) (FUNCTION)
   (FUNCALL FUNCTION WINDOW-UNDER-MENU OLD-X OLD-Y))
+
+(DEFFLAVOR ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN () ()
+  (:REQUIRED-FLAVORS BASIC-MENU)
+  (:REQUIRED-METHODS :UPDATE-ITEM-LIST)
+  (:DEFAULT-INIT-PLIST :ITEM-LIST NIL)
+  (:DOCUMENTATION :MIXIN "Allows the menu to have an item list that's being dynamically
+modified.  Causes the menu's item list to be updated at appropriate times.
+The actual item list is computed via the :UPDATE-ITEM-LIST message."))
+
+(DEFMETHOD (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN :BEFORE :CHOOSE) (&REST IGNORE)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+
+(DEFMETHOD (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN :BEFORE :MOVE-NEAR-WINDOW) (&REST IGNORE)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+
+(DEFMETHOD (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN :BEFORE :CENTER-AROUND) (&REST IGNORE)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+
+(DEFMETHOD (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN :BEFORE :SIZE) (&REST IGNORE)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+
+(DEFMETHOD (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN :BEFORE :PANE-SIZE) (&REST IGNORE)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
 
 
-(DEFFLAVOR DYNAMIC-ITEM-LIST-MIXIN ((ITEM-LIST-POINTER NIL)) ()
+(DEFFLAVOR DYNAMIC-ITEM-LIST-MIXIN ((ITEM-LIST-POINTER NIL))
+	   (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN)
   :INITABLE-INSTANCE-VARIABLES
   :SETTABLE-INSTANCE-VARIABLES
   :GETTABLE-INSTANCE-VARIABLES
-  (:INCLUDED-FLAVORS BASIC-MENU)
-  (:DEFAULT-INIT-PLIST :ITEM-LIST NIL)
   (:DOCUMENTATION :MIXIN "Allows the menu to have an item list that's being dynamically
-modified.  Causes the menu's item list to be updated at appropriate times."))
+modified.  Causes the menu's item list to be updated at appropriate times.
+The ITEM-LIST-POINTER instance variable is a form to be evaluated to get the item list."))
 
 (DECLARE-FLAVOR-INSTANCE-VARIABLES (DYNAMIC-ITEM-LIST-MIXIN)
 (DEFUN DYNAMIC-ITEM-LIST ()
@@ -914,20 +1029,55 @@ modified.  Causes the menu's item list to be updated at appropriate times."))
        (OR (EQUAL ITEM-LIST (SETQ NEW-ITEM-LIST (DYNAMIC-ITEM-LIST)))
 	   (FUNCALL-SELF ':SET-ITEM-LIST NEW-ITEM-LIST))))
 
-(DEFMETHOD (DYNAMIC-ITEM-LIST-MIXIN :BEFORE :CHOOSE) (&REST IGNORE)
-  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
 
-(DEFMETHOD (DYNAMIC-ITEM-LIST-MIXIN :BEFORE :MOVE-NEAR-WINDOW) (&REST IGNORE)
-  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+(DEFFLAVOR DYNAMIC-MULTICOLUMN-MIXIN (COLUMN-SPEC-LIST PREVIOUS-STATE)
+	   (ABSTRACT-DYNAMIC-ITEM-LIST-MIXIN)
+  (:INITABLE-INSTANCE-VARIABLES COLUMN-SPEC-LIST)
+  (:DOCUMENTATION :MIXIN "Makes a menu have multiple 'dynamic' columns.
+Each column comes from a separate item-list which is recomputed at appropriate times.
+The instance variable COLUMN-SPEC-LIST is a list of columns, each column consists
+of (heading item-list-form . options).  Heading is a string to go at the top of the
+column, and options are menu-item options for it (typically font).  item-list-form is
+a form to be evaluated (without side-effects) to get the item list for that column."))
 
-(DEFMETHOD (DYNAMIC-ITEM-LIST-MIXIN :BEFORE :CENTER-AROUND) (&REST IGNORE)
-  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+(DEFMETHOD (DYNAMIC-MULTICOLUMN-MIXIN :BEFORE :INIT) (IGNORE)
+  (SETQ PREVIOUS-STATE (MAKE-LIST (LENGTH COLUMN-SPEC-LIST))))
 
-(DEFMETHOD (DYNAMIC-ITEM-LIST-MIXIN :BEFORE :SIZE) (&REST IGNORE)
-  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+(DEFMETHOD (DYNAMIC-MULTICOLUMN-MIXIN :UPDATE-ITEM-LIST) (&OPTIONAL FORCE)
+  (IF (OR FORCE
+	  (LOOP FOR (HEADING FORM) IN COLUMN-SPEC-LIST
+		AND OLD-ITEM-LIST IN PREVIOUS-STATE
+		THEREIS (NEQ (IF (SYMBOLP FORM) (SYMEVAL FORM) (EVAL FORM)) OLD-ITEM-LIST)))
+      ;; Something has changed, set up new item list.
+      ;; Start by extracting the column lists and setting up the headings.
+      (LOOP FOR (HEADING FORM . OPTIONS) IN COLUMN-SPEC-LIST 
+	    AND STATEL ON PREVIOUS-STATE
+	    COLLECT `(,HEADING :NO-SELECT T . ,OPTIONS) INTO NEW-ITEM-LIST
+	    COLLECT (IF (SYMBOLP FORM) (SYMEVAL FORM) (EVAL FORM)) INTO COLUMNS
+	    FINALLY
+	;; Now interleave the columns, and save the old state.
+	(SETQ NEW-ITEM-LIST (NREVERSE NEW-ITEM-LIST))
+	(LOOP FOR C IN COLUMNS AND L ON PREVIOUS-STATE DO (RPLACA L C))
+	(LOOP REPEAT (LOOP FOR C IN COLUMNS MAXIMIZE (LENGTH C))
+	      DO (LOOP FOR L ON COLUMNS
+		       DO (PUSH (OR (CAAR L) `("" :NO-SELECT T)) NEW-ITEM-LIST)
+			  (RPLACA L (CDAR L))))
+	(OR (EQ (CAR GEOMETRY) (LENGTH COLUMN-SPEC-LIST))
+	    (FUNCALL-SELF ':SET-GEOMETRY (LENGTH COLUMN-SPEC-LIST)))
+	(FUNCALL-SELF ':SET-ITEM-LIST (NREVERSE NEW-ITEM-LIST)))))
 
-(DEFMETHOD (DYNAMIC-ITEM-LIST-MIXIN :BEFORE :PANE-SIZE) (&REST IGNORE)
-  (FUNCALL-SELF ':UPDATE-ITEM-LIST))
+(DEFMETHOD (DYNAMIC-MULTICOLUMN-MIXIN :SET-COLUMN-SPEC-LIST) (NEW-COLUMN-SPEC-LIST)
+  (SETQ PREVIOUS-STATE (MAKE-LIST (LENGTH NEW-COLUMN-SPEC-LIST)))
+  (SETQ COLUMN-SPEC-LIST NEW-COLUMN-SPEC-LIST)
+  (FUNCALL-SELF ':UPDATE-ITEM-LIST T))
+
+;;; This is a bit of a kludge.  It is necessary because this method is not
+;;; loaded before the COMPILE-FLAVOR-METHODS is done, and therefore the
+;;; flavor system assumes that the method has been deleted and recompiles
+;;; the combined method.  So we tell it that there is going to be a method,
+;;; but the actual code for the method is in FRAME.
+(SI:FLAVOR-NOTICE-METHOD '(:METHOD BASIC-MENU :PANE-SIZE))
+
 
 ;;; Menus to be used for a momentary choice.
 ;;; Send a menu of this type a :CHOOSE message to use the menu.
@@ -939,7 +1089,7 @@ modified.  Causes the menu's item list to be updated at appropriate times."))
 ;;; no windows will be re-exposed before the cadr is called.
 (DEFFLAVOR MOMENTARY-MENU ((LABEL NIL)) (BASIC-MOMENTARY-MENU TEMPORARY-WINDOW-MIXIN
 					 BORDERS-MIXIN TOP-BOX-LABEL-MIXIN
-					 MINIMUM-WINDOW)
+					 BASIC-SCROLL-BAR MINIMUM-WINDOW)
   (:DOCUMENTATION :COMBINATION "Temporary menu that goes away after item is chosen"))
 
 
@@ -953,12 +1103,17 @@ modified.  Causes the menu's item list to be updated at appropriate times."))
 (DEFFLAVOR DYNAMIC-POP-UP-MENU () (DYNAMIC-ITEM-LIST-MIXIN POP-UP-MENU))
 (DEFFLAVOR DYNAMIC-POP-UP-COMMAND-MENU ()
 	   (DYNAMIC-ITEM-LIST-MIXIN TEMPORARY-WINDOW-MIXIN COMMAND-MENU))
-
+(DEFFLAVOR DYNAMIC-POP-UP-ABORT-ON-DEEXPOSE-COMMAND-MENU ()
+	   (COMMAND-MENU-ABORT-ON-DEEXPOSE-MIXIN DYNAMIC-POP-UP-COMMAND-MENU))
+(DEFFLAVOR DYNAMIC-MULTICOLUMN-MOMENTARY-MENU ()
+	   (DYNAMIC-MULTICOLUMN-MIXIN MOMENTARY-MENU))
+(DEFFLAVOR DYNAMIC-MULTICOLUMN-MOMENTARY-WINDOW-HACKING-MENU ()
+	   (WINDOW-HACKING-MENU-MIXIN DYNAMIC-MULTICOLUMN-MOMENTARY-MENU))
 
 (DEFUN MENU-CHOOSE (ALIST &OPTIONAL (LABEL NIL) (NEAR-MODE '(:MOUSE)) DEFAULT-ITEM
-		    &AUX (SUPERIOR MOUSE-SHEET))
+		    (SUPERIOR MOUSE-SHEET) &AUX V1 V2)
   (AND (EQ (CAR NEAR-MODE) ':WINDOW) (SETQ SUPERIOR (SHEET-SUPERIOR (CADR NEAR-MODE))))
-  (LET ((MENU (GET-A-SYSTEM-WINDOW 'MOMENTARY-MENU SUPERIOR)))
+  (USING-RESOURCE (MENU MOMENTARY-MENU SUPERIOR)
     (FUNCALL MENU ':SET-LABEL LABEL)
     (FUNCALL MENU ':SET-ITEM-LIST ALIST)
     (FUNCALL MENU ':SET-LAST-ITEM DEFAULT-ITEM)
@@ -966,13 +1121,18 @@ modified.  Causes the menu's item list to be updated at appropriate times."))
     (AND DEFAULT-ITEM (NOT (MEMQ (CAR NEAR-MODE) '(:MOUSE :POINT)))
 	 (MULTIPLE-VALUE-BIND (X Y)
 	     (FUNCALL MENU ':ITEM-CURSORPOS DEFAULT-ITEM)
-	   (FUNCALL MENU ':SET-MOUSE-POSITION X Y)))
-    (PROG () (RETURN (FUNCALL MENU ':CHOOSE) (FUNCALL MENU ':LAST-ITEM)))))
+	   (AND X Y
+		(FUNCALL MENU ':SET-MOUSE-POSITION (+ X (SHEET-INSIDE-LEFT MENU))
+			 			   (+ Y (SHEET-INSIDE-TOP MENU))))))
+    (SETQ V1 (FUNCALL MENU ':CHOOSE) V2 (FUNCALL MENU ':LAST-ITEM)))
+  (VALUES V1 V2))	;No multiple values through unwind-protect!
 
 ;All types of menus, since they probably all get used
 (COMPILE-FLAVOR-METHODS MENU POP-UP-MENU COMMAND-MENU MOMENTARY-MENU
 			MOMENTARY-WINDOW-HACKING-MENU
 			MULTIPLE-MENU MOMENTARY-MULTIPLE-MENU
 			DYNAMIC-MOMENTARY-MENU DYNAMIC-MOMENTARY-WINDOW-HACKING-MENU
-			DYNAMIC-POP-UP-MENU DYNAMIC-POP-UP-COMMAND-MENU)
-
+			DYNAMIC-POP-UP-MENU DYNAMIC-POP-UP-COMMAND-MENU
+			DYNAMIC-POP-UP-ABORT-ON-DEEXPOSE-COMMAND-MENU
+			DYNAMIC-MULTICOLUMN-MOMENTARY-MENU
+			DYNAMIC-MULTICOLUMN-MOMENTARY-WINDOW-HACKING-MENU)

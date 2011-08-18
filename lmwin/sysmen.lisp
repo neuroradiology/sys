@@ -1,144 +1,133 @@
 ;;; -*- Mode: LISP; Package: TV; Base: 8 -*-
 ;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
-;;; There are certain kinds of windows that are associated with screens.  These include
-;;; the system menu, and associated windows.  This a facility for defining those
-;;; kinds of windows, and allocating them automatically.
-(DEFVAR SYSTEM-WINDOWS NIL)
-(DEFSTRUCT (SYSTEM-WINDOW :LIST (:CONSTRUCTOR NIL))
-  SYSTEM-WINDOW-TYPE
-  SYSTEM-WINDOW-CREATION-FUNCTION
-  SYSTEM-WINDOW-MORE-THAN-ONE-P
-  SYSTEM-WINDOW-CONDITION
-  SYSTEM-WINDOW-WINDOWS)
-
-(DEFUN SYSTEM-WINDOW-ADD-TYPE (TYPE CREATION-FUNCTION MORE-THAN-ONE-P CONDITION)
-  (OR (ASSQ TYPE SYSTEM-WINDOWS)
-      (PUSH (LIST TYPE CREATION-FUNCTION MORE-THAN-ONE-P CONDITION NIL) SYSTEM-WINDOWS))
-  (GET-A-SYSTEM-WINDOW TYPE DEFAULT-SCREEN NIL))
-
-(DEFUN GET-A-SYSTEM-WINDOW (TYPE &OPTIONAL (ROOT MOUSE-SHEET) (WAIT-P T))
-  "Allocates a system window of the specified type.  Root is the window that the window
-should be made the inferior of."
-  (LET* ((SCREEN (SHEET-GET-SCREEN ROOT))
-	 (SWE (OR (ASSQ TYPE SYSTEM-WINDOWS)
-		  (FERROR NIL "~A is not a known type of system window" TYPE)))
-	 (W (DOLIST (SW (SYSTEM-WINDOW-WINDOWS SWE))
-	      (COND ((EQ (CAR SW) SCREEN)
-		     (AND (SYSTEM-WINDOW-OK-P SWE SW)
-			  (RETURN (CDR SW)))
-		     (COND ((SYSTEM-WINDOW-MORE-THAN-ONE-P SWE))
-			   (WAIT-P
-			    (PROCESS-WAIT "System Window" #'SYSTEM-WINDOW-OK-P SWE SW)
-			    (RETURN (CDR SW)))
-			   (T (RETURN T))))))))
-    (OR W
-	(PUSH (CONS SCREEN (SETQ W (FUNCALL (SYSTEM-WINDOW-CREATION-FUNCTION SWE) ROOT)))
-	      (SYSTEM-WINDOW-WINDOWS SWE)))
-    (IF (OR (NULL W) (EQ W T))
-	NIL
-	(FUNCALL W ':SET-SUPERIOR ROOT)
-	W)))
-
-(DEFUN SYSTEM-WINDOW-OK-P (SWE SW)
-  (WITHOUT-INTERRUPTS
-    (AND (SHEET-CAN-GET-LOCK (CDR SW))
-	 (SELECTQ (SYSTEM-WINDOW-CONDITION SWE)
-	   ((:DEEXPOSED NIL)
-	    (NOT (SHEET-EXPOSED-P (CDR SW))))
-	   (:DEACTIVATED
-	    (NOT (MEMQ (CDR SW)
-		       (SHEET-INFERIORS (SHEET-SUPERIOR (CDR SW))))))))))
-
-(SYSTEM-WINDOW-ADD-TYPE 'MOMENTARY-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'MOMENTARY-MENU ':SUPERIOR SUP))
-			T ':DEEXPOSED)
-
 ;; Operations for moving, reshaping and creating windows,
 ;; and menus to get them from.
 
-(DEFVAR SYSTEM-MENU-ITEM-LIST)
-(SETQ SYSTEM-MENU-ITEM-LIST
-      '(("Create" :FUNCALL SYSTEM-MENU-CREATE-WINDOW)
-	("Select" :FUNCALL SYSTEM-MENU-SELECT-WINDOW)
-	("Inspect" :FUNCALL INSPECT)
-	("Trace" :FUNCALL TRACE-VIA-MENUS)
-	("Split Screen" :FUNCALL SYSTEM-MENU-SPLIT-SCREEN-VIA-MENUS)
-	("Layouts" :FUNCALL SYSTEM-MENU-LAYOUTS)
-	("Edit Screen" :WINDOW-OP
-	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (SETQ WINDOW (SCREEN-EDITOR-FIND-SCREEN-TO-EDIT WINDOW))
-	   (AND WINDOW (EDIT-SCREEN WINDOW))))
-	("Other" :WINDOW-OP
-	 (LAMBDA (WINDOW X Y)
-	   ;; Move mouse back to where it was when the first menu
-	   ;; was requested, so that this menu's operations will
-	   ;; apply to the same window.
-	   (MOUSE-WARP X Y)
-	   (FUNCALL (GET-A-SYSTEM-WINDOW 'AUXILIARY-MENU MOUSE-SHEET) ':CHOOSE)))))
+;; Item lists for the System Menu
 
-(SYSTEM-WINDOW-ADD-TYPE 'SYSTEM-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-MOMENTARY-WINDOW-HACKING-MENU
-					   ':SUPERIOR SUP
-					   ':SAVE-BITS T
-					   ':ITEM-LIST-POINTER 'SYSTEM-MENU-ITEM-LIST))
-			T
-			':DEEXPOSED)
+(DEFVAR *SYSTEM-MENU-WINDOWS-COLUMN*		;General window operations
+      '(("Create" :FUNCALL SYSTEM-MENU-CREATE-WINDOW
+	 :DOCUMENTATION "Create a new window.  Flavor of window selected from a menu.")
+	("Select" :FUNCALL SYSTEM-MENU-SELECT-WINDOW
+	 :DOCUMENTATION "Select a window from a menu.")
+	("Split Screen" :FUNCALL SYSTEM-MENU-SPLIT-SCREEN-VIA-MENUS
+	 :DOCUMENTATION "Create a split screen configuration.  Options from menu.")
+	("Layouts" :FUNCALL SYSTEM-MENU-LAYOUTS
+	 :DOCUMENTATION "Save//restore current screen configuration.  Options from menu.")
+	("Edit Screen" :BUTTONS
+		((NIL :EVAL (EDIT-SCREEN MOUSE-SHEET))
+		 (NIL :EVAL (EDIT-SCREEN MOUSE-SHEET))
+		 (NIL :WINDOW-OP (LAMBDA (WINDOW IGNORE IGNORE)
+				   (SETQ WINDOW (SCREEN-EDITOR-FIND-SCREEN-TO-EDIT WINDOW))
+				   (AND WINDOW (EDIT-SCREEN WINDOW)))))
+		:DOCUMENTATION "Edit a screen.  Left edits screen the mouse is on, right button gives menu of frames."
+		)
+	("Set Mouse Screen" :BUTTONS ((NIL :EVAL (SYSTEM-MENU-SET-MOUSE-SCREEN NIL))
+				      (NIL :EVAL (SYSTEM-MENU-SET-MOUSE-SCREEN NIL))
+				      (NIL :EVAL (SYSTEM-MENU-SET-MOUSE-SCREEN T)))
+	 :DOCUMENTATION "Set the screen the mouse is on.  Left defaults if possible, right always uses menu.")))
 
-
-(DEFVAR AUXILIARY-MENU-ITEM-LIST)
-(SETQ AUXILIARY-MENU-ITEM-LIST
-      '(("Arrest" :WINDOW-OP
-	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (AND WINDOW (FUNCALL WINDOW ':ARREST))))
+(DEFVAR *SYSTEM-MENU-THIS-WINDOW-COLUMN*	;Operations on window mouse is over
+      '(("Attributes" :WINDOW-OP SYSTEM-MENU-EDIT-WINDOW-ATTRIBUTES
+	 :DOCUMENTATION
+	    "View or change the attributes of the window that the mouse is over.")
+	("Refresh" :WINDOW-OP (LAMBDA (WINDOW IGNORE IGNORE)
+				(AND WINDOW (FUNCALL WINDOW ':REFRESH)))
+	 :DOCUMENTATION "Refresh the window that the mouse is over.")
+	("Bury" :WINDOW-OP SYSTEM-MENU-BURY-WINDOW
+	 :DOCUMENTATION
+	    "Bury the window that the mouse is over, beneath all other active windows.")
+	("Kill" :WINDOW-OP SYSTEM-MENU-KILL-WINDOW
+	 :DOCUMENTATION "Kill the window that the mouse is over.")
+	("Reset" :WINDOW-OP SYSTEM-MENU-RESET-WINDOW
+	 :DOCUMENTATION
+	    "Reset the process that can be found via the window the mouse is over.")
+	("Arrest" :WINDOW-OP (LAMBDA (WINDOW IGNORE IGNORE)
+			       (AND WINDOW (FUNCALL WINDOW ':ARREST)))
+	 :DOCUMENTATION
+	    "Arrest the process that can be found via the window the mouse is over.")
 	("Un-Arrest" :WINDOW-OP
 	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (AND WINDOW (FUNCALL WINDOW ':UN-ARREST))))
-	("Reset" :WINDOW-OP
-	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (AND WINDOW (FUNCALL WINDOW ':ABORT))))
-	("Kill" :WINDOW-OP
-	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (AND WINDOW (FUNCALL WINDOW ':KILL))))
-	("Emergency Break" :EVAL
-	 (PROCESS-RUN-FUNCTION "Emergency Break" #'KBD-USE-COLD-LOAD-STREAM))
-	("Refresh" :WINDOW-OP
-	 (LAMBDA (WINDOW IGNORE IGNORE)
-	   (AND WINDOW (FUNCALL WINDOW ':REFRESH))))
-	("Set Mouse Screen" :FUNCALL SYSTEM-MENU-SET-MOUSE-SCREEN)))
+	   (AND WINDOW (FUNCALL WINDOW ':UN-ARREST)))
+	 :DOCUMENTATION
+	    "Un-arrest the process that can be found via the window the mouse is over (inverse of Arrest).")))
 
-(SYSTEM-WINDOW-ADD-TYPE 'AUXILIARY-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-MOMENTARY-WINDOW-HACKING-MENU
-					   ':SUPERIOR SUP
-					   ':SAVE-BITS T
-					   ':ITEM-LIST-POINTER 'AUXILIARY-MENU-ITEM-LIST))
-			T
-			':DEEXPOSED)
+(DEFVAR *SYSTEM-MENU-PROGRAMS-COLUMN*		;Invoke the most commonly-needed programs
+      '(("Lisp" :EVAL (SELECT-OR-CREATE-WINDOW-OF-FLAVOR 'LISTENER-MIXIN 'LISP-LISTENER)
+	 :DOCUMENTATION "Select a Lisp listener, to evaluate Lisp forms.")
+	("Edit" :EVAL (SELECT-OR-CREATE-WINDOW-OF-FLAVOR 'ZWEI:ZMACS-FRAME)
+	 :DOCUMENTATION "Select an Editor, to edit text or write a program.")
+	("Inspect" FUNCALL INSPECT
+	 :DOCUMENTATION "Select an Inspector, to browse through data structure.")
+	("Trace" :FUNCALL TRACE-VIA-MENUS
+	 :DOCUMENTATION "Trace a function.  Options selected from menu.")
+	("Emergency Break"
+	 :EVAL (PROCESS-RUN-TEMPORARY-FUNCTION "Emergency Break" #'KBD-USE-COLD-LOAD-STREAM)
+	 :DOCUMENTATION 
+	   "Evaluate Lisp forms without using the window system.  ** Use with caution **")))
 
-(DEFVAR DEFAULT-WINDOW-TYPES-ITEM-LIST)
-(SETQ DEFAULT-WINDOW-TYPES-ITEM-LIST
-      '(("Supdup" . SUPDUP:SUPDUP)
-	("Telnet" . SUPDUP:TELNET)
-	("Lisp" . LISP-LISTENER)
-	("Edit" . NZWEI:ZMACS-FRAME)
-	("Peek" . PEEK)
-	("Any" :VALUE T :FONT FONTS:MEDFNB)))
+;Programs outside of the basic system which want to appear in the system menu
+;call this function, specifying string, form to evaluate, mouse documentation
+;string, and optionally the name of another program they should be listed after.
+;The default (AFTER=NIL) is to add new programs at the bottom.
+;If AFTER=T the new program is added at the top.
+;The SELECT-OR-CREATE-WINDOW-OF-FLAVOR function is often useful.
+(DEFUN ADD-TO-SYSTEM-MENU-PROGRAMS-COLUMN (NAME FORM DOCUMENTATION &OPTIONAL AFTER)
+  (OR (ASSOC NAME *SYSTEM-MENU-PROGRAMS-COLUMN*)
+      (LET ((ITEM `(,NAME :EVAL ,FORM :DOCUMENTATION ,DOCUMENTATION)))
+	(SETQ *SYSTEM-MENU-PROGRAMS-COLUMN*
+	      (IF (EQ AFTER T) (CONS ITEM *SYSTEM-MENU-PROGRAMS-COLUMN*)
+		  (LOOP WITH AFTER = (OR (ASSOC AFTER *SYSTEM-MENU-PROGRAMS-COLUMN*)
+					 (CAR (LAST *SYSTEM-MENU-PROGRAMS-COLUMN*)))
+			FOR X IN *SYSTEM-MENU-PROGRAMS-COLUMN*
+			COLLECT X
+			WHEN (EQ X AFTER)
+			  COLLECT ITEM))))))
+
+;Resource of system menus
+(DEFWINDOW-RESOURCE SYSTEM-MENU ()
+	:MAKE-WINDOW (DYNAMIC-MULTICOLUMN-MOMENTARY-WINDOW-HACKING-MENU
+			 :COLUMN-SPEC-LIST '(("Windows" *SYSTEM-MENU-WINDOWS-COLUMN*
+					        :FONT FONTS:HL12I)
+					     ("This window" *SYSTEM-MENU-THIS-WINDOW-COLUMN*
+					        :FONT FONTS:HL12I)
+					     ("Programs" *SYSTEM-MENU-PROGRAMS-COLUMN*
+					        :FONT FONTS:HL12I))
+			 :SAVE-BITS T)
+	:REUSABLE-WHEN :DEEXPOSED)
+
+;This is the menu of programs popped-up when you Click on create.  To keep the
+;system menu from being absurdly big, some programs are in this menu but not
+;in the programs column of the system menu.  Also this menu gives you a
+;chance to set the edges.
+(DEFVAR DEFAULT-WINDOW-TYPES-ITEM-LIST
+      '(("Supdup" :EVAL SUPDUP:SUPDUP-FLAVOR :DOCUMENTATION "Supdup to ITS or local TOPS-20.")
+	("Telnet" :VALUE SUPDUP:TELNET :DOCUMENTATION "TELNET to Chaos or ARPAnet host.")
+	("Lisp" :VALUE LISP-LISTENER
+	 :DOCUMENTATION "A READ-EVAL-PRINT loop in seperate process.")
+	("Edit" :VALUE ZWEI:ZMACS-FRAME
+	 :DOCUMENTATION "An editor, sharing buffers with other editors.")
+	("Peek" :VALUE PEEK :DOCUMENTATION "Display status information.")
+	("Lisp (Edit)" :VALUE ZWEI:EDITOR-TOP-LEVEL
+	 :DOCUMENTATION
+	 "A READ-EVAL-PRINT loop in seperate process with editing capabilities.")
+	("Any" :VALUE T :FONT FONTS:MEDFNB
+	 :DOCUMENTATION "Prompts for any flavor name.")))
 
 ;This variable is usually bound to something appropriate when using the menus that
 ;depend on it.
 ;But it needs a global value so that the initial copy of the menu can get created.
 (DEFVAR WINDOW-TYPES-ITEM-LIST DEFAULT-WINDOW-TYPES-ITEM-LIST)
-(SYSTEM-WINDOW-ADD-TYPE 'WINDOW-TYPE-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-MOMENTARY-MENU
-					   ':SUPERIOR SUP
-					   ':SAVE-BITS T
-					   ':ITEM-LIST-POINTER 'WINDOW-TYPES-ITEM-LIST))
-			T
-			':DEEXPOSED)
+
+;Resource of menus of flavors of windows user can create with mouse
+(DEFWINDOW-RESOURCE WINDOW-TYPE-MENU ()
+	:MAKE-WINDOW (DYNAMIC-MOMENTARY-MENU :ITEM-LIST-POINTER 'WINDOW-TYPES-ITEM-LIST
+					     :SAVE-BITS T)
+	:REUSABLE-WHEN :DEEXPOSED)
+
+(DEFMETHOD (SHEET :PANE-TYPES-ALIST) ()
+  (FUNCALL SUPERIOR ':PANE-TYPES-ALIST))
 
 (DEFMETHOD (SCREEN :PANE-TYPES-ALIST) ()
   DEFAULT-WINDOW-TYPES-ITEM-LIST)
@@ -146,20 +135,24 @@ should be made the inferior of."
 (DEFUN SELECTABLE-WINDOWS (SUP)
   (FUNCALL SUP ':SELECTABLE-WINDOWS))
 
-(SYSTEM-WINDOW-ADD-TYPE 'SELECTABLE-WINDOWS-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-MOMENTARY-MENU
-					   ':SUPERIOR SUP
-					   ':ITEM-LIST-POINTER
-					    '(MAPCAN #'SELECTABLE-WINDOWS ALL-THE-SCREENS)))
-			T
-			':DEEXPOSED)
+;Resource of menus of windows that user can select
+(DEFWINDOW-RESOURCE SELECTABLE-WINDOWS-MENU ()
+	:MAKE-WINDOW (DYNAMIC-MOMENTARY-MENU
+			 :ITEM-LIST-POINTER '(MAPCAN #'SELECTABLE-WINDOWS ALL-THE-SCREENS)
+			 :SAVE-BITS NIL)	;changes every time anyway
+	:REUSABLE-WHEN :DEEXPOSED)
 
 (DEFUN SYSTEM-MENU-SELECT-WINDOW (&OPTIONAL (SUP MOUSE-SHEET))
-  (LET ((WINDOW (FUNCALL (GET-A-SYSTEM-WINDOW 'SELECTABLE-WINDOWS-MENU SUP) ':CHOOSE)))
-    (AND WINDOW (MOUSE-SELECT WINDOW))))
+  (LET ((MENU (ALLOCATE-RESOURCE 'SELECTABLE-WINDOWS-MENU SUP)))
+    (COND ((NULL (FUNCALL MENU ':ITEM-LIST))
+	   (BEEP)
+	   (POP-UP-MESSAGE "Error: There are no windows that can be selected."))
+	  (T
+	   (LET ((WINDOW (FUNCALL MENU ':CHOOSE)))
+	     (AND WINDOW (MOUSE-SELECT WINDOW)))))))
 
-(DEFUN SYSTEM-MENU-CREATE-WINDOW (&OPTIONAL (SUP MOUSE-SHEET))
+;Must return the window or NIL
+(DEFUN SYSTEM-MENU-CREATE-WINDOW (&OPTIONAL (SUP MOUSE-SHEET) (EDGES-FROM 'MOUSE))
   (LET* ((WINDOW-TYPES-ITEM-LIST (FUNCALL SUP ':PANE-TYPES-ALIST))
 	 (WINDOW-TYPE (COND ((NULL WINDOW-TYPES-ITEM-LIST)
 			     (BEEP)
@@ -167,31 +160,83 @@ should be made the inferior of."
 			    ((NULL (CDR WINDOW-TYPES-ITEM-LIST))
 			     (CDAR WINDOW-TYPES-ITEM-LIST))
 			    (T
-			     (FUNCALL (GET-A-SYSTEM-WINDOW 'WINDOW-TYPE-MENU) ':CHOOSE))))
+			     (FUNCALL (ALLOCATE-RESOURCE 'WINDOW-TYPE-MENU) ':CHOOSE))))
 	 (MS MOUSE-SHEET))
+    (AND WINDOW-TYPE (LISTP WINDOW-TYPE)
+	 (SETQ WINDOW-TYPE (EVAL WINDOW-TYPE)))
     (UNWIND-PROTECT (PROGN (AND (EQ WINDOW-TYPE T)	;"Any"
 				(SETQ WINDOW-TYPE
 				      (GET-WINDOW-TYPE-FROM-KEYBOARD SUP ':EDGES-FROM)))
 			   (COND (WINDOW-TYPE
 				  (MOUSE-SET-SHEET SUP)
-				  (CREATE-WINDOW-WITH-MOUSE WINDOW-TYPE))))
+				  (CREATE-WINDOW-WITH-MOUSE WINDOW-TYPE EDGES-FROM))))
 		    (MOUSE-SET-SHEET MS))))
 
-(DEFUN CREATE-WINDOW-WITH-MOUSE (FLAVOR-NAME)
+;Must return the window or NIL
+(DEFUN CREATE-WINDOW-WITH-MOUSE (FLAVOR-NAME &OPTIONAL (EDGES-FROM 'MOUSE) &AUX TEM)
   (AND FLAVOR-NAME
-       (FUNCALL (WINDOW-CREATE FLAVOR-NAME ':EDGES-FROM ':MOUSE) ':SELECT)))
+       ;; Get the edges before creating the window so can abort.
+       (CAR (SETQ TEM
+		  (SELECTQ EDGES-FROM
+		    (MOUSE
+		      (LET* ((INIT-PLIST (SI:FLAVOR-DEFAULT-INIT-PLIST FLAVOR-NAME))
+			     (MINIMUM-WIDTH (OR (GET INIT-PLIST ':MINIMUM-WIDTH) 0))
+			     (MINIMUM-HEIGHT (OR (GET INIT-PLIST ':MINIMUM-HEIGHT) 0)))
+			(MULTIPLE-VALUE-LIST
+			  (MOUSE-SPECIFY-RECTANGLE NIL NIL NIL NIL MOUSE-SHEET
+						   MINIMUM-WIDTH MINIMUM-HEIGHT T))))
+		    (EXPAND
+		     (MULTIPLE-VALUE-LIST
+		       (MOUSE-SPECIFY-EXPAND MOUSE-SHEET))))))
+       (LET ((WINDOW (MAKE-WINDOW FLAVOR-NAME ':SUPERIOR MOUSE-SHEET ':EDGES TEM)))
+	 (FUNCALL WINDOW ':SELECT)
+	 WINDOW)))
 
-(DEFUN SYSTEM-MENU-SET-MOUSE-SCREEN (&AUX SCREENS)
+(DEFUN SYSTEM-MENU-SET-MOUSE-SCREEN (HAIRY &AUX SCREENS)
   (DOLIST (S ALL-THE-SCREENS)
     (AND (SHEET-EXPOSED-P S)
+	 (FUNCALL S ':USER-VISIBLE)
 	 (PUSH (CONS (SHEET-NAME S) S) SCREENS)))
   (COND ((= (LENGTH SCREENS) 1)
 	 (MOUSE-SET-SHEET (CDAR SCREENS)))
-	(T
-	 (LET ((MENU (GET-A-SYSTEM-WINDOW 'MOMENTARY-MENU)))
-	   (FUNCALL MENU ':SET-ITEM-LIST SCREENS)
-	   (LET ((S (FUNCALL MENU ':CHOOSE)))
-	     (AND S (MOUSE-SET-SHEET S)))))))
+	((NOT HAIRY)
+	 (MOUSE-SET-SHEET (DO ((L SCREENS (CDR L)))
+			      ((NULL L) (CDAR SCREENS))
+			    (AND (EQ (CDAR L) MOUSE-SHEET)
+				 (CDR L)
+				 (RETURN (CDADR L))))))
+	(T (LET ((S (MENU-CHOOSE SCREENS "Mouse onto:")))
+	     (AND S (MOUSE-SET-SHEET S))))))
+
+;Use this for functions that need confirmation.  Returns non-NIL if user confirms.
+(DEFUN MOUSE-Y-OR-N-P (MESSAGE)
+  (MENU-CHOOSE (LIST MESSAGE) "Confirm:" '(:MOUSE) MESSAGE))
+
+(DEFUN SYSTEM-MENU-KILL-WINDOW (WINDOW IGNORE IGNORE)
+  (AND WINDOW
+       (MOUSE-Y-OR-N-P
+	 (FORMAT NIL "Kill ~A"
+		 (SHEET-NAME (SETQ WINDOW (OR (FUNCALL WINDOW ':ALIAS-FOR-SELECTED-WINDOWS)
+					      WINDOW)))))
+       (FUNCALL WINDOW ':KILL)))
+
+(DEFUN SYSTEM-MENU-RESET-WINDOW (WINDOW IGNORE IGNORE &AUX P)
+  (AND WINDOW
+       (MOUSE-Y-OR-N-P (FORMAT NIL "Reset process in ~A" (SHEET-NAME WINDOW)))
+       (SETQ P (FUNCALL WINDOW ':PROCESS))
+       (FUNCALL P ':RESET)))
+
+(DEFUN SYSTEM-MENU-BURY-WINDOW (WINDOW IGNORE IGNORE)
+  (AND WINDOW
+       (FUNCALL (OR (FUNCALL WINDOW ':ALIAS-FOR-SELECTED-WINDOWS) WINDOW) ':BURY)))
+
+(DEFUN SELECT-OR-CREATE-WINDOW-OF-FLAVOR (FIND-FLAVOR &OPTIONAL (CREATE-FLAVOR FIND-FLAVOR))
+  (FUNCALL (OR (FIND-WINDOW-OF-FLAVOR FIND-FLAVOR) (MAKE-WINDOW CREATE-FLAVOR))
+	   ':MOUSE-SELECT))
+
+(DEFUN SYSTEM-MENU-EDIT-WINDOW-ATTRIBUTES (WINDOW IGNORE IGNORE)
+  (AND WINDOW
+       (SCREEN-EDITOR-EDIT-ATTRIBUTES WINDOW)))
 
 ;;; Stuff for setting up a screen layout.
 ;;; Suggested improvements:
@@ -202,157 +247,180 @@ should be made the inferior of."
 ;;;  Figure out why the choose-variable-values window sometimes fails to
 ;;;   appear and also why it sometimes fails to use a frame when I clearly told it to.
 
-(DEFVAR SPLIT-SCREEN-ITEM-LIST)
-(SETQ SPLIT-SCREEN-ITEM-LIST '("Existing Lisp" "Existing Window"
-			       "Plain Window" "Trace & Error"
-			       "Trace" "Error"
-			       ("" :NO-SELECT T) ("" :NO-SELECT T)
-			       "Frame" "Mouse Corners"
-			       ("" :NO-SELECT T) "Undo"
-			       ("Do It" :VALUE "Do It" :FONT FONTS:MEDFNB)
-			        ("Abort" :VALUE "Abort" :FONT FONTS:MEDFNB)))
+(DEFVAR SPLIT-SCREEN-ITEM-LIST
+	'(("Existing Lisp" :VALUE "Existing Lisp"
+	   :DOCUMENTATION "An already existing LISP Listener.")
+	  ("Existing Window" :VALUE "Existing Window"
+	   :DOCUMENTATION "An already existing window chosen from a menu.")
+	  ("Plain Window" :VALUE "Plain Window"
+	   :DOCUMENTATION "A window with no special attributes, suitable for simple output.")
+	  ("Trace & Error" :VALUE "Trace & Error"
+	   :DOCUMENTATION "Where trace and error is directed.")
+	  ("Trace" :VALUE "Trace" :DOCUMENTATION "Where trace output is directed.")
+	  ("Error" :VALUE "Error" :DOCUMENTATION "Where the error handler will run.")
+	  ("" :NO-SELECT T) ("" :NO-SELECT T)
+	  ("Frame" :VALUE "Frame" :DOCUMENTATION "Put choosen windows together in a frame.")
+	  ("Mouse Corners" :VALUE "Mouse Corners"
+	   :DOCUMENTATION "Specify the area to fill from the mouse.")
+	  ("" :NO-SELECT T)
+	  ("Undo" :VALUE "Undo" :DOCUMENTATION "Undo last selection.")
+	  ("Do It" :VALUE "Do It" :FONT FONTS:MEDFNB :DOCUMENTATION "Complete selection.")
+	  ("Abort" :VALUE "Abort" :FONT FONTS:MEDFNB :DOCUMENTATION "Abort Split Screen.")
+	  ))
+
 (DEFUN SPLIT-SCREEN-ITEM-LIST ()
   (APPEND WINDOW-TYPES-ITEM-LIST
 	  (IF (ODDP (LENGTH WINDOW-TYPES-ITEM-LIST))
 	      '(("" :NO-SELECT T)))
 	  SPLIT-SCREEN-ITEM-LIST))
 
-(SYSTEM-WINDOW-ADD-TYPE 'SPLIT-SCREEN-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-POP-UP-COMMAND-MENU
-					   ':NAME "Split Screen Menu"
-					   ':LABEL "Split screen element:"
-					   ':SUPERIOR SUP
-					   ':COLUMNS 2 ':SAVE-BITS T
-					   ':IO-BUFFER (MAKE-IO-BUFFER 10)
-					   ':ITEM-LIST-POINTER '(SPLIT-SCREEN-ITEM-LIST)))
-			T ':DEEXPOSED)
+(DEFWINDOW-RESOURCE SPLIT-SCREEN-MENU ()
+	:MAKE-WINDOW (DYNAMIC-POP-UP-ABORT-ON-DEEXPOSE-COMMAND-MENU
+			 :NAME "Split Screen Menu"
+			 :LABEL "Split screen element:" :COLUMNS 2 :SAVE-BITS ':DELAYED
+			 :IO-BUFFER (MAKE-IO-BUFFER 10)
+			 :ITEM-LIST-POINTER '(SPLIT-SCREEN-ITEM-LIST))
+	:REUSABLE-WHEN :DEEXPOSED)
 
-(LOCAL-DECLARE ((SPECIAL *USE-FRAME* *FRAME-NAME* *SYSTEM-KEY*))
+(DEFWINDOW-RESOURCE SPLIT-SCREEN-CHOOSE-VALUES ()
+	:WINDOW-CREATE (TEMPORARY-CHOOSE-VARIABLE-VALUES-WINDOW 
+			 :NAME "Split Screen Choose Values" :LABEL "Frame characteristics:"
+			 :CHARACTER-WIDTH 40. :IO-BUFFER NIL
+			 :MARGIN-CHOICES
+			    (LIST (LIST "Abort" NIL 'SPLIT-SCREEN-PUNT-FRAME NIL NIL))
+			 :VARIABLES '((*FRAME-NAME* "Name of frame" :STRING)
+				      (*SYSTEM-KEY* "[SYSTEM] <char> selects it"
+						    :CHARACTER-OR-NIL)))
+	:REUSABLE-WHEN :DEEXPOSED
+	:INITIAL-COPIES NIL)  ;due to order of loading of files
+
+(DEFUN SPLIT-SCREEN-PUNT-FRAME (&REST IGNORE)
+  (FUNCALL SELF ':FORCE-KBD-INPUT '(PUNT-FRAME)))
+
+(LOCAL-DECLARE ((SPECIAL *FRAME-NAME* *SYSTEM-KEY*))
 (DEFUN SYSTEM-MENU-SPLIT-SCREEN-VIA-MENUS (&OPTIONAL (SUP MOUSE-SHEET))
-  ;; This has to be done here rather than at top level due to order of loading files
-  (OR (ASSQ 'SPLIT-SCREEN-CHOOSE-VALUES SYSTEM-WINDOWS)
-      (SYSTEM-WINDOW-ADD-TYPE 'SPLIT-SCREEN-CHOOSE-VALUES 
-	#'(LAMBDA (SUP)
-	    (WINDOW-CREATE 'TEMPORARY-CHOOSE-VARIABLE-VALUES-WINDOW
-			   ':NAME "Split Screen Choose Values"
-			   ':LABEL "Frame characteristics:"
-			   ':SUPERIOR SUP
-			   ':CHARACTER-WIDTH 40.
-			   ':MARGIN-CHOICES NIL
-			   ':IO-BUFFER NIL
-			   ':VARIABLES '((*USE-FRAME* "Put windows inside a frame" :BOOLEAN)
-					 (*FRAME-NAME* "Name of frame" :STRING)
-					 (*SYSTEM-KEY* "[SYSTEM] <char> selects it"
-						       :CHARACTER-OR-NIL))))
-			T ':DEEXPOSED))
-  (LET* ((WINDOW-TYPES-ITEM-LIST (FUNCALL SUP ':PANE-TYPES-ALIST))
-	 (SCVM-MENU (GET-A-SYSTEM-WINDOW 'SPLIT-SCREEN-MENU SUP))
-	 (LAYWIN (GET-A-SYSTEM-WINDOW 'SPLIT-SCREEN-LAYOUT-WINDOW SUP))
-	 (EDGES (LIST (SHEET-INSIDE-LEFT SUP) (SHEET-INSIDE-TOP SUP)
-		      (SHEET-INSIDE-RIGHT SUP) (SHEET-INSIDE-BOTTOM SUP)))
-	 (INTERACTION-WINDOWS NIL) (CVVW NIL)
-	 (*USE-FRAME* NIL) (*FRAME-NAME* "Split-screen frame") (*SYSTEM-KEY* NIL)
-	 (IO-BUFFER) (ITEM))
-    (FUNCALL LAYWIN ':CLEAR-FROBS)
-    (SETQ IO-BUFFER (FUNCALL SCVM-MENU ':IO-BUFFER))
-    (IO-BUFFER-CLEAR IO-BUFFER)
-    (EXPOSE-WINDOW-NEAR SCVM-MENU '(:MOUSE))
-    (PUSH SCVM-MENU INTERACTION-WINDOWS)
-    (UNWIND-PROTECT
-      (DO ((WINDOW-TYPE-LIST NIL)
-	   (N-WINDOWS 0)
-	   (RES))
-	  (NIL)
-	(COND ((AND (PLUSP N-WINDOWS) (NOT (MEMQ LAYWIN INTERACTION-WINDOWS)))
-	       (AND CVVW (FUNCALL CVVW ':DEEXPOSE))		;May need to be moved
-	       (FUNCALL LAYWIN ':MOVE-NEAR-WINDOW SCVM-MENU
-			(CONS (- (THIRD EDGES) (FIRST EDGES))
-			      (- (FOURTH EDGES) (SECOND EDGES))))
-	       (PUSH LAYWIN INTERACTION-WINDOWS)
-	       (AND CVVW (EXPOSE-WINDOW-NEAR CVVW (CONS ':WINDOW
-							(REMQ CVVW INTERACTION-WINDOWS))))))
-	(PROCESS-WAIT "Choose" #'(LAMBDA (B) (NOT (IO-BUFFER-EMPTY-P B))) IO-BUFFER)
-	(SETQ RES (IO-BUFFER-GET IO-BUFFER))
-	(COND ((AND (EQ (FIRST RES) ':MENU) (EQ (FOURTH RES) SCVM-MENU))
-	       (SETQ RES (FUNCALL SCVM-MENU ':EXECUTE (SETQ ITEM (SECOND RES))))
-	       (AND (EQ RES T)		;"Any"
-		    (SETQ RES (GET-WINDOW-TYPE-FROM-KEYBOARD SUP ':EDGES-FROM
-						(CONS ':WINDOW INTERACTION-WINDOWS))))
-	       (COND ((NULL RES))	;Maybe failed getting type from keyboard
-		     ((EQUAL RES "Abort") (RETURN NIL))
-		     ((EQUAL RES "Mouse Corners")
-		      (SETQ EDGES (MULTIPLE-VALUE-LIST
-				    (MOUSE-SPECIFY-RECTANGLE NIL NIL NIL NIL SUP)))
-		      ;; Next line causes shape of LAYWIN to be recomputed
-		      (SETQ INTERACTION-WINDOWS (DELQ LAYWIN INTERACTION-WINDOWS)))
-		     ((EQUAL RES "Undo")
-		      (COND ((PLUSP N-WINDOWS)
-			     (SETQ N-WINDOWS (1- N-WINDOWS)
-				   WINDOW-TYPE-LIST (CDR WINDOW-TYPE-LIST))
-			     (FUNCALL LAYWIN ':REMOVE-LAST-FROB))))			     
-		     ((EQUAL RES "Frame")
-		      (SETQ *USE-FRAME* T)
-		      (COND ((NULL CVVW)
-			     (SETQ CVVW (GET-A-SYSTEM-WINDOW 'SPLIT-SCREEN-CHOOSE-VALUES SUP))
-			     (FUNCALL CVVW ':SET-IO-BUFFER IO-BUFFER)
-			     (FUNCALL CVVW ':SET-STACK-GROUP %CURRENT-STACK-GROUP)
-			     (EXPOSE-WINDOW-NEAR CVVW (CONS ':WINDOW INTERACTION-WINDOWS))
-			     (PUSH CVVW INTERACTION-WINDOWS))))
-		     ((EQUAL RES "Existing Window")
-		      (LET ((AW-MENU (GET-A-SYSTEM-WINDOW 'SELECTABLE-WINDOWS-MENU SUP)))
-			(EXPOSE-WINDOW-NEAR AW-MENU (CONS ':WINDOW INTERACTION-WINDOWS))
-			(COND ((SETQ RES (FUNCALL AW-MENU ':CHOOSE))
-			       (FUNCALL LAYWIN ':ADD-FROB (FUNCALL RES ':NAME-FOR-SELECTION))
-			       (PUSH RES WINDOW-TYPE-LIST)
-			       (SETQ N-WINDOWS (1+ N-WINDOWS)))))
-		      (LEXPR-FUNCALL SCVM-MENU ':SET-MOUSE-CURSORPOS
-				     (MULTIPLE-VALUE-LIST
-				       (FUNCALL SCVM-MENU ':ITEM-CURSORPOS ITEM))))
-		     ((NOT (EQUAL RES "Do It"))
-		      (PUSH RES WINDOW-TYPE-LIST)
-		      (FUNCALL LAYWIN ':ADD-FROB (OR (CAR (RASSOC RES WINDOW-TYPES-ITEM-LIST))
-						     (STRING RES)))
-		      (SETQ N-WINDOWS (1+ N-WINDOWS)))
-		     (T (DELAYING-SCREEN-MANAGEMENT
-			  (DOLIST (W INTERACTION-WINDOWS)	;Done with these now
-			    (FUNCALL W ':DEACTIVATE))
-			  (IF (NOT *USE-FRAME*)
-			      (SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW SUP EDGES
-				WINDOW-TYPE-LIST N-WINDOWS LAYWIN)
-			      ;; SPLIT-SCREEN-FRAME isn't necessarily the right
-			      ;; flavor.  Maybe ask user whether it should be a
-			      ;; constraint-frame.  Maybe put borders around it, but
-			      ;; need a way for them to appear when partially
-			      ;; exposed even though it doesn't have a
-			      ;; bit-save array.
-			      (LET ((FRAME (WINDOW-CREATE 'SPLIT-SCREEN-FRAME
-							  ':SUPERIOR SUP
-							  ':EDGES-FROM EDGES
-							  ':NAME *FRAME-NAME*
-							  ':EXPOSE-P T)))
-				(AND *SYSTEM-KEY*
-				     (SETQ *SYSTEM-KEY* (CHAR-UPCASE *SYSTEM-KEY*)
-					   *SYSTEM-KEYS*
-					   (CONS (LIST *SYSTEM-KEY* FRAME *FRAME-NAME* NIL)
-						 (DELQ (ASSQ *SYSTEM-KEY* *SYSTEM-KEYS*)
-						       *SYSTEM-KEYS*))))
-				(LET ((SEL (SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW FRAME
-					     (LIST (SHEET-INSIDE-LEFT FRAME)
-						   (SHEET-INSIDE-TOP FRAME)
-						   (SHEET-INSIDE-RIGHT FRAME)
-						   (SHEET-INSIDE-BOTTOM FRAME))
-					     WINDOW-TYPE-LIST N-WINDOWS LAYWIN)))
-				  ;; This wouldn't be needed if frames weren't broken
-				  (AND (MEMQ SEL (SHEET-EXPOSED-INFERIORS FRAME))
-				       (FUNCALL FRAME ':SELECT-PANE SEL))))))
-			(RETURN))))
-	      ((EQ (FIRST RES) ':VARIABLE-CHOICE)
-	       (APPLY #'CHOOSE-VARIABLE-VALUES-CHOICE (CDR RES)))
-	      (T (FERROR NIL "Garbage from i//o buffer: ~S" RES))))
-      (DELAYING-SCREEN-MANAGEMENT
-       (DOLIST (W INTERACTION-WINDOWS)	;Done with these now
-	 (FUNCALL W ':DEACTIVATE)))))))
+  (USING-RESOURCE (SCVM-MENU SPLIT-SCREEN-MENU SUP)
+    (USING-RESOURCE (LAYWIN SPLIT-SCREEN-LAYOUT-WINDOW SUP)
+      (LET* ((WINDOW-TYPES-ITEM-LIST (FUNCALL SUP ':PANE-TYPES-ALIST))
+	     (EDGES (LIST (SHEET-INSIDE-LEFT SUP) (SHEET-INSIDE-TOP SUP)
+			  (SHEET-INSIDE-RIGHT SUP) (SHEET-INSIDE-BOTTOM SUP)))
+	     (INTERACTION-WINDOWS NIL) (CVVW NIL)
+	     (USE-FRAME NIL) (*FRAME-NAME* "Split-screen frame") (*SYSTEM-KEY* NIL)
+	     (IO-BUFFER) (ITEM))
+	(FUNCALL LAYWIN ':CLEAR-FROBS)
+	(SETQ IO-BUFFER (FUNCALL SCVM-MENU ':IO-BUFFER))
+	(IO-BUFFER-CLEAR IO-BUFFER)
+	(EXPOSE-WINDOW-NEAR SCVM-MENU '(:MOUSE))
+	(PUSH SCVM-MENU INTERACTION-WINDOWS)
+	(UNWIND-PROTECT
+	  (DO ((WINDOW-TYPE-LIST NIL)
+	       (N-WINDOWS 0)
+	       (RES))
+	      (NIL)
+	    (COND ((AND (PLUSP N-WINDOWS) (NOT (MEMQ LAYWIN INTERACTION-WINDOWS)))
+		   (AND CVVW (FUNCALL CVVW ':DEEXPOSE))		;May need to be moved
+		   (FUNCALL LAYWIN ':MOVE-NEAR-WINDOW SCVM-MENU
+			    (CONS (- (THIRD EDGES) (FIRST EDGES))
+				  (- (FOURTH EDGES) (SECOND EDGES))))
+		   (PUSH LAYWIN INTERACTION-WINDOWS)
+		   (AND CVVW (EXPOSE-WINDOW-NEAR CVVW
+			       (CONS ':WINDOW (REMQ CVVW INTERACTION-WINDOWS))))))
+	    (PROCESS-WAIT "Choose" #'(LAMBDA (B) (NOT (IO-BUFFER-EMPTY-P B))) IO-BUFFER)
+	    (SETQ RES (IO-BUFFER-GET IO-BUFFER))
+	    (COND ((AND (EQ (FIRST RES) ':MENU) (EQ (FOURTH RES) SCVM-MENU))
+		   (SETQ RES (FUNCALL SCVM-MENU ':EXECUTE (SETQ ITEM (SECOND RES))))
+		   (AND (EQ RES T)		;"Any"
+			(SETQ RES (GET-WINDOW-TYPE-FROM-KEYBOARD SUP ':EDGES-FROM
+				    (CONS ':WINDOW INTERACTION-WINDOWS))))
+		   (COND ((NULL RES))	;Maybe failed getting type from keyboard
+			 ((EQUAL RES "Abort") (RETURN NIL))
+			 ((EQUAL RES "Mouse Corners")
+			  (COND ((CAR (SETQ RES (MULTIPLE-VALUE-LIST
+						  (MOUSE-SPECIFY-RECTANGLE NIL NIL NIL NIL
+									   SUP 0 0 T))))
+				 (SETQ EDGES RES)
+				 ;; Next line causes shape of LAYWIN to be recomputed
+				 (SETQ INTERACTION-WINDOWS
+				       (DELQ LAYWIN INTERACTION-WINDOWS)))))
+			 ((EQUAL RES "Undo")
+			  (COND ((PLUSP N-WINDOWS)
+				 (SETQ N-WINDOWS (1- N-WINDOWS)
+				       WINDOW-TYPE-LIST (CDR WINDOW-TYPE-LIST))
+				 (FUNCALL LAYWIN ':REMOVE-LAST-FROB))))			     
+			 ((EQUAL RES "Frame")
+			  (SETQ USE-FRAME T)
+			  (COND ((NULL CVVW)
+				 (SETQ CVVW (ALLOCATE-RESOURCE
+					      'SPLIT-SCREEN-CHOOSE-VALUES SUP))
+				 (FUNCALL CVVW ':SET-IO-BUFFER IO-BUFFER)
+				 (FUNCALL CVVW ':SET-STACK-GROUP %CURRENT-STACK-GROUP)
+				 (EXPOSE-WINDOW-NEAR CVVW (CONS ':WINDOW INTERACTION-WINDOWS))
+				 (PUSH CVVW INTERACTION-WINDOWS))))
+			 ((EQUAL RES "Existing Window")
+			  (USING-RESOURCE (AW-MENU SELECTABLE-WINDOWS-MENU SUP)
+			    (EXPOSE-WINDOW-NEAR AW-MENU (CONS ':WINDOW INTERACTION-WINDOWS))
+			    (LOOP FOR W = (FUNCALL AW-MENU ':CHOOSE) THEN (SHEET-SUPERIOR W)
+				  AND WW = NIL THEN W
+				  WHILE (NOT (NULL W))
+				  WHEN (EQ W SUP)
+				    RETURN (FUNCALL LAYWIN ':ADD-FROB
+						    (FUNCALL WW ':NAME-FOR-SELECTION))
+					   (PUSH WW WINDOW-TYPE-LIST)
+					   (SETQ N-WINDOWS (1+ N-WINDOWS))))
+			  (LEXPR-FUNCALL SCVM-MENU ':SET-MOUSE-CURSORPOS
+					 (MULTIPLE-VALUE-LIST
+					   (FUNCALL SCVM-MENU ':ITEM-CURSORPOS ITEM))))
+			 ((NOT (EQUAL RES "Do It"))
+			  (PUSH RES WINDOW-TYPE-LIST)
+			  (FUNCALL LAYWIN ':ADD-FROB
+					  (OR (CAR (RASSOC RES WINDOW-TYPES-ITEM-LIST))
+					      (STRING RES)))
+			  (SETQ N-WINDOWS (1+ N-WINDOWS)))
+			 ((ZEROP N-WINDOWS) (BEEP))	;Do It with nothing to do
+			 (T (DELAYING-SCREEN-MANAGEMENT
+			      (DOLIST (W INTERACTION-WINDOWS)	;Done with these now
+				(FUNCALL W ':DEACTIVATE))
+			      (IF (NOT USE-FRAME)
+				  (SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW SUP EDGES
+				    WINDOW-TYPE-LIST N-WINDOWS LAYWIN)
+				  ;; SPLIT-SCREEN-FRAME isn't necessarily the right
+				  ;; flavor.  Maybe ask user whether it should be a
+				  ;; constraint-frame.  Maybe put borders around it, but
+				  ;; need a way for them to appear when partially
+				  ;; exposed even though it doesn't have a
+				  ;; bit-save array.
+				  (LET ((FRAME (MAKE-WINDOW 'SPLIT-SCREEN-FRAME
+							    ':SUPERIOR SUP
+							    ':EDGES-FROM EDGES
+							    ':NAME *FRAME-NAME*
+							    ':EXPOSE-P T)))
+				    (AND *SYSTEM-KEY*
+					 (SETQ *SYSTEM-KEY* (CHAR-UPCASE *SYSTEM-KEY*)
+					       *SYSTEM-KEYS*
+					         (CONS (LIST *SYSTEM-KEY* FRAME
+							     *FRAME-NAME* NIL)
+						       (DELQ (ASSQ *SYSTEM-KEY* *SYSTEM-KEYS*)
+							     *SYSTEM-KEYS*))))
+				    (LET ((SEL (SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW FRAME
+						 (LIST (SHEET-INSIDE-LEFT FRAME)
+						       (SHEET-INSIDE-TOP FRAME)
+						       (SHEET-INSIDE-RIGHT FRAME)
+						       (SHEET-INSIDE-BOTTOM FRAME))
+						 WINDOW-TYPE-LIST N-WINDOWS LAYWIN)))
+				      ;; This wouldn't be needed if frames weren't broken
+				      (AND (MEMQ SEL (SHEET-EXPOSED-INFERIORS FRAME))
+					   (FUNCALL FRAME ':SELECT-PANE SEL))))))
+			    (RETURN))))
+		  ((EQ (FIRST RES) ':VARIABLE-CHOICE)
+		   (APPLY #'CHOOSE-VARIABLE-VALUES-CHOICE (CDR RES)))
+		  ((AND (EQ (FIRST RES) 'PUNT-FRAME) USE-FRAME)
+		   (FUNCALL CVVW ':DEACTIVATE)
+		   (SETQ INTERACTION-WINDOWS (DELQ CVVW INTERACTION-WINDOWS))
+		   (SETQ USE-FRAME NIL CVVW NIL))
+		  (T (FERROR NIL "Garbage from i//o buffer: ~S" RES))))
+	  (DELAYING-SCREEN-MANAGEMENT
+	    (DOLIST (W INTERACTION-WINDOWS)	;Done with these now
+	      (FUNCALL W ':DEACTIVATE)))))))))
 
 ;; We now have the list of windows, lay out the screen and set them up.
 ;; The general rule for screen layout is that 2 or 3 windows stack vertically,
@@ -389,11 +457,11 @@ should be made the inferior of."
 					 ("Error" EH:ERROR-HANDLER-IO)
 					 ("Trace & Error" TRACE-OUTPUT EH:ERROR-HANDLER-IO)
 					 )))
-	     (SETQ WINDOW (WINDOW-CREATE 'WINDOW
-					 ':SUPERIOR SUP
-					 ':NAME (AND (CDR TEM) (CAR TEM))
-					 ':LEFT LEFT ':TOP TOP
-					 ':RIGHT RIGHT ':BOTTOM BOTTOM))		     
+	     (SETQ WINDOW (MAKE-WINDOW 'WINDOW
+				       ':SUPERIOR SUP
+				       ':NAME (AND (CDR TEM) (CAR TEM))
+				       ':LEFT LEFT ':TOP TOP
+				       ':RIGHT RIGHT ':BOTTOM BOTTOM))		     
 	     (DOLIST (V (CDR TEM))
 	       (SET V WINDOW)))
 	    ((NOT (SYMBOLP (CAR L)))		;Window itself
@@ -402,78 +470,94 @@ should be made the inferior of."
 	     (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM)
 	     (OR SEL (SETQ SEL WINDOW)))
 	    (T
-	     (SETQ WINDOW (WINDOW-CREATE (CAR L)
-					 ':SUPERIOR SUP
-					 ':LEFT LEFT ':TOP TOP
-					 ':RIGHT RIGHT ':BOTTOM BOTTOM))
+	     (SETQ WINDOW (MAKE-WINDOW (CAR L)
+				       ':SUPERIOR SUP
+				       ':LEFT LEFT ':TOP TOP
+				       ':RIGHT RIGHT ':BOTTOM BOTTOM))
 	     (OR SEL (SETQ SEL WINDOW))))
       (FUNCALL WINDOW ':EXPOSE))
     (AND SEL (FUNCALL SEL ':SELECT)))
   SEL)
 
 (DEFVAR SCREEN-LAYOUT-MENU-ALIST NIL)
-(SYSTEM-WINDOW-ADD-TYPE 'SCREEN-LAYOUT-MENU
-  #'(LAMBDA (SUP)
-      (WINDOW-CREATE 'MOMENTARY-MENU
-	 ':NAME "Screen Layout Menu"
-	 ':LABEL "Screen Layouts"
-	 ':SUPERIOR SUP
-	 ':ITEM-LIST `(("Just Lisp" :EVAL `((,(IDLE-LISP-LISTENER SUPERIOR)
-					     ,(SHEET-INSIDE-LEFT SUPERIOR)
-					     ,(SHEET-INSIDE-TOP SUPERIOR)
-					     ,(SHEET-INSIDE-RIGHT SUPERIOR)
-					     ,(SHEET-INSIDE-BOTTOM SUPERIOR))))
-		       ("Save This" :EVAL (PROGN (SAVE-THIS-SCREEN-LAYOUT) NIL)))))
-  T
-  ':DEEXPOSED)
+(DEFWINDOW-RESOURCE SCREEN-LAYOUT-MENU ()
+    :MAKE-WINDOW (MOMENTARY-MENU :NAME "Screen Layout Menu" :LABEL "Screen Layouts"
+		    :ITEM-LIST `(("Just Lisp" :EVAL `((,(IDLE-LISP-LISTENER SUPERIOR)
+						       ,(SHEET-INSIDE-LEFT SUPERIOR)
+						       ,(SHEET-INSIDE-TOP SUPERIOR)
+						       ,(SHEET-INSIDE-RIGHT SUPERIOR)
+						       ,(SHEET-INSIDE-BOTTOM SUPERIOR))))
+				 ("Save This" :EVAL (PROGN (SAVE-THIS-SCREEN-LAYOUT) NIL))))
+    :REUSABLE-WHEN :DEEXPOSED)
 
 ;;; This needs grossly more error checking!!
 (DEFUN SYSTEM-MENU-LAYOUTS (&OPTIONAL (SCREEN MOUSE-SHEET))
-  (LET ((MENU (GET-A-SYSTEM-WINDOW 'SCREEN-LAYOUT-MENU SCREEN))
-	X)
-    (SETQ X (FUNCALL MENU ':CHOOSE))
-    (COND (X 
-	   (DELAYING-SCREEN-MANAGEMENT
-	     (DOLIST (Y X)
-	       (LET ((WINDOW (CAR Y))
-		     (EDGES (CDR Y)))
-		 (FUNCALL WINDOW ':SET-EDGES
-			  (FIRST EDGES) (SECOND EDGES)
-			  (THIRD EDGES) (FOURTH EDGES))
-		 (FUNCALL WINDOW ':EXPOSE))))
-	   (FUNCALL (CAAR X) ':SELECT NIL)))))
+  (USING-RESOURCE (MENU SCREEN-LAYOUT-MENU SCREEN)
+    (LET ((X (FUNCALL MENU ':CHOOSE)))
+      (COND (X 
+	     (DELAYING-SCREEN-MANAGEMENT
+	       (DOLIST (Y X)
+		 (LET ((WINDOW (CAR Y))
+		       (EDGES (CDR Y)))
+		   (FUNCALL WINDOW ':SET-EDGES
+			    (FIRST EDGES) (SECOND EDGES)
+			    (THIRD EDGES) (FOURTH EDGES))
+		   (FUNCALL WINDOW ':EXPOSE))))
+	     (FUNCALL (CAAR X) ':SELECT NIL))))))
 
-(DEFUN SAVE-THIS-SCREEN-LAYOUT (&OPTIONAL (SCREEN MOUSE-SHEET) &AUX MENU SW)
-  (SETQ MENU (GET-A-SYSTEM-WINDOW 'SCREEN-LAYOUT-MENU SCREEN))
-  (FUNCALL MENU ':SET-ITEM-LIST
-	   (CONS (LIST (GET-LINE-FROM-KEYBOARD "Name for this screen layout")
-		       ':VALUE
-		       (LOCAL-DECLARE ((SPECIAL *LIST*))
-			 (LET (*LIST*)
-			   (MAP-OVER-EXPOSED-SHEET
-			     #'(LAMBDA (W)
-				 (AND (NOT (SHEET-TEMPORARY-P W))
-				      (NEQ W MOUSE-SHEET)
-				      (PUSH (CONS W (MULTIPLE-VALUE-LIST (FUNCALL W ':EDGES)))
-					    *LIST*)))
-			     MOUSE-SHEET)
-			   (SETQ *LIST* (NREVERSE *LIST*))
-			   ;; Move selected window to the front
-			   (AND (SETQ SW (ASSQ SELECTED-WINDOW *LIST*))
-				(SETQ *LIST* (CONS SW (DELQ SW *LIST*))))
-			   *LIST*)))
-		 (FUNCALL MENU ':ITEM-LIST))))
+(DEFUN SAVE-THIS-SCREEN-LAYOUT (&OPTIONAL (SCREEN MOUSE-SHEET) &AUX SW)
+  (USING-RESOURCE (MENU SCREEN-LAYOUT-MENU SCREEN)
+    (FUNCALL MENU ':SET-ITEM-LIST
+      (CONS (LIST (GET-LINE-FROM-KEYBOARD "Name for this screen layout")
+		  ':VALUE
+		  (LOCAL-DECLARE ((SPECIAL *LIST*))
+		    (LET (*LIST*)
+		      (MAP-OVER-EXPOSED-SHEET
+			#'(LAMBDA (W)
+			    (AND (NOT (SHEET-TEMPORARY-P W))
+				 (NEQ W MOUSE-SHEET)
+				 (PUSH (CONS W (MULTIPLE-VALUE-LIST (FUNCALL W ':EDGES)))
+				       *LIST*)))
+			MOUSE-SHEET)
+		      (SETQ *LIST* (NREVERSE *LIST*))
+		      ;; Move selected window to the front
+		      (AND (SETQ SW (ASSQ SELECTED-WINDOW *LIST*))
+			   (SETQ *LIST* (CONS SW (DELQ SW *LIST*))))
+		      *LIST*)))
+	    (FUNCALL MENU ':ITEM-LIST)))))
+
+(DEFWINDOW-RESOURCE POP-UP-TEXT-WINDOW ()
+	:MAKE-WINDOW (POP-UP-TEXT-WINDOW))
+
+(DEFWINDOW-RESOURCE POP-UP-TEXT-WINDOW-WITHOUT-MORE ()
+	:MAKE-WINDOW (POP-UP-TEXT-WINDOW :MORE-P NIL))
+
+;;; Pop up a window with a message in it, require user to type a character to flush.
+(DEFUN POP-UP-MESSAGE (PROMPT &OPTIONAL (SUP MOUSE-SHEET) (POP-UP-NEAR '(:MOUSE)))
+  (LET ((MESSAGE (STRING-APPEND PROMPT "
+Type any character to flush:  ")))
+    (USING-RESOURCE (POP-UP-MESSAGE-WINDOW POP-UP-TEXT-WINDOW-WITHOUT-MORE SUP)
+      (FUNCALL POP-UP-MESSAGE-WINDOW ':SET-LABEL NIL)
+      (FUNCALL POP-UP-MESSAGE-WINDOW ':SET-SIZE-IN-CHARACTERS MESSAGE MESSAGE)
+      (FUNCALL POP-UP-MESSAGE-WINDOW ':CLEAR-INPUT)
+      (EXPOSE-WINDOW-NEAR POP-UP-MESSAGE-WINDOW POP-UP-NEAR NIL)
+      (WINDOW-CALL (POP-UP-MESSAGE-WINDOW :DEACTIVATE)
+	(FUNCALL POP-UP-MESSAGE-WINDOW ':STRING-OUT MESSAGE)
+	;; Back up the cursor by one.  This is easier than trying to make the window
+	;; come out wider, because of the interface to :set-size-in-characters.
+	(MULTIPLE-VALUE-BIND (X-POS Y-POS)
+	    (FUNCALL POP-UP-MESSAGE-WINDOW ':READ-CURSORPOS ':CHARACTER)
+	(FUNCALL POP-UP-MESSAGE-WINDOW ':SET-CURSORPOS (1- X-POS) Y-POS ':CHARACTER))
+	(FUNCALL POP-UP-MESSAGE-WINDOW ':TYI)))))
+
+;Pop up a formatted message near the mouse
+(DEFUN POP-UP-FORMAT (CONTROL &REST ARGS)
+  (POP-UP-MESSAGE (LEXPR-FUNCALL #'FORMAT NIL CONTROL ARGS)))
 
 ;;; Pop up a window near where the mouse is, then read a line from it.
-(SYSTEM-WINDOW-ADD-TYPE 'POP-UP-TEXT-WINDOW
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'POP-UP-TEXT-WINDOW ':SUPERIOR SUP))
-			T
-			':DEEXPOSED)
-
 (DEFUN GET-LINE-FROM-KEYBOARD (PROMPT &OPTIONAL (SUP MOUSE-SHEET) (FUNCTION #'READLINE)
 						(POP-UP-NEAR '(:MOUSE)))
-  (LET ((GET-LINE-FROM-KEYBOARD-WINDOW (GET-A-SYSTEM-WINDOW 'POP-UP-TEXT-WINDOW SUP)))
+  (USING-RESOURCE (GET-LINE-FROM-KEYBOARD-WINDOW POP-UP-TEXT-WINDOW SUP)
     (FUNCALL GET-LINE-FROM-KEYBOARD-WINDOW ':SET-SIZE 500 120)
     (FUNCALL GET-LINE-FROM-KEYBOARD-WINDOW ':SET-LABEL NIL)
     (FUNCALL GET-LINE-FROM-KEYBOARD-WINDOW ':CLEAR-INPUT)
@@ -484,9 +568,11 @@ should be made the inferior of."
 
 (DEFUN GET-WINDOW-TYPE-FROM-KEYBOARD (&OPTIONAL (SUP MOUSE-SHEET) REQUIRED-INIT-OPTION
 						(POP-UP-NEAR '(:MOUSE))
-				      &AUX WT FL)
-  (SETQ WT (GET-LINE-FROM-KEYBOARD "Flavor of window" SUP #'READ POP-UP-NEAR))
-  (COND ((OR (NULL (SETQ FL (GET WT 'SI:FLAVOR)))
+				      &AUX (WT NIL) FL)
+  (*CATCH 'SYS:COMMAND-LEVEL
+    (SETQ WT (GET-LINE-FROM-KEYBOARD "Flavor of window" SUP #'READ POP-UP-NEAR)))
+  (COND ((NULL WT) NIL)
+	((OR (NULL (SETQ FL (GET WT 'SI:FLAVOR)))
 	     (NOT (SI:MAP-OVER-COMPONENT-FLAVORS 0 NIL T	;T if it's built on SHEET
 						 #'(LAMBDA (FL IGNORE)
 						     (EQ FL (GET 'SHEET 'SI:FLAVOR)))
@@ -523,7 +609,7 @@ should be made the inferior of."
 
 (DEFMETHOD (DISPLAY-LAYOUT-WINDOW :REMOVE-LAST-FROB) ()
   (SETQ FROBS (NREVERSE (CDR (NREVERSE FROBS))))
-  (SHEET-FORCE-ACCESS (SELF)
+  (SHEET-FORCE-ACCESS (SELF :NO-PREPARE)
     (SHEET-CLEAR SELF)
     (DRAW-FROBS SELF FROBS (LENGTH FROBS) CHAR-ALUF)))
 
@@ -616,15 +702,13 @@ should be made the inferior of."
 
 (COMPILE-FLAVOR-METHODS DISPLAY-LAYOUT-WINDOW)
 
-(SYSTEM-WINDOW-ADD-TYPE 'SPLIT-SCREEN-LAYOUT-WINDOW
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DISPLAY-LAYOUT-WINDOW
-					   ':HEIGHT (// (SHEET-HEIGHT MOUSE-SHEET) 4.)
-					   ':SUPERIOR SUP))
-			T ':DEEXPOSED)
+
+(DEFWINDOW-RESOURCE SPLIT-SCREEN-LAYOUT-WINDOW ()
+	:MAKE-WINDOW (DISPLAY-LAYOUT-WINDOW :HEIGHT (// (SHEET-HEIGHT MOUSE-SHEET) 4.))
+	:REUSABLE-WHEN :DEEXPOSED)
 
 ;;; This goes in QTRACE
-(DEFF READ-FOR-TOP-LEVEL #'SI:READ-FOR-TOP-LEVEL)
+
 ;;; Display Features
 
 ;; Items in this menu are lists of the form:
@@ -633,96 +717,103 @@ should be made the inferior of."
 ;;			if NIL, nothing special
 ;;			otherwise is prompt for reading what goes into trace options
 ;; Try to keep this so it comes out in 3 columns
-(DEFVAR TRACE-ITEM-LIST)
-(SETQ TRACE-ITEM-LIST `(("Break before" :VALUE (NIL :BREAK T))
-			("Break after" :VALUE (NIL :EXITBREAK T))
-			("Step" :VALUE (NIL :STEP))
-			("Error" :VALUE (NIL :ERROR))
-			("Print" :VALUE
-			 ("Form to evaluate and print in trace messages" :PRINT))
-			("Print before" :VALUE
-			 ("Form to evaluate and print before calling" :ENTRYPRINT))
-			("Print after" :VALUE
-			 ("Form to evaluate and print after returning" :EXITPRINT))
-			("Conditional" :VALUE ("Predicate for tracing" :COND))
-			("Cond before" :VALUE ("Predicate for tracing calls" :ENTRYCOND))
-			("Cond after" :VALUE ("Predicate for tracing returns" :EXITCOND))
-			("Cond break before" :VALUE
-			 ("Predicate for breaking before" :BREAK))
-			("Cond break after" :VALUE
-			 ("Predicate for breaking after" :EXITBREAK))
-			("ARGPDL" :VALUE ("Arg pdl variable" :ARGPDL))
-			("Wherein" :VALUE ("Function within which to trace" :WHEREIN))
-			("Untrace" :VALUE (UNTRACE))
-			("Abort" :VALUE (QUIT))
-			("Do It" :VALUE (DO-IT))))
+(DEFVAR TRACE-ITEM-LIST
+	`(("Break before" :VALUE (NIL :BREAK T)
+	   :DOCUMENTATION "Call BREAK before entering the function, binding ARGLIST.")
+	  ("Break after" :VALUE (NIL :EXITBREAK T)
+	   :DOCUMENTATION "Call BREAK after leaving the function, binding VALUES.")
+	  ("Step" :VALUE (NIL :STEP)
+	   :DOCUMENTATION "Single-step through the body of the (interpreted) function.")
+	  ("Error" :VALUE (NIL :ERROR)
+	   :DOCUMENTATION "Enter the error-handler when the function is called.")
+	  ("Print" :VALUE ("Form to evaluate and print in trace messages" :PRINT)
+	   :DOCUMENTATION "Asks for a form to be evaluated and printed in trace messages.")
+	  ("Print before" :VALUE ("Form to evaluate and print before calling" :ENTRYPRINT)
+	   :DOCUMENTATION "Asks for a form to be evaluated and printed upon function entry.")
+	  ("Print after" :VALUE ("Form to evaluate and print after returning" :EXITPRINT)
+	   :DOCUMENTATION "Asks for a form to be evaluated and printed upon function exit.")
+	  ("Conditional" :VALUE ("Predicate for tracing" :COND)
+	   :DOCUMENTATION "Asks for a predicate which controls whether tracing happens.")
+	  ("Cond before" :VALUE ("Predicate for tracing calls" :ENTRYCOND)
+	   :DOCUMENTATION "Asks for a predicate which controls tracing of function entry.")
+	  ("Cond after" :VALUE ("Predicate for tracing returns" :EXITCOND)
+	   :DOCUMENTATION "Asks for a predicate which controls tracing of function exit.")
+	  ("Cond break before" :VALUE ("Predicate for breaking before" :BREAK)
+	   :DOCUMENTATION "Asks for a predicate which controls BREAKing on function entry.")
+	  ("Cond break after" :VALUE ("Predicate for breaking after" :EXITBREAK)
+	   :DOCUMENTATION "Asks for a predicate which controls BREAKing on function exit.")
+	  ("ARGPDL" :VALUE ("Arg pdl variable" :ARGPDL)
+	   :DOCUMENTATION "Asks for a variable which gets list of recursive argument lists.")
+	  ("Wherein" :VALUE ("Function within which to trace" :WHEREIN)
+	   :DOCUMENTATION "Asks for a function, within which tracing will be active.")
+	  ("Untrace" :VALUE (UNTRACE)
+	   :DOCUMENTATION "Instead of tracing this function, stop tracing it.")
+	  ("Abort" :VALUE (QUIT) :FONT FONTS:MEDFNB
+	   :DOCUMENTATION "Click here to get out of this without doing anything.")
+	  ("Do It" :VALUE (DO-IT) :FONT FONTS:MEDFNB
+	   :DOCUMENTATION "Click here to do the tracing with the selected options.")))
 
-(SYSTEM-WINDOW-ADD-TYPE 'TRACE-POP-UP-MENU
-  #'(LAMBDA (SUP)
-      (WINDOW-CREATE 'DYNAMIC-POP-UP-MENU
-	':NAME "Trace Options"
-	':SUPERIOR SUP
-	':ITEM-LIST-POINTER 'TRACE-ITEM-LIST))
-  T ':DEEXPOSED)
+(DEFWINDOW-RESOURCE TRACE-POP-UP-MENU ()
+	:MAKE-WINDOW (DYNAMIC-POP-UP-MENU :NAME "Trace Options"
+					  :ITEM-LIST-POINTER 'TRACE-ITEM-LIST)
+	:REUSABLE-WHEN :DEEXPOSED)
 
 ;;; This function is invoked in the momentary menu process when the user clicks "trace"
 ;;; and in the editor process by the editor's Trace command.
 ;;; If the function isn't supplied as an argument the user is asked for it.
-(DEFUN TRACE-VIA-MENUS (&OPTIONAL FCN
-		        &AUX (TRACE-POP-UP-WINDOW (GET-A-SYSTEM-WINDOW 'POP-UP-TEXT-WINDOW))
-			     (TRACE-POP-UP-MENU (GET-A-SYSTEM-WINDOW 'TRACE-POP-UP-MENU)))
-  (FUNCALL TRACE-POP-UP-WINDOW ':SET-LABEL "Trace")
-  (FUNCALL TRACE-POP-UP-WINDOW ':SET-SIZE 1000 300)
-  (FUNCALL TRACE-POP-UP-WINDOW ':CENTER-AROUND MOUSE-X MOUSE-Y)
-  (WINDOW-CALL (TRACE-POP-UP-WINDOW :DEACTIVATE)
-    (UNWIND-PROTECT
-      (LET ((BLINKER (CAR (SHEET-BLINKER-LIST TRACE-POP-UP-WINDOW))))
-	(COND ((NULL FCN)
-	       ;Make sure blinker is blinking
-	       (BLINKER-SET-VISIBILITY BLINKER ':BLINK)
-	       (FORMAT TRACE-POP-UP-WINDOW
-		       "Type in name of function to be traced or untraced.
-  Control-Z quits.~%")
-	       (DO ((STANDARD-OUTPUT TRACE-POP-UP-WINDOW) ;Just for the "QUIT" c-Z types.
-		    (STANDARD-INPUT TRACE-POP-UP-WINDOW))
-		   (NIL)
-		 (SETQ FCN (READ-FOR-TOP-LEVEL))
-		 (IF (FDEFINEDP FCN)
-		     (RETURN NIL)
-		     (FORMAT TRACE-POP-UP-WINDOW " ;not a defined function, try again~%")))))
-	(FUNCALL TRACE-POP-UP-MENU ':MOVE-NEAR-WINDOW TRACE-POP-UP-WINDOW)
-	(DO ((FORM (IF (ATOM FCN) `(TRACE (,FCN)) `(TRACE (:FUNCTION ,FCN))))
-	     (UNTRACE-MODE NIL)
-	     (CHOICE) (OPTION) (ARG))
-	    (NIL)
-	  ;Put the current status on the text window
-	  (FUNCALL TRACE-POP-UP-WINDOW ':CLEAR-SCREEN)
-	  (GRIND-TOP-LEVEL FORM 76 TRACE-POP-UP-WINDOW) ;76 is width in characters
-	  ;Not listening to the keyboard any more, shut off blinker
-	  (BLINKER-SET-VISIBILITY BLINKER NIL)
-	  ;Get input from the menu
-	  (SETQ CHOICE (FUNCALL TRACE-POP-UP-MENU ':CHOOSE)
-		OPTION (FIRST CHOICE))			      
-	  (COND ((NULL CHOICE))	;Try again if outside menu
-		((EQ OPTION 'UNTRACE)
-		 (SETQ UNTRACE-MODE T
-		       FORM `(UNTRACE ,FCN)))
-		((EQ OPTION 'QUIT)
-		 (RETURN NIL))
-		((EQ OPTION 'DO-IT)
-		 (EVAL FORM)
-		 (RETURN NIL))
-		(UNTRACE-MODE
-		  (BEEP))
-		(T (SETF (SECOND FORM)
-			 (APPEND (SECOND FORM) (CDR CHOICE)))
-		   (COND (OPTION		;Needs an arg, get it
-			   (FORMAT TRACE-POP-UP-WINDOW "~2%~A:~%" OPTION)
-			   ;Turn on blinker
-			   (BLINKER-SET-VISIBILITY BLINKER ':BLINK)
-			   (LET ((STANDARD-OUTPUT TRACE-POP-UP-WINDOW) ;Just for the "QUIT"
-				 (STANDARD-INPUT TRACE-POP-UP-WINDOW)) ;Doesn't take an arg!
-			     (SETQ ARG (READ-FOR-TOP-LEVEL)))
-			   (SETF (SECOND FORM)
-				 (APPEND (SECOND FORM) (LIST ARG)))))))))
-      (FUNCALL TRACE-POP-UP-MENU ':DEACTIVATE))))
+(DEFUN TRACE-VIA-MENUS (&OPTIONAL FCN)
+  (USING-RESOURCE (TRACE-POP-UP-WINDOW POP-UP-TEXT-WINDOW)
+    (USING-RESOURCE (TRACE-POP-UP-MENU TRACE-POP-UP-MENU)
+      (FUNCALL TRACE-POP-UP-WINDOW ':SET-LABEL "Trace")
+      (FUNCALL TRACE-POP-UP-WINDOW ':SET-SIZE 1000 300)
+      (FUNCALL TRACE-POP-UP-WINDOW ':CENTER-AROUND MOUSE-X MOUSE-Y)
+      (WINDOW-CALL (TRACE-POP-UP-WINDOW :DEACTIVATE)
+	(UNWIND-PROTECT
+	  (LET ((BLINKER (CAR (SHEET-BLINKER-LIST TRACE-POP-UP-WINDOW))))
+	    (COND ((NULL FCN)
+		   ;Make sure blinker is blinking
+		   (BLINKER-SET-VISIBILITY BLINKER ':BLINK)
+		   (FORMAT TRACE-POP-UP-WINDOW
+			   "Type in name of function to be traced or untraced.
+  Abort quits.~%")
+		   (DO ((TERMINAL-IO TRACE-POP-UP-WINDOW)) ;for errors, aborts, etc.
+		       (NIL)
+		     (SETQ FCN (READ))
+		     (IF (FDEFINEDP FCN)
+			 (RETURN NIL)
+			 (FORMAT T " ;not a defined function, try again~%")))))
+	    (FUNCALL TRACE-POP-UP-MENU ':MOVE-NEAR-WINDOW TRACE-POP-UP-WINDOW)
+	    (DO ((FORM (IF (ATOM FCN) `(TRACE (,FCN)) `(TRACE (:FUNCTION ,FCN))))
+		 (UNTRACE-MODE NIL)
+		 (CHOICE) (OPTION) (ARG))
+		(NIL)
+				;Put the current status on the text window
+	      (FUNCALL TRACE-POP-UP-WINDOW ':CLEAR-SCREEN)
+	      (GRIND-TOP-LEVEL FORM 76 TRACE-POP-UP-WINDOW)	;76 is width in characters
+				;Not listening to the keyboard any more, shut off blinker
+	      (BLINKER-SET-VISIBILITY BLINKER NIL)
+				;Get input from the menu
+	      (SETQ CHOICE (FUNCALL TRACE-POP-UP-MENU ':CHOOSE)
+		    OPTION (FIRST CHOICE))			      
+	      (COND ((NULL CHOICE))	;Try again if outside menu
+		    ((EQ OPTION 'UNTRACE)
+		     (SETQ UNTRACE-MODE T
+			   FORM `(UNTRACE ,FCN)))
+		    ((EQ OPTION 'QUIT)
+		     (RETURN NIL))
+		    ((EQ OPTION 'DO-IT)
+		     (EVAL FORM)
+		     (RETURN NIL))
+		    (UNTRACE-MODE
+		     (BEEP))
+		    (T (SETF (SECOND FORM)
+			     (APPEND (SECOND FORM) (CDR CHOICE)))
+		       (COND (OPTION	;Needs an arg, get it
+			      (FORMAT TRACE-POP-UP-WINDOW "~2%~A:~%" OPTION)
+				;Turn on blinker
+			      (BLINKER-SET-VISIBILITY BLINKER ':BLINK)
+			      (LET ((TERMINAL-IO TRACE-POP-UP-WINDOW))
+				(SETQ ARG (READ)))
+			      (SETF (SECOND FORM)
+				    (APPEND (SECOND FORM) (LIST ARG)))))))))
+	  (FUNCALL TRACE-POP-UP-MENU ':DEACTIVATE))))))

@@ -8,31 +8,30 @@
 ;Returns T if it succeeded, NIL if it didn't.
 ;Hmm, NEWIO seems to blow out rather than returning NIL now.  Change this?
 
-;If the first argument is T (meaning TERMINAL-IO)
+;If the last argument is T (meaning TERMINAL-IO)
 ;or a stream, then it is applied to that stream.  Otherwise it is applied
 ;to STANDARD-OUTPUT.  Anything other than a number or a 1-character long
 ;symbol or NIL is assumed to be a stream.
 
 (DEFUN CURSORPOS (&REST ARGS)
-  (LET ((ARG1 (CAR ARGS))
+  (LET ((NARGS (LENGTH ARGS))
 	(STREAM STANDARD-OUTPUT)
-	WO)
+	ARG1 WO)
     (COND ((NULL ARGS))			;If any args, look for stream as 1st arg
-	  ((NULL ARG1))
-	  ((EQ ARG1 T) (SETQ STREAM TERMINAL-IO ARGS (CDR ARGS)))
-	  ((NUMBERP ARG1))
+	  ((EQ (SETQ ARG1 (CAR (LAST ARGS))) T) (SETQ STREAM TERMINAL-IO NARGS (1- NARGS)))
+	  ((OR (NUMBERP ARG1) (NULL ARG1)))
 	  ((OR (NOT (SYMBOLP ARG1)) (> (ARRAY-LENGTH (GET-PNAME ARG1)) 1))
-	   (SETQ STREAM ARG1 ARGS (CDR ARGS))))
+	   (SETQ STREAM ARG1 NARGS (1- NARGS))))
     (SETQ ARG1 (CAR ARGS)
 	  WO (FUNCALL STREAM ':WHICH-OPERATIONS))
-    (COND ((NULL ARGS)
+    (COND ((ZEROP NARGS)
 	   (IF (MEMQ ':READ-CURSORPOS WO)
 	       (MULTIPLE-VALUE-BIND (X Y) (FUNCALL STREAM ':READ-CURSORPOS ':CHARACTER)
 		 (CONS Y X))
 	       (FERROR NIL "~S stream does not support cursor positioning" STREAM)))
-	  ((CDDR ARGS)
+	  ((> NARGS 2)
 	   (FERROR NIL "Too many arguments"))	;Why bother signalling the correct condition?
-	  ((OR (CDR ARGS) (NUMBERP ARG1))	;2 arguments or one numeric argument
+	  ((OR (> NARGS 1) (NUMBERP ARG1))	;2 arguments or one numeric argument
 	   (IF (MEMQ ':SET-CURSORPOS WO)
 	       (MULTIPLE-VALUE-BIND (X Y) (FUNCALL STREAM ':READ-CURSORPOS ':CHARACTER)
 		 (FUNCALL STREAM ':SET-CURSORPOS
@@ -61,8 +60,8 @@
 	  ((= ARG1 #/K)				;K erase character
 	   (COND ((MEMQ ':CLEAR-CHAR WO) (FUNCALL STREAM ':CLEAR-CHAR) T)))
 	  ((= ARG1 #/X)				;X erase character backward
-	   (CURSORPOS STREAM 'B)
-	   (CURSORPOS STREAM 'K))
+	   (CURSORPOS 'B STREAM)
+	   (CURSORPOS 'K STREAM))
 	  ((= ARG1 #/Z)				;Z home down
 	   (IF (MEMQ ':HOME-DOWN WO) (FUNCALL STREAM ':HOME-DOWN)
 	       (FUNCALL STREAM ':FRESH-LINE))

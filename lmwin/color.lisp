@@ -9,7 +9,7 @@
 (DEFVAR COLOR-SCREEN)
 
 ;sync program bits
-;1  HSYNC
+;1  HSYNC -- Note! This bit is inverted.
 ;2  VSYNC
 ;4  COMPOSITE - (not used really, encode on HSYNC)
 ;10  BLANKING
@@ -32,6 +32,9 @@
 
 (DECLARE (SPECIAL SYNC))
 
+(COMMENT
+;; This sync program is only CLOSE to NTSC video
+
 (SETQ SYNC '(
    1 30 30 10 30 30 31 (44. 11) (5 10) (43. 11) 211 111 ;equalizing pulses, clr-tvma
    2 30 30 10 30 30 31 (44. 11) (5 10) (43. 11) 211 11  ;equalizing pulses
@@ -53,6 +56,35 @@
    227. 30 30 10 30 30 30 (9. 11) 11 (36. 41 1) 1 1 (8. 11) 211 71
    6 30 30 10 30 30 30 (10. 11) (74. 1) (8. 11) 211 11
    1 30 30 10 30 30 30 (9. 11) (83. 11) 311 11
+   (30 1))))
+
+;;; This is really NTSC standard video
+(SETQ SYNC '(
+   1 30 30 10 31 31 31 (45. 11) (3 10) (46. 11) 211 111 ;equalizing pulses, clr-tvma
+   2 30 30 10 31 31 31 (45. 11) (3 10) (46. 11) 211 11  ;equalizing pulses
+   3 32 32 12 32 32 32 (39. 12) (6 13) (45. 12) (4 13) 213 13   ;vert sync
+   3 30 30 10 31 31 31 (45. 11) (3 10) (46. 11) 211 11  ;equalizing pulses
+
+   13. 30 30 10 30 30 30 (6 11) (88. 11) 211 11 	;vert retrace
+   6 30 30 10 30 30 30 (12. 11) (74. 1) (8. 11) 211 11
+   227. 30 30 10 30 30 30 (11. 11) 11 (36. 41 1) 1 1 (8. 11) 211 71   ;12 mhz video, 9x64 bits
+   6 30 30 10 30 30 30 (12. 11) (74. 1) (8. 11) 211 11
+   1 30 30 10 30 30 30 (11. 11) (83. 11) 211 11
+
+   1 30 30 10 30 30 30 (45. 11) (3 10) (46. 11) 211 111 ;equalizing pulses, clr-tvma
+   2 30 30 10 31 31 31 (45. 11) (3 10) (46. 11) 211 11  ;equalizing pulses
+   1 30 30 10 31 31 31 (45. 11) (45. 10) (4 11) 211 11  ;equalizing pulses
+   1 30 30 10 30 30 30 (39. 10) (6 13) (45. 12) (4 13) 213 73  ;step-tvma
+   1 32 32 12 32 32 32 (39. 12) (6 13) (45. 12) (4 11) 213 13   ;vert sync
+   1 32 32 12 30 30 30 (39. 10) (6 11) (3 10) (46. 11) 211 11   ;equalizing
+   3 30 30 10 31 31 31 (45. 11) (3 10) (46. 11) 211 11  ;equalizing pulses
+
+   13. 30 30 10 30 30 30 (6 11) (88. 11) 211 11 	;vert retrace
+   6 30 30 10 30 30 30 (12. 11) (74. 1) (8. 11) 211 11
+   227. 30 30 10 30 30 30 (11. 11) 11 (36. 41 1) 1 1 (8. 11) 211 71
+   6 30 30 10 30 30 30 (12. 11) (74. 1) (8. 11) 211 11
+   1 30 30 10 30 30 30 (11. 11) (83. 11) 311 11
+
    (30 1)))
 
 ;Function which reads an XBUS location with parity checking disabled.
@@ -75,10 +107,8 @@
   (%XBUS-WRITE XBUS-ADDR BITS)
   (BIT-TEST BITS (XBUS-READ-NO-PARITY XBUS-ADDR)))
 
-(DEFUN COLOR-EXISTS-P ()
-  (IF (NOT (BOUNDP 'COLOR-SCREEN))
-      NIL
-      (XBUS-LOCATION-EXISTS-P (LOGAND (TV:SCREEN-BUFFER COLOR-SCREEN) 377777) 1)))
+(DEFUN COLOR-EXISTS-P (&OPTIONAL (SCREEN COLOR-SCREEN))
+  (XBUS-LOCATION-EXISTS-P (LOGAND (TV:SCREEN-BUFFER SCREEN) 377777) 1))
 
 ;; This stuff should be part of the color screen structure.
 (DECLARE (SPECIAL COLOR-MAP-ON COLOR-MAP-OFF))
@@ -220,7 +250,7 @@
       (WRITE-COLOR-MAP I R G B SCREEN)))
 
 ;Make a color screen
-(DEFFLAVOR COLOR-SCREEN () (TV:SCREEN))
+(DEFFLAVOR COLOR-SCREEN () (TV:STANDARD-SCREEN))
 
 (DEFMETHOD (COLOR-SCREEN :PARSE-FONT-DESCRIPTOR) (FD)
   (SETQ FD (TV:SCREEN-PARSE-FONT-DESCRIPTOR FD 'FONTS:COLOR-FONT))
@@ -231,18 +261,16 @@
 (DEFWRAPPER (COLOR-SCREEN :EXPOSE) (IGNORE . BODY)
   "Don't actually expose the color screen if there is no color monitor.  This
 function is a TOTAL KLUDGE."
-  `(IF (NOT (COLOR-EXISTS-P))
-       (SETQ TV:ALL-THE-SCREENS (DELQ SELF TV:ALL-THE-SCREENS))
-       (OR (MEMQ SELF TV:ALL-THE-SCREENS)
-	   (PUSH SELF TV:ALL-THE-SCREENS))
-       . ,BODY))
+  `(COND ((COLOR-EXISTS-P SELF)
+	  (OR TV:EXPOSED-P (SETUP SYNC SELF))
+	  . ,BODY)
+	 (T (SETUP SYNC SELF))))
 
 (DEFUN MAKE-SCREEN (&OPTIONAL (NAME "COLOR") (XBUS-ADR -600000) (CONTROL-ADR 377750))
   (TV:DEFINE-SCREEN 'COLOR-SCREEN NAME
     ':BITS-PER-PIXEL 4 ':BUFFER XBUS-ADR
     ':HEIGHT 454. ':WIDTH 576.
     ':CONTROL-ADDRESS CONTROL-ADR
-    ':DEFAULT-FONT FONTS:COLOR-CPTFONT
     ':PROPERTY-LIST
     `(:VIDEO :COLOR
 	     :CONTROLLER :SIMPLE
@@ -251,20 +279,21 @@ function is a TOTAL KLUDGE."
 ;Init a color screen
 (DEFUN SETUP (&OPTIONAL (SYNC-PROG SYNC) (SCREEN COLOR-SCREEN)
               &AUX (TV-COLOR-ADR (TV:SCREEN-CONTROL-ADDRESS SCREEN)))
-  (COND ((COLOR-EXISTS-P)
+  (COND ((COLOR-EXISTS-P SCREEN)
          (SI:STOP-SYNC TV-COLOR-ADR)
          (SI:FILL-SYNC SYNC-PROG 0 TV-COLOR-ADR)
          (SI:START-SYNC 3 0 36. TV-COLOR-ADR)
 	 ;; Make appropriate menu entries
-	 (OR (ASSOC "Color Window" TV:AUXILIARY-MENU-ITEM-LIST)
-	     (PUSH '("Color Window" :EVAL (TV:SYSTEM-MENU-CREATE-WINDOW COLOR-SCREEN))
-		   TV:AUXILIARY-MENU-ITEM-LIST)))
+	 (OR (ASSOC "Color Window" TV:*SYSTEM-MENU-WINDOWS-COLUMN*)
+	     (SETQ TV:*SYSTEM-MENU-WINDOWS-COLUMN*
+		   (APPEND TV:*SYSTEM-MENU-WINDOWS-COLUMN*
+			   (NCONS '("Color Window"
+				    :EVAL (TV:SYSTEM-MENU-CREATE-WINDOW COLOR-SCREEN)
+				    :DOCUMENTATION "Create a window on the color screen"))))))
 	(T
-	 (SETQ TV:AUXILIARY-MENU-ITEM-LIST
-	       (DELQ (ASSOC "Color Window" TV:AUXILIARY-MENU-ITEM-LIST)
-		     TV:AUXILIARY-MENU-ITEM-LIST)))))
-
-(ADD-INITIALIZATION "COLOR" '(SETUP) '(WARM))
+	 (SETQ TV:*SYSTEM-MENU-WINDOWS-COLUMN*
+	       (REMQ (ASSOC "Color Window" TV:*SYSTEM-MENU-WINDOWS-COLUMN*)
+		     TV:*SYSTEM-MENU-WINDOWS-COLUMN*)))))
 
 (DECLARE (SPECIAL BITBLT-ARRAY))
 (OR (BOUNDP 'BITBLT-ARRAY)
@@ -466,15 +495,11 @@ function is a TOTAL KLUDGE."
       (ASET (FIX (// (- (AREF PICT I J) MIN) SC))
             SCR (+ I X0) (+ J Y0)))))
 
-;;;Macros
-(DEFMACRO SWAP (A B)
-   `(SETF ,A (PROG1 ,B (SETF ,B ,A))))
-
 ;;Color line primitive - screen coords
 ;; Probably should draw away from starting point
 (DEFUN COLOR-DRAW-LINE (X1 Y1 X2 Y2
 			&OPTIONAL (COLOR 17) (ALU TV:ALU-SETA) (SCREEN COLOR-SCREEN))
-    (AND (> X1 X2) (SWAP X1 X2) (SWAP Y1 Y2))
+    (AND (> X1 X2) (SWAPF X1 X2) (SWAPF Y1 Y2))
     (TV:PREPARE-SHEET (SCREEN)
       (LET ((DX (- X2 X1))
 	    (DY (- Y2 Y1))
@@ -521,7 +546,7 @@ function is a TOTAL KLUDGE."
 	(IF (= (FED:FONT-GET-PIXEL FONT CHAR H W) 1)
 	    (ASET COLOR SCREEN (+ X W) (+ Y H)))))))
 
-(DEFUN COLOR-PRINC (STRING X Y &OPTIONAL (COLOR 0) (FONT FONTS:CPTFONT)
+(DEFUN COLOR-PRINC (STRING X Y &OPTIONAL (COLOR 0) (FONT TV:*DEFAULT-FONT*)
 			   (DEVICE COLOR-SCREEN)
 			   &AUX (WIDTH (FONT-CHAR-WIDTH FONT))
 			   (WIDTH-TABLE (FONT-CHAR-WIDTH-TABLE FONT)))
@@ -534,10 +559,22 @@ function is a TOTAL KLUDGE."
 	(COLOR-DRAW-CHAR FONT (AREF C I) W Y COLOR DEVICE))))
 
 ;;; Color font hackery (convert a font to be usable on the color screen)
-(DEFUN MAKE-COLOR-FONT (BW-FONT)
+(DEFUN MAKE-COLOR-FONT (BW-FONT &OPTIONAL (BIT-LIST '(1 1 1 1)) (FONT-NAME-SUFFIX ""))
+  (COND ((FIXP BIT-LIST)
+	 (DO ((I 0 (1+ I))
+	      (X BIT-LIST)
+	      (L NIL))
+	     ((>= I 4)
+	      (SETQ BIT-LIST (NREVERSE L)))
+	   (PUSH (LDB 0001 X) L)
+	   (SETQ X (LSH X -1))))
+	((OR ( (LENGTH BIT-LIST) 4)
+	     (DOLIST (B BIT-LIST) (OR (NUMBERP B) (RETURN T))))
+	 (FERROR NIL "Illegal format for bit list ~S" BIT-LIST)))
   (LET ((FIT) (MAXW 1) (SIZE 0) (RASTER-WIDTH) (WORDS-PER-CHAR) (RASTERS-PER-WORD)
 	(COLOR-FONT) (NEW-FIT)
-	(FONT-NAME (INTERN (STRING-APPEND "COLOR-" (FONT-NAME BW-FONT)) 'FONTS)))
+	(FONT-NAME (INTERN (STRING-APPEND "COLOR-" (FONT-NAME BW-FONT) FONT-NAME-SUFFIX)
+			   'FONTS)))
     (IF (SETQ FIT (FONT-INDEXING-TABLE BW-FONT))
 	(DOTIMES (CHAR 200)
 	  (SETQ MAXW (MAX MAXW (- (AREF FIT (1+ CHAR)) (AREF FIT CHAR))))))
@@ -565,7 +602,7 @@ function is a TOTAL KLUDGE."
 	   (SETQ SIZE (* WORDS-PER-CHAR 200)))
 	  (T (FERROR NIL "We don't need an indexing table, but black-and-white font did?")))
     (SETQ COLOR-FONT
-	  (MAKE-ARRAY NIL 'ART-1B (* SIZE 32.) NIL (GET 'FONT 'SI:DEFSTRUCT-SIZE) NIL T))
+	  (MAKE-ARRAY NIL 'ART-1B (* SIZE 32.) NIL TV:FONT-LEADER-SIZE NIL T))
     (SETF (ARRAY-LEADER COLOR-FONT 1) 'FONT)	;Named structure symbol
     (SETF (ARRAY-LEADER COLOR-FONT 0) 0)	;Fill pointer
     (SETF (FONT-NAME COLOR-FONT) FONT-NAME)
@@ -605,9 +642,9 @@ function is a TOTAL KLUDGE."
 					   (* 32. (// RAS RAS-PER-W))	;Number of words in
 					   (* RW (\ RAS RAS-PER-W))	;Num rasters in word
 					   PIX))))			;Pixel within raster
-		       (DOTIMES (I 4)
+		       (DOLIST (B BIT-LIST)
 			 ;; Now store pixel four times
-			 (ASET PIXEL COLOR-FONT
+			 (ASET (* PIXEL B) COLOR-FONT
 			       (+ CBASE
 				  (* 32. (// RAS RASTERS-PER-WORD))
 				  (* RASTER-WIDTH (\ RAS RASTERS-PER-WORD))
@@ -642,14 +679,14 @@ function is a TOTAL KLUDGE."
 					       (* 32. (// RAS RAS-PER-W)) ;Number of words in
 					       (* RW (\ RAS RAS-PER-W))	  ;Num rasters in word
 					       PIX))))			  ;Pixel within raster
-			   (DOTIMES (I 4)
+			   (DOLIST (B BIT-LIST)
 			     ;; Now store pixel four times
 			     (SETQ CPIX (1+ CPIX))
 			     (IF ( CPIX RASTER-WIDTH)
 				 (SETQ IDX (1+ IDX)
 				       CPIX 0
 				       CBASE (* IDX WORDS-PER-CHAR 32.)))
-			     (ASET PIXEL COLOR-FONT
+			     (ASET (* PIXEL B) COLOR-FONT
 				   (+ CBASE
 				      (* 32. (// RAS RASTERS-PER-WORD))
 				      (* RASTER-WIDTH (\ RAS RASTERS-PER-WORD))

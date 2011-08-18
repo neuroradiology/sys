@@ -2,17 +2,36 @@
 ;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 ;;; The screen editor
 
+(DEFUNP MOUSE-SET-SHEET-THEN-CALL (SHEET FUNCTION &REST ARGS
+				   &AUX (OLD-MOUSE-SHEET MOUSE-SHEET))
+  (UNWIND-PROTECT
+    (PROGN
+      (AND (NEQ MOUSE-SHEET SHEET)
+	   (MOUSE-SET-SHEET SHEET))
+      (APPLY FUNCTION ARGS))
+    (AND (NEQ MOUSE-SHEET OLD-MOUSE-SHEET)
+	 (MOUSE-SET-SHEET OLD-MOUSE-SHEET))))
+
+(DEFUN MOUSE-SPECIFY-RECTANGLE-SET-SHEET (&OPTIONAL LEFT TOP RIGHT BOTTOM (SHEET MOUSE-SHEET)
+					            (MINIMUM-WIDTH 0) (MINIMUM-HEIGHT 0)
+						    ABORTABLE)
+  (MOUSE-SET-SHEET-THEN-CALL SHEET #'MOUSE-SPECIFY-RECTANGLE LEFT TOP RIGHT BOTTOM SHEET
+			     MINIMUM-WIDTH MINIMUM-HEIGHT ABORTABLE))
+
 (DEFUN MOUSE-SPECIFY-RECTANGLE (&OPTIONAL LEFT TOP RIGHT BOTTOM (SHEET MOUSE-SHEET)
-					  (MINIMUM-WIDTH 0) (MINIMUM-HEIGHT 0)
-				&AUX LEFT1 TOP1 WIDTH HEIGHT)
+					  (MINIMUM-WIDTH 0) (MINIMUM-HEIGHT 0) ABORTABLE
+				&AUX LEFT1 TOP1 WIDTH HEIGHT BUTTON ABORT)
 "Call this and get back a rectangle as four values: left, top, right, bottom.
-The user uses the mouse to specify the rectangle.
+The user uses the mouse to specify the rectangle.  The left button puts
+a corner down, the right button puts it down at the nearest 'good' place,
+the middle button aborts if that is possible.
 Specifying a rectangle of zero or negative size instead gives the full screen.
 Our arguments are where to start the corners out:
 The upper left corner goes at LEFT and TOP, or where the mouse is if they are NIL;
 the lower right corner goes near the other one by default, unless all
 four args are present, in which case it starts off so as to make a rectangle
 congruent to the one specified by the arguments.
+If ABORTABLE is T, this can return NIL.
 SHEET specifies the area within which we are allowed to act."
   (AND (EQ CURRENT-PROCESS MOUSE-PROCESS)
        (FERROR NIL "MOUSE-SPECIFY-RECTANGLE cannot be called in the mouse process"))
@@ -25,19 +44,30 @@ SHEET specifies the area within which we are allowed to act."
       (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 0 0 ':ON
 				    ':SET-CHARACTER 21)
       (MOUSE-WARP (OR LEFT MOUSE-X) (OR TOP MOUSE-Y))
+      (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION
+	    (IF ABORTABLE
+		"Select upper left corner of rectangle.  Middle aborts.  Right is smart."
+		"Select upper left corner of rectangle.  Right is smart."))
       ;; In case this was called in response to a mouse click, wait for
       ;; the buttons to be released.
       (PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
       (PROCESS-WAIT "Button" #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
+      (SETQ BUTTON MOUSE-LAST-BUTTONS)
       (PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
       ;; The first click determines the upper left corner.
-      (SETQ LEFT1 MOUSE-X TOP1 MOUSE-Y)
+      (AND ABORTABLE (BIT-TEST 2 BUTTON) (RETURN (SETQ ABORT T)))
+      (MULTIPLE-VALUE (LEFT1 TOP1)
+	(MOUSE-SPECIFIED-POINT SHEET MOUSE-X MOUSE-Y (BIT-TEST 4 BUTTON) NIL))
       ;; Set up the mouse for finding the lower right corner.
       (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 12. 12. ':ON
 				    ':SET-CHARACTER 22)
       (COND ((AND LEFT TOP RIGHT BOTTOM)
 	     (MOUSE-WARP (+ LEFT1 (- RIGHT LEFT)) (+ TOP1 (- BOTTOM TOP))))
 	    (T (MOUSE-WARP (+ MOUSE-X 20.) (+ MOUSE-Y 20.))))
+      (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION
+	    (IF ABORTABLE
+		"Select lower right corner of rectangle.  Middle aborts.  Right is smart."
+		"Select lower right corner of rectangle.  Right is smart."))
       ;; Leave the auxiliary blinker behind to continue to show the first corner.
       (LET ((MOUSE-RECTANGLE-BLINKER (MOUSE-GET-BLINKER ':RECTANGLE-BLINKER)))
 	(UNWIND-PROTECT
@@ -45,11 +75,16 @@ SHEET specifies the area within which we are allowed to act."
 	    (BLINKER-SET-CURSORPOS MOUSE-RECTANGLE-BLINKER LEFT1 TOP1)
 	    (BLINKER-SET-VISIBILITY MOUSE-RECTANGLE-BLINKER T)
 	    ;; The next click fixes the lower right corner.
-	    (PROCESS-WAIT "Button" #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS)))))
+	    (PROCESS-WAIT "Button" #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
+	    (SETQ BUTTON MOUSE-LAST-BUTTONS))
 	  (BLINKER-SET-VISIBILITY MOUSE-RECTANGLE-BLINKER NIL)))
       (MOUSE-STANDARD-BLINKER)
-      (SETQ WIDTH (- (1+ MOUSE-X) LEFT1)
-	    HEIGHT (- (1+ MOUSE-Y) TOP1))
+      (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION NIL)
+      (AND ABORTABLE (BIT-TEST 2 BUTTON) (RETURN (SETQ ABORT T)))
+      (MULTIPLE-VALUE-BIND (X Y)
+	  (MOUSE-SPECIFIED-POINT SHEET (1+ MOUSE-X) (1+ MOUSE-Y) (BIT-TEST 4 BUTTON) T)
+	(SETQ WIDTH (- X LEFT1)
+	      HEIGHT (- Y TOP1)))
       (COND ((AND (PLUSP WIDTH) (PLUSP HEIGHT))
 	     (MULTIPLE-VALUE-BIND (XOFF YOFF)
 		 (SHEET-CALCULATE-OFFSETS SHEET MOUSE-SHEET)
@@ -66,10 +101,32 @@ SHEET specifies the area within which we are allowed to act."
 		     WIDTH (SHEET-INSIDE-WIDTH SHEET)
 		     HEIGHT (SHEET-INSIDE-HEIGHT SHEET))
 	       (RETURN NIL)))))
-  (PROG () (RETURN LEFT1 TOP1 (+ LEFT1 WIDTH) (+ TOP1 HEIGHT))))
+  (PROG () (OR ABORT (RETURN LEFT1 TOP1 (+ LEFT1 WIDTH) (+ TOP1 HEIGHT)))))
+
+(DEFUN MOUSE-SPECIFIED-POINT (SHEET X Y MAGICP LOWER-RIGHT)
+  (DECLARE (SPECIAL X1 X2 Y1 Y2 Z MULT))
+  (AND MAGICP
+       (LET ((X1 X) (Y1 Y) (X2 X) (Y2 Y) (Z SHEET) (MULT (IF LOWER-RIGHT 1 -1)))
+	 (MAP-OVER-EXPOSED-SHEET
+	   #'(LAMBDA (SH)
+	       (MULTIPLE-VALUE-BIND (XO YO) (SHEET-CALCULATE-OFFSETS SH Z)
+		 (LET ((X3 XO) (X4 (+ XO (SHEET-WIDTH SH)))
+		       (Y3 YO) (Y4 (+ YO (SHEET-HEIGHT SH))))
+		   (AND (SUITABLY-CLOSE (* (- X3 X1) MULT)) (SETQ X2 X3))
+		   (AND (SUITABLY-CLOSE (* (- X4 X1) MULT)) (SETQ X2 X4))
+		   (AND (SUITABLY-CLOSE (* (- Y3 Y1) MULT)) (SETQ Y2 Y3))
+		   (AND (SUITABLY-CLOSE (* (- Y4 Y1) MULT)) (SETQ Y2 Y4)))))
+	   SHEET)
+	 (SETQ X (MIN (MAX X2 (SHEET-INSIDE-LEFT SHEET)) (SHEET-INSIDE-RIGHT SHEET))
+	       Y (MIN (MAX Y2 (SHEET-INSIDE-TOP SHEET)) (SHEET-INSIDE-BOTTOM SHEET)))))
+  (PROG () (RETURN X Y)))
+
+;; 40 is 4 character-widths
+(DEFUN SUITABLY-CLOSE (DELTA)
+  (AND (PLUSP DELTA) (< DELTA 40)))
 
 ;;; Put a window someplace using the mouse
-(DEFUN MOUSE-SET-WINDOW-SIZE (WINDOW &OPTIONAL (MOVE-P T) &AUX LEFT TOP RIGHT BOTTOM)
+(DEFUN MOUSE-SET-WINDOW-SIZE (WINDOW &OPTIONAL (MOVE-P T) &AUX LEFT TOP RIGHT BOTTOM ERROR)
   (DECLARE (RETURN-LIST LEFT TOP RIGHT BOTTOM))
   (MULTIPLE-VALUE (LEFT TOP)
     (SHEET-CALCULATE-OFFSETS WINDOW MOUSE-SHEET))
@@ -77,90 +134,115 @@ SHEET specifies the area within which we are allowed to act."
 	BOTTOM (+ TOP (SHEET-HEIGHT WINDOW)))
   (DO () (())
     (MULTIPLE-VALUE (LEFT TOP RIGHT BOTTOM)
-      (MOUSE-SPECIFY-RECTANGLE LEFT TOP RIGHT BOTTOM (SHEET-SUPERIOR WINDOW)))
-    (IF (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM ':VERIFY)
-	(RETURN T)
-	(BEEP)))
+      (MOUSE-SPECIFY-RECTANGLE LEFT TOP RIGHT BOTTOM (SHEET-SUPERIOR WINDOW) 0 0 T))
+    (COND ((NULL LEFT)				;Aborted
+	   (BEEP)				;Leave it where it is
+	   (SETQ MOVE-P NIL)
+	   (MULTIPLE-VALUE (LEFT TOP RIGHT BOTTOM) (FUNCALL WINDOW ':EDGES))
+	   (RETURN))
+	  ((NULL (MULTIPLE-VALUE (NIL ERROR)
+		   (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM ':VERIFY)))
+	   (BEEP)
+	   (POP-UP-FORMAT "Illegal edges for ~S:~%~A" WINDOW ERROR)) ;Edges no good, try again
+	  (T (RETURN))))			;Good
   (AND MOVE-P (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM))
   (PROG () (RETURN LEFT TOP RIGHT BOTTOM)))
 
 
 (DEFFLAVOR MOUSE-BOX-BLINKER () (MOUSE-BLINKER-MIXIN BOX-BLINKER))
-(COMPILE-FLAVOR-METHODS MOUSE-BOX-BLINKER)
+(DEFFLAVOR MOUSE-BOX-STAY-INSIDE-BLINKER ()
+	   (MOUSE-BLINKER-MIXIN STAY-INSIDE-BLINKER-MIXIN BOX-BLINKER))
+(COMPILE-FLAVOR-METHODS MOUSE-BOX-BLINKER MOUSE-BOX-STAY-INSIDE-BLINKER)
 (MOUSE-DEFINE-BLINKER-TYPE ':BOX-BLINKER
 			   #'(LAMBDA (SCREEN)
 			       (DEFINE-BLINKER SCREEN 'MOUSE-BOX-BLINKER
 				 ':VISIBILITY NIL)))
+(MOUSE-DEFINE-BLINKER-TYPE ':BOX-STAY-INSIDE-BLINKER
+			   #'(LAMBDA (SCREEN)
+			       (DEFINE-BLINKER SCREEN 'MOUSE-BOX-STAY-INSIDE-BLINKER
+				 ':VISIBILITY NIL)))
 
 ;;; Move a window around using the mouse
 ;;; If MOVE-P is NIL move just an outline of it and return where it would have moved to
+;;; Return values are the position X, Y, or NIL if the middle button is clicked to abort.
 (DEFUN MOUSE-SET-WINDOW-POSITION (WINDOW &OPTIONAL (MOVE-P T)
 					 &AUX (SUPERIOR (SHEET-SUPERIOR WINDOW))
 				      (X (SHEET-X WINDOW))
 				      (Y (SHEET-Y WINDOW))
-				      XOFF YOFF)
+				      XOFF YOFF BD)
   (DECLARE (RETURN-LIST X Y))
   (OR (SHEET-ME-OR-MY-KID-P WINDOW MOUSE-SHEET)
       (FERROR NIL "Attempt to set position of ~S, which is not inferior to MOUSE-SHEET"
 	      WINDOW))
   (MULTIPLE-VALUE (XOFF YOFF)
     (SHEET-CALCULATE-OFFSETS SUPERIOR MOUSE-SHEET))
-  (WITH-MOUSE-GRABBED
-    (WITHOUT-INTERRUPTS
-	    (MOUSE-SET-BLINKER-DEFINITION ':BOX-BLINKER 0 0 NIL
-					  ':SET-SIZE (SHEET-WIDTH WINDOW)
-					             (SHEET-HEIGHT WINDOW))
-	    (MOUSE-WARP (+ X XOFF) (+ Y YOFF)))
-    (BLINKER-SET-VISIBILITY MOUSE-BLINKER T)
-    (DO () (NIL)
-      ;; In case this was called in response to a mouse click, wait for
-      ;; the buttons to be released.
-      (PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
-      (PROCESS-WAIT "Button" #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
-      (PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
-      (SETQ X (- MOUSE-X XOFF)
-	    Y (- MOUSE-Y YOFF))
-      ;; If trying to move off screen, most reasonable thing to do is to
-      ;; warp it back onto the screen.
-      (SETQ X (MIN (- (SHEET-WIDTH SUPERIOR) (SHEET-WIDTH WINDOW)) X)
-	    Y (MIN (- (SHEET-HEIGHT SUPERIOR) (SHEET-HEIGHT WINDOW)) Y))
-      (IF (FUNCALL WINDOW ':SET-POSITION X Y ':VERIFY)
-	  (RETURN (BLINKER-SET-VISIBILITY MOUSE-BLINKER NIL))
- 	  (BEEP))))
-  (IF MOVE-P (FUNCALL WINDOW ':SET-POSITION X Y))
-  (PROG () (RETURN X Y)))
+  (PROG MOUSE-SET-WINDOW-POSITION ()	;because multiple values not passed by UNWIND-PROTECT
+    (WITH-MOUSE-GRABBED
+      (WITHOUT-INTERRUPTS
+	      (MOUSE-SET-BLINKER-DEFINITION ':BOX-STAY-INSIDE-BLINKER 0 0 NIL
+					    ':SET-SIZE (SHEET-WIDTH WINDOW)
+						       (SHEET-HEIGHT WINDOW))
+	      (MOUSE-WARP (+ X XOFF) (+ Y YOFF)))
+      (BLINKER-SET-VISIBILITY MOUSE-BLINKER T)
+      (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION
+	    "Left button selects position of window.  Middle aborts.")
+      (DO () (NIL)
+	;; In case this was called in response to a mouse click, wait for
+	;; the buttons to be released.
+	(PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
+	(PROCESS-WAIT "Button" #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
+	(SETQ BD MOUSE-LAST-BUTTONS)
+	(MULTIPLE-VALUE (X Y) (FUNCALL MOUSE-BLINKER ':READ-CURSORPOS))
+	(COND ((ZEROP BD))
+	      ((BIT-TEST 2 BD) (RETURN-FROM MOUSE-SET-WINDOW-POSITION NIL))
+	      ((FUNCALL WINDOW ':SET-POSITION X Y ':VERIFY)
+	       (BLINKER-SET-VISIBILITY MOUSE-BLINKER NIL)
+	       (IF MOVE-P (FUNCALL WINDOW ':SET-POSITION X Y))
+	       (RETURN-FROM MOUSE-SET-WINDOW-POSITION X Y))
+	      (T (BEEP)))))))			;Illegal position
 
-(DEFUN EXPAND-WINDOW (WINDOW &OPTIONAL (MOVE-P T)
-			     &AUX SUPERIOR SIBLINGS LEFT TOP RIGHT BOTTOM)
+(DEFUN EXPAND-WINDOW (WINDOW &OPTIONAL (MOVE-P T))
   (DECLARE (RETURN-LIST LEFT TOP RIGHT BOTTOM))
-  (SETQ SUPERIOR (SHEET-SUPERIOR WINDOW)
-	SIBLINGS (SHEET-EXPOSED-INFERIORS SUPERIOR)
-	LEFT (SHEET-X-OFFSET WINDOW)
-	TOP (SHEET-Y-OFFSET WINDOW)
-	RIGHT (+ LEFT (SHEET-WIDTH WINDOW))
-	BOTTOM (+ TOP (SHEET-HEIGHT WINDOW)))
-  ;;Expand to the left and right
-  (LET ((MAX-LEFT (SHEET-INSIDE-LEFT SUPERIOR))
-	(MAX-RIGHT (SHEET-INSIDE-RIGHT SUPERIOR)))
-    (DOLIST (W SIBLINGS)
-      (AND (SHEET-OVERLAPS-EDGES-P W MAX-LEFT TOP LEFT BOTTOM)
-	   (SETQ MAX-LEFT (+ (SHEET-X-OFFSET W) (SHEET-WIDTH W))))
-      (AND (SHEET-OVERLAPS-EDGES-P W RIGHT TOP MAX-RIGHT BOTTOM)
-	   (SETQ MAX-RIGHT (SHEET-X-OFFSET W))))
-    (SETQ LEFT MAX-LEFT
-	  RIGHT MAX-RIGHT))
-  ;;Expand to the top and bottom
-  (LET ((MAX-TOP (SHEET-INSIDE-TOP SUPERIOR))
+  (LET ((X-OFFSET (SHEET-X-OFFSET WINDOW))
+	(Y-OFFSET (SHEET-Y-OFFSET WINDOW)))
+    (MULTIPLE-VALUE-BIND (LEFT TOP RIGHT BOTTOM)
+	(EXPAND-RECTANGULAR-AREA 
+	  (SHEET-SUPERIOR WINDOW)	
+	  X-OFFSET
+	  Y-OFFSET
+	  (+ X-OFFSET (SHEET-WIDTH WINDOW))
+	  (+ Y-OFFSET (SHEET-HEIGHT WINDOW)))
+      (AND MOVE-P (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM))
+      (VALUES LEFT TOP RIGHT BOTTOM))))
+
+;;; Given a superior window, and a rectangle within that window, return
+;;; the boundaries of a new rectangle that includes the old rectangle
+;;; and is expanded as much as possible without overlapping any exposed
+;;; inferiors of the superior window.  If the IGNORED-WINDOW argument
+;;; is present, it means that we should ignore the presence of this window.
+(DEFUN EXPAND-RECTANGULAR-AREA (SUPERIOR LEFT TOP RIGHT BOTTOM &OPTIONAL IGNORED-WINDOW)
+  (DECLARE (RETURN-LIST MAX-LEFT MAX-TOP MAX-RIGHT MAX-BOTTOM))
+  (LET ((SIBLINGS (SHEET-EXPOSED-INFERIORS SUPERIOR))
+	(MAX-LEFT (SHEET-INSIDE-LEFT SUPERIOR))
+	(MAX-RIGHT (SHEET-INSIDE-RIGHT SUPERIOR))
+	(MAX-TOP (SHEET-INSIDE-TOP SUPERIOR))
 	(MAX-BOTTOM (SHEET-INSIDE-BOTTOM SUPERIOR)))
+    ;;Expand to the left and right
     (DOLIST (W SIBLINGS)
-      (AND (SHEET-OVERLAPS-EDGES-P W LEFT MAX-TOP RIGHT TOP)
-	   (SETQ MAX-TOP (+ (SHEET-Y-OFFSET W) (SHEET-HEIGHT W))))
-      (AND (SHEET-OVERLAPS-EDGES-P W LEFT BOTTOM RIGHT MAX-BOTTOM)
-	   (SETQ MAX-BOTTOM (SHEET-Y-OFFSET W))))
-    (SETQ TOP MAX-TOP
-	  BOTTOM MAX-BOTTOM))
-  (AND MOVE-P (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM))
-  (PROG () (RETURN LEFT TOP RIGHT BOTTOM)))
+      (COND ((OR (NULL IGNORED-WINDOW) (NEQ W IGNORED-WINDOW))
+	     (AND (SHEET-OVERLAPS-EDGES-P W MAX-LEFT TOP LEFT BOTTOM)
+		  (SETQ MAX-LEFT (+ (SHEET-X-OFFSET W) (SHEET-WIDTH W))))
+	     (AND (SHEET-OVERLAPS-EDGES-P W RIGHT TOP MAX-RIGHT BOTTOM)
+		  (SETQ MAX-RIGHT (SHEET-X-OFFSET W))))))
+    ;;Expand to the top and bottom
+    (DOLIST (W SIBLINGS)
+      (COND ((OR (NULL IGNORED-WINDOW) (NEQ W IGNORED-WINDOW))
+	     (AND (SHEET-OVERLAPS-EDGES-P W MAX-LEFT MAX-TOP MAX-RIGHT TOP)
+		  (SETQ MAX-TOP (+ (SHEET-Y-OFFSET W) (SHEET-HEIGHT W))))
+	     (AND (SHEET-OVERLAPS-EDGES-P W MAX-LEFT BOTTOM MAX-RIGHT MAX-BOTTOM)
+		  (SETQ MAX-BOTTOM (SHEET-Y-OFFSET W))))))
+    (VALUES MAX-LEFT MAX-TOP MAX-RIGHT MAX-BOTTOM)))
+
 
 ;;;The hairy window whitespace reclaimer
 (DEFSTRUCT (EXPAND-WINDOWS-ITEM :LIST (:CONSTRUCTOR NIL))
@@ -248,8 +330,7 @@ SHEET specifies the area within which we are allowed to act."
 					   (CAR LEFT-WINNERS))))
 		 (LEFT-MIDDLE (+ MAX-LEFT (// (- LEFT MAX-LEFT) 2))))
 	     (AND WINNERS-MAX-RIGHT (SETQ LEFT-MIDDLE (MIN LEFT-MIDDLE WINNERS-MAX-RIGHT)))
-	     (IF (AND LEFT-WINNERS (NOT (FUNCALL WINDOW ':SET-EDGES LEFT-MIDDLE TOP
-						 RIGHT BOTTOM ':VERIFY)))
+	     (IF (NOT (FUNCALL WINDOW ':SET-EDGES LEFT-MIDDLE TOP RIGHT BOTTOM ':VERIFY))
 		 ;;This window will not move, get as many of the others as will allow
 		 (DOLIST (LEFT-WINNER LEFT-WINNERS)
 		   (AND (FUNCALL (EXPAND-WINDOWS-WINDOW LEFT-WINNER) ':SET-EDGES
@@ -281,8 +362,7 @@ SHEET specifies the area within which we are allowed to act."
 					(EXPAND-WINDOWS-MAX-LEFT-TOP (CAR RIGHT-WINNERS))))
 		 (RIGHT-MIDDLE (- MAX-RIGHT (// (- MAX-RIGHT RIGHT) 2))))
 	     (AND WINNERS-MAX-LEFT (SETQ RIGHT-MIDDLE (MAX RIGHT-MIDDLE WINNERS-MAX-LEFT)))
-	     (IF (AND RIGHT-WINNERS (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP
-						  RIGHT-MIDDLE BOTTOM ':VERIFY)))
+	     (IF (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT-MIDDLE BOTTOM ':VERIFY))
 		 (DOLIST (RIGHT-WINNER RIGHT-WINNERS)
 		   (AND (FUNCALL (EXPAND-WINDOWS-WINDOW RIGHT-WINNER) ':SET-EDGES
 				 WINNERS-MAX-LEFT
@@ -376,8 +456,7 @@ SHEET specifies the area within which we are allowed to act."
 					    (CAR TOP-WINNERS))))
 		 (TOP-MIDDLE (+ MAX-TOP (// (- TOP MAX-TOP) 2))))
 	     (AND WINNERS-MAX-BOTTOM (SETQ TOP-MIDDLE (MIN TOP-MIDDLE WINNERS-MAX-BOTTOM)))
-	     (IF (AND TOP-WINNERS (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP-MIDDLE
-						 RIGHT BOTTOM ':VERIFY)))
+	     (IF (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP-MIDDLE RIGHT BOTTOM ':VERIFY))
 		 ;;This window will not move, get as many of the others as will allow
 		 (DOLIST (TOP-WINNER TOP-WINNERS)
 		   (AND (FUNCALL (EXPAND-WINDOWS-WINDOW TOP-WINNER) ':SET-EDGES
@@ -409,8 +488,7 @@ SHEET specifies the area within which we are allowed to act."
 					(EXPAND-WINDOWS-MAX-LEFT-TOP (CAR BOTTOM-WINNERS))))
 		 (BOTTOM-MIDDLE (- MAX-BOTTOM (// (- MAX-BOTTOM BOTTOM) 2))))
 	     (AND WINNERS-MAX-TOP (SETQ BOTTOM-MIDDLE (MAX BOTTOM-MIDDLE WINNERS-MAX-TOP)))
-	     (IF (AND BOTTOM-WINNERS (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP
-						  RIGHT BOTTOM-MIDDLE ':VERIFY)))
+	     (IF (NOT (FUNCALL WINDOW ':SET-EDGES LEFT TOP RIGHT BOTTOM-MIDDLE ':VERIFY))
 		 (DOLIST (BOTTOM-WINNER BOTTOM-WINNERS)
 		   (AND (FUNCALL (EXPAND-WINDOWS-WINDOW BOTTOM-WINNER) ':SET-EDGES
 				 (EXPAND-WINDOWS-LEFT BOTTOM-WINNER)
@@ -450,21 +528,47 @@ SHEET specifies the area within which we are allowed to act."
 	  (MAX VAL (EXPAND-WINDOWS-MAX-LEFT-TOP WINNER)))))
 
 (DEFVAR SCREEN-EDITOR-ITEM-LIST
-	'(("Bury" . SEC-BURY) ("Expose" . SEC-EXPOSE) ("Expose (menu)" . SEC-EXPOSE-MENU)
-	  ("Create" . SEC-CREATE)
-	  ("Kill" . SEC-KILL)
-	  ("Exit" . SEC-QUIT) ("Undo" . SEC-UNDO)
-	  ("Move window" . SEC-MOVE-WINDOW) ("Reshape" . SEC-RESHAPE)
-	  ("Move multiple" . SEC-MULTIPLE-MOVE) ("Move single" . SEC-SINGLE-MOVE)
-	  ("Expand window" . SEC-EXPAND-WINDOW) ("Expand all" . SEC-EXPAND-ALL)))
+	'(("Bury" :VALUE SEC-BURY
+	   :DOCUMENTATION "Point at a window and put it underneath all other windows.")
+	  ("Expose" :VALUE SEC-EXPOSE
+	   :DOCUMENTATION "Point at a window and expose it.")
+	  ("Expose (menu)" :VALUE SEC-EXPOSE-MENU
+	   :DOCUMENTATION 
+   "Choose a window (from a menu) and expose it.  This can get at more windows than Expose.")
+	  ("Create" :VALUE SEC-CREATE
+	   :DOCUMENTATION
+  "Choose a flavor of window (from a menu) and corners, and create a window of that flavor.")
+	  ("Create (expand)" :VALUE SEC-CREATE-EXPAND
+	   :DOCUMENTATION "Create followed by Expand Window.")
+	  ("Kill" :VALUE SEC-KILL
+	   :DOCUMENTATION "Point at a window and kill it.  Asks for confirmation.")
+	  ("Exit" :VALUE SEC-QUIT
+	   :DOCUMENTATION "Leave the screen editor.")
+	  ("Undo" :VALUE SEC-UNDO
+	   :DOCUMENTATION "Undo the last screen editor command.  Can't undo Create or Kill.")
+	  ("Move window" :VALUE SEC-MOVE-WINDOW
+	   :DOCUMENTATION "Point at a window and move it.")
+	  ("Reshape" :VALUE SEC-RESHAPE
+	   :DOCUMENTATION "Point at a window, and specify new corners for it.")
+	  ("Move multiple" :VALUE SEC-MULTIPLE-MOVE
+	   :DOCUMENTATION "Choose a group of edges and corners and move them as a unit.")
+	  ("Move single" :VALUE SEC-SINGLE-MOVE
+	   :DOCUMENTATION "Point at an edge or corner and move it.")
+	  ("Expand window" :VALUE SEC-EXPAND-WINDOW
+	   :DOCUMENTATION 
+"Point at a window and change its size so it fills as much empty space around it as possible."
+	   )
+	  ("Expand all" :VALUE SEC-EXPAND-ALL
+	   :DOCUMENTATION
+	   "Change the size of all windows to fill as much empty space as possible.")
+	  ("Attributes" :VALUE SEC-ATTRIBUTES
+	   :DOCUMENTATION
+	   "Edit the attributes of a specified window.")))
 
-(SYSTEM-WINDOW-ADD-TYPE 'SCREEN-EDITOR-MENU
-			#'(LAMBDA (SUP)
-			    (WINDOW-CREATE 'DYNAMIC-POP-UP-MENU
-					   ':SUPERIOR SUP
-					   ':SAVE-BITS T
-					   ':ITEM-LIST-POINTER 'SCREEN-EDITOR-ITEM-LIST))
-			T ':DEEXPOSED)
+(DEFWINDOW-RESOURCE SCREEN-EDITOR-MENU ()
+	:MAKE-WINDOW (DYNAMIC-POP-UP-MENU :ITEM-LIST-POINTER 'SCREEN-EDITOR-ITEM-LIST
+					  :SAVE-BITS T)
+	:REUSABLE-WHEN :DEEXPOSED)
 
 (DEFVAR SCREEN-EDITOR-MENU)
 (DEFVAR SCREEN-EDITOR-PREVIOUS-ALIST)
@@ -481,45 +585,56 @@ SHEET specifies the area within which we are allowed to act."
 ;;; actual side-effects, allowing for undoing.
 (DEFUN EDIT-SCREEN (TOP-SHEET &AUX WINDOW-EDGE-ALIST SCREEN-EDITOR-PREVIOUS-ALIST
 				   (OLD-MOUSE-SHEET MOUSE-SHEET)
-				   (OLD-SELECTED-WINDOW SELECTED-WINDOW)
-				   (SCREEN-EDITOR-MENU
-				     (GET-A-SYSTEM-WINDOW 'SCREEN-EDITOR-MENU TOP-SHEET)))
-  (SETQ WINDOW-EDGE-ALIST (GET-WINDOW-EDGE-ALIST TOP-SHEET)
-	SCREEN-EDITOR-PREVIOUS-ALIST WINDOW-EDGE-ALIST)
-  (UNWIND-PROTECT
-   (*CATCH 'EXIT-SCREEN-EDITOR
-    (LET-GLOBALLY ((WHO-LINE-PROCESS CURRENT-PROCESS))
-     (MOUSE-SET-SHEET TOP-SHEET)
-     (DO ((COMMAND)
-	  (NEW-ALIST))
-	(NIL)
-      (EXPOSE-WINDOW-NEAR SCREEN-EDITOR-MENU '(:MOUSE))
-      (COND ((SETQ COMMAND (FUNCALL SCREEN-EDITOR-MENU ':CHOOSE))
-	     (DELAYING-SCREEN-MANAGEMENT
-	       (FUNCALL SCREEN-EDITOR-MENU ':DEACTIVATE)
-	       (SETQ NEW-ALIST (FUNCALL COMMAND TOP-SHEET WINDOW-EDGE-ALIST))
-	       (DOLIST (NEW NEW-ALIST)
-		 (LET ((OLD (ASSQ (CAR NEW) WINDOW-EDGE-ALIST)))
-		   (OR (EQUAL (CDDR OLD) (CDDR NEW))	;Edges not the same?
-		       (LEXPR-FUNCALL (CAR NEW) ':SET-EDGES (CDDR NEW)))
-		   ;; Try to fix exposure and ordering of de-exposed sheets.
-		   ;; This may not be quite right, e.g. if undoing an expose
-		   ;; because the window will go in the wrong place in the
-		   ;; de-exposed sheets, and Undo twice will not be a no-op.
-		   ;; It will just have to do for now though.
-		   (COND ((EQ (CADR NEW) T)
-			  (OR (CADR OLD) (FUNCALL (CAR NEW) ':EXPOSE)))
-			 ((EQ (CADR NEW) ':BURY)
-			  (FUNCALL (CAR NEW) ':BURY)))))
-	       ;; Doing the buries in a second pass makes the above-mentioned inaccuracy less
-	       (DOLIST (NEW NEW-ALIST)
-		 (AND (NOT (CADR NEW)) (SHEET-EXPOSED-P (CAR NEW))
-		      (FUNCALL (CAR NEW) ':BURY))))
-	     ;; Save the previous state for Undo, and recompute what the state really
-	     ;; is to reflect whatever the screen manager decided to do.
-	     (SETQ SCREEN-EDITOR-PREVIOUS-ALIST WINDOW-EDGE-ALIST
-		   WINDOW-EDGE-ALIST (GET-WINDOW-EDGE-ALIST TOP-SHEET)))))))
-   (MOUSE-SET-SHEET OLD-MOUSE-SHEET))
+				   (OLD-SELECTED-WINDOW SELECTED-WINDOW))
+  (USING-RESOURCE (SCREEN-EDITOR-MENU SCREEN-EDITOR-MENU TOP-SHEET)
+   (UNWIND-PROTECT
+    (*CATCH 'EXIT-SCREEN-EDITOR
+     (LET-GLOBALLY ((WHO-LINE-PROCESS CURRENT-PROCESS))
+      (MOUSE-SET-SHEET TOP-SHEET)
+      (DO ((COMMAND)
+	   (NEW-ALIST 'FIRST))
+	 (NIL)
+       (EXPOSE-WINDOW-NEAR SCREEN-EDITOR-MENU '(:MOUSE))
+       (IF (SETQ COMMAND (FUNCALL SCREEN-EDITOR-MENU ':CHOOSE))
+	   (DELAYING-SCREEN-MANAGEMENT
+	     (FUNCALL SCREEN-EDITOR-MENU ':DEACTIVATE)
+	     ;; Now, just before executing the command, pick up the state of the screen
+	     ;; We defer it until now so that we see the results of screen management
+	     ;; and of things done to the screen by other processes.
+	     ;; Also save the state before the previous command for Undo
+	     (OR (EQ NEW-ALIST 'ABORT)
+		 (SETQ SCREEN-EDITOR-PREVIOUS-ALIST WINDOW-EDGE-ALIST))
+	     (SETQ WINDOW-EDGE-ALIST (GET-WINDOW-EDGE-ALIST TOP-SHEET))
+	     (AND (EQ NEW-ALIST 'FIRST)
+		  (SETQ SCREEN-EDITOR-PREVIOUS-ALIST WINDOW-EDGE-ALIST))
+	     (SETQ NEW-ALIST (FUNCALL COMMAND TOP-SHEET WINDOW-EDGE-ALIST))
+	     (COND ((NEQ NEW-ALIST 'ABORT)	;Don't change history if command aborted
+		    (DOLIST (NEW NEW-ALIST)
+		      (LET ((OLD (ASSQ (CAR NEW) WINDOW-EDGE-ALIST)))
+			(OR (EQUAL (CDDR OLD) (CDDR NEW))	;Edges not the same?
+			    (MULTIPLE-VALUE-BIND (WIN LOSE)
+				(FUNCALL (FIRST NEW) ':SET-EDGES (THIRD NEW) (FOURTH NEW)
+					 (FIFTH NEW) (SIXTH NEW) ':VERIFY)
+			      (IF WIN (LEXPR-FUNCALL (CAR NEW) ':SET-EDGES (CDDR NEW))
+				  (BEEP)
+				  (POP-UP-FORMAT "Illegal edges for ~S:~%~A"
+						 (CAR NEW) LOSE))))
+			;; Try to fix exposure and ordering of de-exposed sheets.
+			;; This may not be quite right, e.g. if undoing an expose
+			;; because the window will go in the wrong place in the
+			;; de-exposed sheets, and Undo twice will not be a no-op.
+			;; It will just have to do for now though.
+			(COND ((EQ (CADR NEW) T)
+			       (OR (CADR OLD) (FUNCALL (CAR NEW) ':EXPOSE)))
+			      ((EQ (CADR NEW) ':BURY)
+			       (FUNCALL (CAR NEW) ':BURY)))))
+		    ;; Doing the buries in a second pass makes the
+		    ;; above-mentioned inaccuracy less
+		    (DOLIST (NEW NEW-ALIST)
+		      (AND (NOT (CADR NEW)) (SHEET-EXPOSED-P (CAR NEW))
+			   (FUNCALL (CAR NEW) ':BURY))))))
+	      ))))
+    (MOUSE-SET-SHEET OLD-MOUSE-SHEET)))
   (IF (SCREEN-EDITOR-SHOULD-RESELECT OLD-SELECTED-WINDOW)
       (FUNCALL OLD-SELECTED-WINDOW ':SELECT)
       (FUNCALL TOP-SHEET ':SCREEN-MANAGE-AUTOEXPOSE-INFERIORS)))
@@ -541,7 +656,10 @@ SHEET specifies the area within which we are allowed to act."
 
 (DEFUN SCREEN-EDITOR-FIND-SCREEN-TO-EDIT (BOTTOM-WINDOW &AUX LIST)
   (DO SHEET BOTTOM-WINDOW (SHEET-SUPERIOR SHEET) (NULL SHEET)
-    (AND (TYPEP SHEET 'BASIC-FRAME) (PUSH SHEET LIST)))
+      (IF (SHEET-EXPOSED-P SHEET)
+	  (IF (TYPEP SHEET 'BASIC-FRAME) (PUSH SHEET LIST))
+	  (SETQ LIST NIL)))
+  ;; LIST is now all the frames under the mouse that are VISIBLE!
   (IF (NULL LIST) MOUSE-SHEET
       (OR (MEMQ MOUSE-SHEET LIST) (PUSH MOUSE-SHEET LIST))
       (MENU-CHOOSE
@@ -550,7 +668,7 @@ SHEET specifies the area within which we are allowed to act."
 					(SHEET-NAME W))
 				    W))
 		LIST)
-	"Edit which:")))
+	"Edit which screen or frame:")))
 
 ;;; This is like SUBST but uses EQ rather than EQUAL and only copies what it has to.
 (DEFUN SUBSTQ (NEW OLD SEXP)
@@ -569,74 +687,104 @@ SHEET specifies the area within which we are allowed to act."
   SCREEN-EDITOR-PREVIOUS-ALIST)
 
 (DEFUN SEC-BURY (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Bury window"))
+  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			"Bury window" "Choose a window to bury.  Middle aborts."))
 	 (SETQ WINDOW-EDGE-ALIST (NREVERSE (XCONS (DELQ WINDOW (REVERSE WINDOW-EDGE-ALIST))
 						  (SETQ WINDOW (COPYLIST WINDOW)))))
-	 (SETF (SECOND WINDOW) ':BURY)))
-  WINDOW-EDGE-ALIST)
+	 (SETF (SECOND WINDOW) ':BURY)
+	 WINDOW-EDGE-ALIST)
+	(T 'ABORT)))
 
 ;This is not really undoable, in that the window cannot be "unkilled"
 (DEFUN SEC-KILL (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Kill window"))
+  (COND ((AND (SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			     "Kill window" "Choose a window to be killed.  Middle aborts."))
+	      (MOUSE-Y-OR-N-P (FORMAT NIL "Kill ~A" (SHEET-NAME (CAR WINDOW)))))
 	 (FUNCALL (CAR WINDOW) ':KILL)
-	 (SETQ WINDOW-EDGE-ALIST (REMQ WINDOW WINDOW-EDGE-ALIST))))
-  WINDOW-EDGE-ALIST)
+	 (SETQ WINDOW-EDGE-ALIST (REMQ WINDOW WINDOW-EDGE-ALIST))
+	 WINDOW-EDGE-ALIST)
+	(T 'ABORT)))
 
-;Undoing this won't kill this window, just bury it
+;;; Undoing this won't kill this window, just bury it
 (DEFUN SEC-CREATE (SUP WINDOW-EDGE-ALIST)
-  (SYSTEM-MENU-CREATE-WINDOW SUP)
-  WINDOW-EDGE-ALIST)
+  (IF (SYSTEM-MENU-CREATE-WINDOW SUP)
+      WINDOW-EDGE-ALIST
+      'ABORT))
+
+;;; Undoing this won't kill this window, just bury it
+(DEFUN SEC-CREATE-EXPAND (SUP WINDOW-EDGE-ALIST)
+  (IF (SYSTEM-MENU-CREATE-WINDOW SUP 'EXPAND)
+      WINDOW-EDGE-ALIST
+      'ABORT))
 
 (DEFUN SEC-EXPOSE (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Expose window"))
+  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			"Expose window"
+			"Choose a window to be exposed.  Middle aborts."))
 	 (SETQ WINDOW-EDGE-ALIST (REMQ WINDOW WINDOW-EDGE-ALIST))
 	 (PUSH (SETQ WINDOW (COPYLIST WINDOW)) WINDOW-EDGE-ALIST)
-	 (SETF (SECOND WINDOW) T)))
-  WINDOW-EDGE-ALIST)
+	 (SETF (SECOND WINDOW) T)
+	 WINDOW-EDGE-ALIST)
+	(T 'ABORT)))
 
-(DEFUN SEC-EXPOSE-MENU (TOP-SHEET WINDOW-EDGE-ALIST &AUX WINDOW)
-  (COND ((SETQ WINDOW
-	   (ASSQ (MENU-CHOOSE
-		   (MAPCAN #'(LAMBDA (W)
-			       (AND (NOT (MEMQ W (SHEET-EXPOSED-INFERIORS TOP-SHEET)))
-				    (NCONS (CONS (OR (AND (GET-HANDLER-FOR W
-							     ':NAME-FOR-SELECTION)
-							  (FUNCALL W ':NAME-FOR-SELECTION))
-						     (SHEET-NAME W))
-						 W))))
-			   (SHEET-INFERIORS TOP-SHEET))
-		   "Expose:")
-		 WINDOW-EDGE-ALIST))
-	 (SETQ WINDOW-EDGE-ALIST (REMQ WINDOW WINDOW-EDGE-ALIST))
-	 (PUSH (SETQ WINDOW (COPYLIST WINDOW)) WINDOW-EDGE-ALIST)
-	 (SETF (SECOND WINDOW) T)))
-  WINDOW-EDGE-ALIST)
+(DEFUN SEC-EXPOSE-MENU (TOP-SHEET WINDOW-EDGE-ALIST &AUX WINDOW ELEM)
+  (LET ((LIST (MAPCAN #'(LAMBDA (W)
+			  (AND (NOT (MEMQ W (SHEET-EXPOSED-INFERIORS TOP-SHEET)))
+			       (NCONS (CONS (OR (AND (GET-HANDLER-FOR
+						       W ':NAME-FOR-SELECTION)
+						     (FUNCALL W
+							      ':NAME-FOR-SELECTION))
+						(SHEET-NAME W))
+					    W))))
+		      (SHEET-INFERIORS TOP-SHEET))))
+    (COND ((NULL LIST)
+	   (BEEP)
+	   (POP-UP-MESSAGE "Error: there are no windows to be exposed.")
+	   'ABORT)
+	  ((SETQ WINDOW (MENU-CHOOSE LIST "Expose:"))
+	   (COND ((SETQ ELEM (ASSQ WINDOW WINDOW-EDGE-ALIST))
+		  (SETQ WINDOW-EDGE-ALIST (REMQ ELEM WINDOW-EDGE-ALIST))
+		  (SETQ ELEM (COPYLIST ELEM))
+		  (SETF (SECOND ELEM) T))
+		 (T
+		  (SETQ ELEM (LIST* WINDOW T (MULTIPLE-VALUE-LIST
+					       (FUNCALL WINDOW ':EDGES))))))
+	   (PUSH ELEM WINDOW-EDGE-ALIST)
+	   WINDOW-EDGE-ALIST)
+	  (T 'ABORT))))
 
 (DEFUN SEC-MOVE-WINDOW (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (AND (SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Move window"))
-       (MULTIPLE-VALUE-BIND (X Y)
-	   (MOUSE-SET-WINDOW-POSITION (CAR WINDOW) NIL)
-	 (SETQ WINDOW-EDGE-ALIST (SUBSTQ (LIST (CAR WINDOW) (CADR WINDOW) X Y
-					       (+ X (SHEET-WIDTH (CAR WINDOW)))
-					       (+ Y (SHEET-HEIGHT (CAR WINDOW))))
-					 WINDOW WINDOW-EDGE-ALIST))))
-  WINDOW-EDGE-ALIST)
+  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			"Move window" "Choose a window to be moved.  Middle aborts."))
+	 (MULTIPLE-VALUE-BIND (X Y)
+	     (MOUSE-SET-WINDOW-POSITION (CAR WINDOW) NIL)
+	   (IF X
+	       (SETQ WINDOW-EDGE-ALIST (SUBSTQ (LIST (CAR WINDOW) (CADR WINDOW) X Y
+						     (+ X (SHEET-WIDTH (CAR WINDOW)))
+						     (+ Y (SHEET-HEIGHT (CAR WINDOW))))
+					       WINDOW WINDOW-EDGE-ALIST))
+	       'ABORT)))
+	(T 'ABORT)))
 
 (DEFUN SEC-RESHAPE (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (AND (SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Reshape window"))
-       (SETQ WINDOW-EDGE-ALIST
-	     (SUBSTQ (LIST* (CAR WINDOW) (CADR WINDOW)
-			    (MULTIPLE-VALUE-LIST (MOUSE-SET-WINDOW-SIZE (CAR WINDOW) NIL)))
-		     WINDOW WINDOW-EDGE-ALIST)))
-  WINDOW-EDGE-ALIST)
+  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			"Reshape window" "Choose a window to be reshaped.  Middle aborts."))
+	 (SETQ WINDOW-EDGE-ALIST
+	       (SUBSTQ (LIST* (CAR WINDOW) (CADR WINDOW)
+			      (MULTIPLE-VALUE-LIST (MOUSE-SET-WINDOW-SIZE (CAR WINDOW) NIL)))
+		       WINDOW WINDOW-EDGE-ALIST))
+	 WINDOW-EDGE-ALIST)
+	(T 'ABORT)))
 
 (DEFUN SEC-EXPAND-WINDOW (IGNORE WINDOW-EDGE-ALIST &AUX WINDOW)
-  (AND (SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL "Expand window"))
-       (SETQ WINDOW-EDGE-ALIST
-	     (SUBSTQ (LIST* (CAR WINDOW) (CADR WINDOW)
-			    (MULTIPLE-VALUE-LIST (EXPAND-WINDOW (CAR WINDOW) NIL)))
-		     WINDOW WINDOW-EDGE-ALIST)))
-  WINDOW-EDGE-ALIST)
+  (COND ((SETQ WINDOW (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+			"Expand window" "Choose a window to expand.  Middle aborts."))
+	 (SETQ WINDOW-EDGE-ALIST
+	       (SUBSTQ (LIST* (CAR WINDOW) (CADR WINDOW)
+			      (MULTIPLE-VALUE-LIST (EXPAND-WINDOW (CAR WINDOW) NIL)))
+		       WINDOW WINDOW-EDGE-ALIST))
+	 WINDOW-EDGE-ALIST)
+	(T 'ABORT)))
 
 (DEFUN SEC-EXPAND-ALL (TOP-WINDOW WINDOW-EDGE-ALIST &AUX WINDOW-LIST)
   (SETQ WINDOW-LIST (DO ((L WINDOW-EDGE-ALIST (CDR L))
@@ -657,20 +805,259 @@ SHEET specifies the area within which we are allowed to act."
 ;Clicking a button other than the left-hand one is the way to punt
 ;NIL for CHAR means use the default, which you should use unless there
 ;is a good reason to have a different blinker.
-(DEFUN SCREEN-EDITOR-FIND-WINDOW (WINDOW-EDGE-ALIST CHAR PROMPT &AUX X Y WINDOW)
+(DEFUN SCREEN-EDITOR-FIND-WINDOW (WINDOW-EDGE-ALIST CHAR PROMPT DOC &AUX X Y WINDOW)
   (OR CHAR (SETQ CHAR 24))  ;Default is the bombsight
   (WITH-MOUSE-GRABBED
     (PROCESS-WAIT "Button up" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
     (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 0 0 ':ON
 				  ':SET-CHARACTER CHAR)
+    (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION DOC)
     (PROCESS-WAIT PROMPT #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
     (SETQ X MOUSE-X Y MOUSE-Y)
+    (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION NIL)
     (AND (BIT-TEST 1 MOUSE-LAST-BUTTONS)
 	 (DOLIST (W WINDOW-EDGE-ALIST)
 	   (AND ( X (THIRD W)) ( Y (FOURTH W))
 		(< X (FIFTH W)) (< Y (SIXTH W))
 		(RETURN (SETQ WINDOW W))))))
   WINDOW)
+
+;;; Get a point within the mouse-sheet from the user.  CHAR is the
+;;; character to use; NIL means use the default, which you should use
+;;; unless there is a good reason to have a different blinker.
+(DEFUN SCREEN-EDITOR-FIND-POINT (CHAR PROMPT DOC &AUX X Y)
+  (OR CHAR (SETQ CHAR 24))			;Is this a good default?
+  (WITH-MOUSE-GRABBED
+    (PROCESS-WAIT "Button up" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
+    (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 0 0 ':ON
+				  ':SET-CHARACTER CHAR)
+    (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION DOC)
+    (PROCESS-WAIT PROMPT #'(LAMBDA () (NOT (ZEROP MOUSE-LAST-BUTTONS))))
+    (IF (BIT-TEST 1 MOUSE-LAST-BUTTONS)
+	(SETQ X MOUSE-X Y MOUSE-Y)))
+  (VALUES X Y))
+
+;;; This should return edges if happy or NIL if unhappy.
+(DEFUN MOUSE-SPECIFY-EXPAND (SUPERIOR)
+  (MULTIPLE-VALUE-BIND (X Y)
+      (SCREEN-EDITOR-FIND-POINT NIL
+				"Button" "Choose a point to expand around.  Middle aborts.")
+    (COND ((NULL X) NIL)
+	  (T (MULTIPLE-VALUE-BIND (LEFT TOP RIGHT BOTTOM)
+		 (EXPAND-RECTANGULAR-AREA SUPERIOR X Y X Y
+					  (EXPOSED-INFERIOR-CONTAINING-POINT SUPERIOR X Y))
+	       (IF (OR ( RIGHT LEFT)
+		       ( BOTTOM TOP))
+		   ;; No expansion, return NIL.
+		   NIL
+		   ;; Worked OK, return the new edges.
+		   (VALUES LEFT TOP RIGHT BOTTOM)))))))
+  
+;;; X, Y are coordinates in SUPERIOR.  If any of SUPERIOR's exposed inferiors
+;;; contains X, Y, return it.  Else return NIL.
+(DEFUN EXPOSED-INFERIOR-CONTAINING-POINT (SUPERIOR X Y)
+  (DOLIST (W (SHEET-EXPOSED-INFERIORS SUPERIOR))
+    (IF (SHEET-CONTAINS-SHEET-POINT-P W SUPERIOR X Y)
+	(RETURN W))))
+
+;;; Attribute command.
+
+(DEFUN SEC-ATTRIBUTES (IGNORE WINDOW-EDGE-ALIST)
+  (LET ((WINDOW
+	 (SCREEN-EDITOR-FIND-WINDOW WINDOW-EDGE-ALIST NIL
+	     "Attributes" "Choose a window to edit the attributes of.  Middle aborts.")))
+    (COND ((NULL WINDOW)
+	   'ABORT)
+	  (T
+	   (SCREEN-EDITOR-EDIT-ATTRIBUTES (CAR WINDOW))
+	   WINDOW-EDGE-ALIST))))
+
+(DEFUN MAKE-ATTRIBUTES-LIST (WINDOW BORDERS-P LABEL-P NAME-P)
+  `((CURRENT-FONT-VALUE "Current font"
+			:DOCUMENTATION
+			"Set the current font to one of the fonts in the font map."
+			:ASSOC
+			,(LOOP FOR FONT BEING THE ARRAY-ELEMENTS
+			       OF (FUNCALL WINDOW ':FONT-MAP)
+			       WHEN (AND (NOT (NULL FONT))
+					 (NOT (MEMBER FONT FONT-LIST)))
+			       COLLECT (CONS (FONT-NAME FONT) FONT) INTO ANSWER
+			       AND COLLECT FONT INTO FONT-LIST
+			       FINALLY (RETURN ANSWER)))
+    (MORE-P-VALUE "More processing enabled"
+		  :DOCUMENTATION
+	  "Enable typing **MORE** and waiting for typein when there is too much typeout."
+		  :ASSOC (("Yes" . T) ("No" . NIL)))
+    (REVERSE-VIDEO-P "Reverse video"
+		     :DOCUMENTATION
+		     "Use white characters on a black background in this window."
+		     :ASSOC (("Yes" . T) ("No" . NIL)))
+    (VSP "Vertical spacing"
+	 :DOCUMENTATION
+	 "The number of pixels between successive lines of printed text"
+	 :NUMBER)
+    (IN-ACTION "Deexposed typein action"
+	       :DOCUMENTATION
+	       "What to do if input is attempted while this window is deexposed."
+	       :ASSOC (("Wait until exposed" . :NORMAL) ("Notify user" . :NOTIFY)))
+    (OUT-ACTION "Deexposed typeout action"
+		:DOCUMENTATION
+		"What to do if output is attempted while this window is deexposed."
+		:ASSOC (("Wait until exposed" . :NORMAL)
+			("Notify user" . :NOTIFY)
+			("Let it happen" . :PERMIT)
+			("Signal error" . :ERROR)
+			("Other" . :OTHER)))
+    (OTHER-OUT-ACTION "(/"Other/" value of above)"
+		      :DOCUMENTATION
+		      "If /"Deexposed typeout action/" is Other, use this form instead."
+		      :SEXP)
+    (CHAR-ALU-FCN "ALU function for drawing"
+		  :DOCUMENTATION
+		  "The ALU function for drawing characters and graphics."
+		  :ASSOC (("Ones" . ,ALU-IOR) ("Zeroes" . ,ALU-ANDCA)
+			  ("Complement" . ,ALU-XOR)))
+    (ERASE-ALU-FCN "ALU function for erasing"
+		  :DOCUMENTATION
+		  "The ALU function for erasing pieces of the window."
+		  :ASSOC (("Ones" . ,ALU-IOR) ("Zeroes" . ,ALU-ANDCA)
+			  ("Complement" . ,ALU-XOR)))
+    (PRIORITY-VALUE "Screen manager priority"
+	       :DOCUMENTATION
+	       "Set screen manager priority.  NIL is the usual thing."
+	       :SEXP)
+    (SAVE-BITS-VALUE "Save bits"
+		     :DOCUMENTATION
+		     "Should the contents of the window be saved away when the window is deexposed?"
+		     :ASSOC (("Yes" . T) ("No" . NIL)))
+    ,@(COND (NAME-P
+	     `((LABEL-OR-NAME "Name of window"
+			      :DOCUMENTATION "Set the name of the window"
+			      :STRING)))
+	    (LABEL-P
+	     `((LABEL-OR-NAME "Label"
+			      :DOCUMENTATION "Set the label of the window"
+			      :STRING))))
+    ,@(COND (BORDERS-P
+	     `((BORDERS-SPEC "Width of borders"
+			     :DOCUMENTATION "Set the widths of the borders"
+			     :NUMBER)
+	       (BORDER-MARGIN-WIDTH-VALUE
+		"Width of border margins"
+		:DOCUMENTATION "Set the width of the margin in between the borders and the window contents"
+		:NUMBER))))))
+
+(DEFUN SCREEN-EDITOR-EDIT-ATTRIBUTES (WINDOW)
+  (LOCAL-DECLARE ((SPECIAL BORDER-MARGIN-WIDTH-VALUE CURRENT-FONT-VALUE MORE-P-VALUE 
+			   REVERSE-VIDEO-P BORDERS-SPEC LABEL-OR-NAME VSP IN-ACTION
+			   CHAR-ALU-FCN ERASE-ALU-FCN PRIORITY-VALUE SAVE-BITS-VALUE
+			   OUT-ACTION OTHER-OUT-ACTION))
+    (LET ((BORDERS-P (TYPEP WINDOW 'TV:BORDERS-MIXIN))
+	  (LABEL-P (TYPEP WINDOW 'TV:LABEL-MIXIN))
+	  (NAME-P (TYPEP WINDOW 'TV:CHANGEABLE-NAME-MIXIN)))
+      (LET* ((CURRENT-FONT-VALUE (FUNCALL WINDOW ':CURRENT-FONT))
+	     (OLD-CURRENT-FONT-VALUE CURRENT-FONT-VALUE)
+	     (MORE-P-VALUE (FUNCALL WINDOW ':MORE-P))
+	     (OLD-MORE-P-VALUE MORE-P-VALUE)
+	     (REVERSE-VIDEO-P (FUNCALL WINDOW ':REVERSE-VIDEO-P))
+	     (OLD-REVERSE-VIDEO-P REVERSE-VIDEO-P)
+	     (VSP (FUNCALL WINDOW ':VSP))
+	     (OLD-VSP VSP)
+	     (IN-ACTION (FUNCALL WINDOW ':DEEXPOSED-TYPEIN-ACTION))
+	     (OLD-IN-ACTION IN-ACTION)
+	     (OUT-ACTION (FUNCALL WINDOW ':DEEXPOSED-TYPEOUT-ACTION))
+	     (OLD-OUT-ACTION OUT-ACTION)
+	     (OTHER-OUT-ACTION)
+	     (OLD-OTHER-OUT-ACTION)
+	     (CHAR-ALU-FCN (FUNCALL WINDOW ':CHAR-ALUF))
+	     (OLD-CHAR-ALU-FCN CHAR-ALU-FCN)
+	     (ERASE-ALU-FCN (FUNCALL WINDOW ':ERASE-ALUF))
+	     (OLD-ERASE-ALU-FCN ERASE-ALU-FCN)
+	     (PRIORITY-VALUE (FUNCALL WINDOW ':PRIORITY))
+	     (OLD-PRIORITY-VALUE PRIORITY-VALUE)
+	     (SAVE-BITS-VALUE (FUNCALL WINDOW ':SAVE-BITS))
+	     (OLD-SAVE-BITS-VALUE SAVE-BITS-VALUE)
+	     (LABEL-OR-NAME (COND (NAME-P (FUNCALL WINDOW ':NAME))
+				  (LABEL-P (FUNCALL WINDOW ':LABEL))))
+	     (OLD-LABEL-OR-NAME LABEL-OR-NAME)
+	     (BORDERS-SPEC (IF BORDERS-P (FUNCALL WINDOW ':BORDERS)))
+	     (OLD-BORDERS-SPEC BORDERS-SPEC)
+	     (BORDER-MARGIN-WIDTH-VALUE (IF BORDERS-P (FUNCALL WINDOW ':BORDER-MARGIN-WIDTH)))
+	     (OLD-BORDER-MARGIN-WIDTH-VALUE BORDER-MARGIN-WIDTH-VALUE))
+	(IF (LISTP BORDERS-SPEC)		;********************
+	    (SETQ BORDERS-SPEC (- (FOURTH (FIRST BORDERS-SPEC))
+				  (SECOND (FIRST BORDERS-SPEC)))))
+	(IF (LISTP LABEL-OR-NAME)
+	    (SETQ LABEL-OR-NAME (SIXTH LABEL-OR-NAME)))
+	(COND ((NOT (SYMBOLP OUT-ACTION))
+	       (SETQ OTHER-OUT-ACTION OUT-ACTION
+		     OLD-OTHER-OUT-ACTION OTHER-OUT-ACTION
+		     OUT-ACTION ':OTHER
+		     OLD-OUT-ACTION OUT-ACTION)))
+	(MULTIPLE-VALUE-BIND (NIL ABORT-P)
+	    (*CATCH 'ABORT-EDIT
+	      (CHOOSE-VARIABLE-VALUES
+	       (MAKE-ATTRIBUTES-LIST WINDOW BORDERS-P LABEL-P NAME-P)
+	       ':LABEL (FORMAT NIL "Edit window attributes of ~A." WINDOW)
+	       ':MARGIN-CHOICES '("Done" ("Abort" (*THROW 'ABORT-EDIT NIL)))
+	       ':FUNCTION 'ATTRIBUTE-EDITOR-HOOK))
+	  (COND (ABORT-P
+		 (BEEP))
+		(T
+		 (IF (NEQ CURRENT-FONT-VALUE OLD-CURRENT-FONT-VALUE)
+		     (FUNCALL WINDOW ':SET-CURRENT-FONT CURRENT-FONT-VALUE))
+		 (IF (NEQ MORE-P-VALUE OLD-MORE-P-VALUE)
+		     (FUNCALL WINDOW ':SET-MORE-P MORE-P-VALUE))
+		 (IF (NEQ REVERSE-VIDEO-P OLD-REVERSE-VIDEO-P)
+		     (FUNCALL WINDOW ':SET-REVERSE-VIDEO-P REVERSE-VIDEO-P))
+		 (IF (NEQ VSP OLD-VSP)
+		     (FUNCALL WINDOW ':SET-VSP VSP))
+		 (IF (NEQ IN-ACTION OLD-IN-ACTION)
+		     (FUNCALL WINDOW ':SET-DEEXPOSED-TYPEIN-ACTION IN-ACTION))
+		 (COND ((NEQ OUT-ACTION OLD-OUT-ACTION)
+			(FUNCALL WINDOW ':SET-DEEXPOSED-TYPEOUT-ACTION
+				 (IF (EQ OUT-ACTION ':OTHER)
+				     OTHER-OUT-ACTION
+				     OUT-ACTION)))
+		       ((AND (EQ OUT-ACTION ':OTHER)
+			     (NEQ OTHER-OUT-ACTION OLD-OTHER-OUT-ACTION))
+			(FUNCALL WINDOW ':SET-DEEXPOSED-TYPEOUT-ACTION OTHER-OUT-ACTION)))
+		 (IF (NEQ CHAR-ALU-FCN OLD-CHAR-ALU-FCN)
+		     (FUNCALL WINDOW ':SET-CHAR-ALUF CHAR-ALU-FCN))
+		 (IF (NEQ ERASE-ALU-FCN OLD-ERASE-ALU-FCN)
+		     (FUNCALL WINDOW ':SET-ERASE-ALUF ERASE-ALU-FCN))
+		 (IF (NEQ PRIORITY-VALUE OLD-PRIORITY-VALUE)
+		     (FUNCALL WINDOW ':SET-PRIORITY PRIORITY-VALUE))
+		 (IF (NEQ SAVE-BITS-VALUE OLD-SAVE-BITS-VALUE)
+		     (FUNCALL WINDOW ':SET-SAVE-BITS SAVE-BITS-VALUE))
+		 (IF (NEQ LABEL-OR-NAME OLD-LABEL-OR-NAME)
+		     (COND (NAME-P (FUNCALL WINDOW ':SET-NAME LABEL-OR-NAME))
+			   (LABEL-P (FUNCALL WINDOW ':SET-LABEL LABEL-OR-NAME))))
+		 (COND (BORDERS-P
+			(IF (NEQ BORDERS-SPEC OLD-BORDERS-SPEC)
+			    (FUNCALL WINDOW ':SET-BORDERS BORDERS-SPEC))
+			(IF (NEQ BORDER-MARGIN-WIDTH-VALUE OLD-BORDER-MARGIN-WIDTH-VALUE)
+			    (FUNCALL WINDOW ':SET-BORDER-MARGIN-WIDTH
+				     BORDER-MARGIN-WIDTH-VALUE))
+			)))))))))
+
+(DEFUN ATTRIBUTE-EDITOR-HOOK (WINDOW VARIABLE OLD-VALUE NEW-VALUE)
+  OLD-VALUE ;unused
+  (LOCAL-DECLARE ((SPECIAL CHAR-ALU-FCN ERASE-ALU-FCN OTHER-OUT-ACTION))
+    (COND ((EQ VARIABLE 'REVERSE-VIDEO-P)
+	   (COND (NEW-VALUE
+		  (SETQ CHAR-ALU-FCN ALU-ANDCA
+			ERASE-ALU-FCN ALU-IOR))
+		 (T
+		  (SETQ CHAR-ALU-FCN ALU-IOR
+			ERASE-ALU-FCN ALU-ANDCA)))
+	   (FUNCALL WINDOW ':REFRESH)
+	   T)
+	  ((AND (EQ VARIABLE 'OUT-ACTION) (NEQ NEW-VALUE ':OTHER))
+	   (SETQ OTHER-OUT-ACTION NIL)
+	   (FUNCALL WINDOW ':REFRESH)
+	   T)
+	  (T NIL))))
 
 ;;; Hairy movement commands
 (DEFFLAVOR FOLLOWING-ARROW-BLINKER
@@ -688,7 +1075,7 @@ SHEET specifies the area within which we are allowed to act."
 (DEFUN MAKE-FOLLOWING-ARROW-BLINKER (SHEET X-ORIGIN Y-ORIGIN TRI-WIDTH TRI-HEIGHT
 					   RECT-WIDTH RECT-HEIGHT
 				     &REST OPTIONS)
-  (LEXPR-FUNCALL #'DEFINE-BLINKER SHEET 'FOLLOWING-ARROW-BLINKER
+  (LEXPR-FUNCALL #'MAKE-BLINKER SHEET 'FOLLOWING-ARROW-BLINKER
 		 ':X-ORIGIN X-ORIGIN ':Y-ORIGIN Y-ORIGIN
 		 ':TRI-WIDTH TRI-WIDTH ':TRI-HEIGHT TRI-HEIGHT
 		 ':RECT-WIDTH RECT-WIDTH ':RECT-HEIGHT RECT-HEIGHT
@@ -715,7 +1102,12 @@ SHEET specifies the area within which we are allowed to act."
 	   (SETQ DX (- X-POS X0)
 		 DY (- Y-POS Y0)
 		 LEN (ISQRT (+ (* DX DX) (* DY DY))))
-	   (AND (ZEROP LEN) (SETQ LEN 1))
+	   (AND (ZEROP LEN)			;Right on top of where it's pointing
+		(COND ((NULL X-ORIGIN)		;Straight up
+		       (SETQ DY 1 LEN 1))
+		      ((NULL Y-ORIGIN)		;Straight left
+		       (SETQ DX 1 LEN 1))
+		      (T (SETQ DX 1 DY 1 LEN 1))))	;Top-left corner
 	   (SETQ X4 (+ X-POS (// (* DX TRI-HEIGHT) LEN))
 		 Y4 (+ Y-POS (// (* DY TRI-HEIGHT) LEN))
 		 X6 (+ X-POS (// (* DX (+ TRI-HEIGHT RECT-HEIGHT)) LEN))
@@ -777,81 +1169,90 @@ SHEET specifies the area within which we are allowed to act."
 				  ':TRI-WIDTH 12 ':TRI-HEIGHT 24 ':RECT-WIDTH 4
 				  ':RECT-HEIGHT 40 ':VISIBILITY NIL)))
 
-(DEFUN FIND-EDGE-OR-CORNER (WINDOW-EDGE-ALIST)
+(DEFUN FIND-EDGE-OR-CORNER (WINDOW-EDGE-ALIST DOC-INSIDE DOC-OUTSIDE)
   (PROG KLUDGE ()
     (WITH-MOUSE-GRABBED
-      (WITHOUT-INTERRUPTS
-	      (MOUSE-SET-BLINKER ':FOLLOWING-ARROW)
-	      (MOUSE-WARP MOUSE-X MOUSE-Y))
-      (DO ((MODE ':FOO)
-	   (X0) (Y0)
-	   (OLD-X MOUSE-X MOUSE-X)
-	   (OLD-Y MOUSE-Y MOUSE-Y)
-	   (WINDOW-AND-EDGES)
-	   (NEW-WINDOW-AND-EDGES)
-	   (NEW-MODE))
-	  (NIL)
-	(COND ((SETQ NEW-WINDOW-AND-EDGES (DOLIST (WINDOW-AND-EDGES WINDOW-EDGE-ALIST)
-					    (AND ( OLD-X (THIRD WINDOW-AND-EDGES))
-						 ( OLD-Y (FOURTH WINDOW-AND-EDGES))
-						 (< OLD-X (FIFTH WINDOW-AND-EDGES))
-						 (< OLD-Y (SIXTH WINDOW-AND-EDGES))
-						 (RETURN WINDOW-AND-EDGES))))
-	       (LET ((LEFT (THIRD NEW-WINDOW-AND-EDGES))
-		     (TOP (FOURTH NEW-WINDOW-AND-EDGES))
-		     (RIGHT (FIFTH NEW-WINDOW-AND-EDGES))
-		     (BOTTOM (SIXTH NEW-WINDOW-AND-EDGES)))
-		 (LET (LEFT-P TOP-P LEFT-RIGHT-CORNER-P TOP-BOTTOM-CORNER-P)
-		   (LET ((ONE-THIRD (// (- RIGHT LEFT) 3)))
-		     (SETQ LEFT-RIGHT-CORNER-P
-			   (IF (SETQ LEFT-P (< OLD-X (// (+ LEFT RIGHT) 2)))
-			       (< OLD-X (+ LEFT ONE-THIRD))
-			       (> OLD-X (- RIGHT ONE-THIRD)))))
-		   (LET ((ONE-THIRD (// (- BOTTOM TOP) 3)))
-		     (SETQ TOP-BOTTOM-CORNER-P
-			   (IF (SETQ TOP-P (< OLD-Y (// (+ TOP BOTTOM) 2)))
-			       (< OLD-Y (+ TOP ONE-THIRD))
-			       (> OLD-Y (- BOTTOM ONE-THIRD)))))
-		   (IF (AND LEFT-RIGHT-CORNER-P TOP-BOTTOM-CORNER-P)
-		       (SETQ NEW-MODE (IF LEFT-P (IF TOP-P ':TOP-LEFT ':BOTTOM-LEFT)
-					  (IF TOP-P ':TOP-RIGHT ':BOTTOM-RIGHT)))
-		       (LET ((DX (// (* 100. (IF LEFT-P (- OLD-X LEFT) (- RIGHT OLD-X)))
-				     (- RIGHT LEFT)))
-			     (DY (// (* 100. (IF TOP-P (- OLD-Y TOP) (- BOTTOM OLD-Y)))
-				     (- BOTTOM TOP))))
-			 (SETQ NEW-MODE (IF (< DX DY) (IF LEFT-P ':LEFT ':RIGHT)
-					    (IF TOP-P ':TOP ':BOTTOM))))))
-		 (COND ((OR (NEQ NEW-WINDOW-AND-EDGES WINDOW-AND-EDGES)
-			    (NEQ NEW-MODE MODE))
-			(SETQ X0 (COND ((MEMQ NEW-MODE '(:LEFT :TOP-LEFT :BOTTOM-LEFT))
-					LEFT)
-				       ((MEMQ NEW-MODE '(:RIGHT :TOP-RIGHT
+     ;; Initialize mouse blinker to small X
+     (MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 3 3 ':ON ':SET-CHARACTER 7)
+     (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION DOC-OUTSIDE)
+     (DO ((MODE ':OUT)
+	  (X0) (Y0)
+	  (OLD-X MOUSE-LAST-X MOUSE-LAST-X)	;Don't use MOUSE-X, it changes too fast, so
+	  (OLD-Y MOUSE-LAST-Y MOUSE-LAST-Y)	;this process runs too much and slows down
+	  (WINDOW-AND-EDGES)			;the tracking of the following arrow
+	  (NEW-WINDOW-AND-EDGES)
+	  (NEW-MODE))
+	 (NIL)
+       (COND ((SETQ NEW-WINDOW-AND-EDGES (DOLIST (WINDOW-AND-EDGES WINDOW-EDGE-ALIST)
+					   (AND ( OLD-X (THIRD WINDOW-AND-EDGES))
+						( OLD-Y (FOURTH WINDOW-AND-EDGES))
+						(< OLD-X (FIFTH WINDOW-AND-EDGES))
+						(< OLD-Y (SIXTH WINDOW-AND-EDGES))
+						(RETURN WINDOW-AND-EDGES))))
+	      (AND (EQ MODE ':OUT)
+		   (WITHOUT-INTERRUPTS
+		     (MOUSE-SET-BLINKER ':FOLLOWING-ARROW)
+		     (MOUSE-WAKEUP)
+		     (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION DOC-INSIDE)))
+	      (LET ((LEFT (THIRD NEW-WINDOW-AND-EDGES))
+		    (TOP (FOURTH NEW-WINDOW-AND-EDGES))
+		    (RIGHT (FIFTH NEW-WINDOW-AND-EDGES))
+		    (BOTTOM (SIXTH NEW-WINDOW-AND-EDGES)))
+		(LET (LEFT-P TOP-P LEFT-RIGHT-CORNER-P TOP-BOTTOM-CORNER-P)
+		  (LET ((ONE-THIRD (// (- RIGHT LEFT) 3)))
+		    (SETQ LEFT-RIGHT-CORNER-P
+			  (IF (SETQ LEFT-P (< OLD-X (// (+ LEFT RIGHT) 2)))
+			      (< OLD-X (+ LEFT ONE-THIRD))
+			      (> OLD-X (- RIGHT ONE-THIRD)))))
+		  (LET ((ONE-THIRD (// (- BOTTOM TOP) 3)))
+		    (SETQ TOP-BOTTOM-CORNER-P
+			  (IF (SETQ TOP-P (< OLD-Y (// (+ TOP BOTTOM) 2)))
+			      (< OLD-Y (+ TOP ONE-THIRD))
+			      (> OLD-Y (- BOTTOM ONE-THIRD)))))
+		  (IF (AND LEFT-RIGHT-CORNER-P TOP-BOTTOM-CORNER-P)
+		      (SETQ NEW-MODE (IF LEFT-P (IF TOP-P ':TOP-LEFT ':BOTTOM-LEFT)
+					 (IF TOP-P ':TOP-RIGHT ':BOTTOM-RIGHT)))
+		      (LET ((DX (// (* 100. (IF LEFT-P (- OLD-X LEFT) (- RIGHT OLD-X)))
+				    (- RIGHT LEFT)))
+			    (DY (// (* 100. (IF TOP-P (- OLD-Y TOP) (- BOTTOM OLD-Y)))
+				    (- BOTTOM TOP))))
+			(SETQ NEW-MODE (IF (< DX DY) (IF LEFT-P ':LEFT ':RIGHT)
+					   (IF TOP-P ':TOP ':BOTTOM))))))
+		(COND ((OR (NEQ NEW-WINDOW-AND-EDGES WINDOW-AND-EDGES)
+			   (NEQ NEW-MODE MODE))
+		       (SETQ X0 (COND ((MEMQ NEW-MODE '(:LEFT :TOP-LEFT :BOTTOM-LEFT))
+				       LEFT)
+				      ((MEMQ NEW-MODE '(:RIGHT :TOP-RIGHT
+							       :BOTTOM-RIGHT))
+				       RIGHT)
+				      (T
+				       NIL)))
+		       (SETQ Y0 (COND ((MEMQ NEW-MODE '(:TOP :TOP-LEFT :TOP-RIGHT))
+				       TOP)
+				      ((MEMQ NEW-MODE '(:BOTTOM :BOTTOM-LEFT
 								:BOTTOM-RIGHT))
-					RIGHT)
-				       (T
-					NIL)))
-			(SETQ Y0 (COND ((MEMQ NEW-MODE '(:TOP :TOP-LEFT :TOP-RIGHT))
-					TOP)
-				       ((MEMQ NEW-MODE '(:BOTTOM :BOTTOM-LEFT
-								 :BOTTOM-RIGHT))
-					BOTTOM)
-				       (T
-					NIL)))
-			(FUNCALL MOUSE-BLINKER ':SET-ORIGIN X0 Y0)
-			(BLINKER-SET-VISIBILITY MOUSE-BLINKER T)
-			(SETQ MODE NEW-MODE
-			      WINDOW-AND-EDGES NEW-WINDOW-AND-EDGES)))))
-	      ((NEQ MODE ':OUT)			;Not already out
-	       (SETQ MODE ':OUT)
-	       (BLINKER-SET-VISIBILITY MOUSE-BLINKER NIL)))
-	(PROCESS-WAIT "Pick something"
-		      #'(LAMBDA (OLD-X OLD-Y)
-			  (OR (NOT (ZEROP MOUSE-LAST-BUTTONS))
-			      ( MOUSE-X OLD-X)
-			      ( MOUSE-Y OLD-Y)))
-		      OLD-X OLD-Y)
-	(OR (ZEROP MOUSE-LAST-BUTTONS)
-	    (RETURN-FROM KLUDGE WINDOW-AND-EDGES MODE))))))
+				       BOTTOM)
+				      (T
+				       NIL)))
+		       (FUNCALL MOUSE-BLINKER ':SET-ORIGIN X0 Y0)
+		       (BLINKER-SET-VISIBILITY MOUSE-BLINKER T)
+		       (SETQ MODE NEW-MODE
+			     WINDOW-AND-EDGES NEW-WINDOW-AND-EDGES)))))
+	     ((NEQ MODE ':OUT)			;Not already out
+	      (SETQ MODE ':OUT)
+	      (WITHOUT-INTERRUPTS
+		(MOUSE-SET-BLINKER-DEFINITION ':CHARACTER 3 3 ':ON
+					      ':SET-CHARACTER 7)	;Small X
+		(MOUSE-WAKEUP)
+		(SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION DOC-OUTSIDE))))
+       (PROCESS-WAIT "Pick something"
+		     #'(LAMBDA (OLD-X OLD-Y)
+			 (OR (NOT (ZEROP MOUSE-LAST-BUTTONS))
+			     ( MOUSE-LAST-X OLD-X)
+			     ( MOUSE-LAST-Y OLD-Y)))
+		     OLD-X OLD-Y)
+       (OR (ZEROP MOUSE-LAST-BUTTONS)
+	   (RETURN-FROM KLUDGE WINDOW-AND-EDGES MODE))))))
 
 ;;; Display a set of filled in rectangles
 (DEFFLAVOR MULTIPLE-RECTANGLE-BLINKER
@@ -930,7 +1331,10 @@ SHEET specifies the area within which we are allowed to act."
   LIST)
 
 (DEFVAR CORNER-LENGTH 100)			;The length of displayed corners
-(DEFVAR EDGE-WIDTH 4)				;The width of displayed edges
+(DEFVAR EDGE-WIDTH 8)				;The width of displayed edges
+		;This width has to be more than twice the width of any borders
+		;the user might be trying to move, or it looks really confusing
+		;due to the XOR.
 
 ;;; Add just the corner of a window
 (DEFUN ADD-CORNER (LIST LEFT-P TOP-P LEFT TOP RIGHT BOTTOM)
@@ -970,7 +1374,7 @@ SHEET specifies the area within which we are allowed to act."
      (SETF (FIFTH EDGES) (SETQ ON-P (OR (NOT (AND (FOURTH EDGES) (FIFTH EDGES))) ON-P)))
      (SETF (FOURTH EDGES) ON-P))
     (:OTHERWISE
-     (FERROR NIL "~A invalid edge//corner descriptor.")))
+     (FERROR NIL "~S invalid edge//corner descriptor." EDGE-OR-CORNER)))
   (PROG () (RETURN WINDOW-MOVEMENT-ALIST ON-P)))
 
 ;;; Return the corner or edge of a window associated with another
@@ -1069,10 +1473,14 @@ SHEET specifies the area within which we are allowed to act."
 	 (ON-P) (RECTANGLE-LIST))
 	(NIL)
       (MULTIPLE-VALUE (WINDOW-AND-EDGES CORNER-OR-EDGE)
-	(FIND-EDGE-OR-CORNER WINDOW-EDGE-ALIST))
-      (AND (BIT-TEST 6 MOUSE-LAST-BUTTONS)	;Middle or right button aborts
+	(FIND-EDGE-OR-CORNER WINDOW-EDGE-ALIST
+	  "Choose edge or corner.  Middle aborts.  Long click starts moving."
+"Move inside a window to choose an edge or corner.  Middle aborts.  Long click starts moving."
+         ))
+      (AND (BIT-TEST 2 MOUSE-LAST-BUTTONS)	;Middle button aborts
 	   (RETURN-FROM ABORT))
-      (COND ((BIT-TEST 1 MOUSE-LAST-BUTTONS)	;Left button changes things
+      (COND ((EQ CORNER-OR-EDGE ':OUT))		;Click while not pointing at anything
+	    ((BIT-TEST 1 MOUSE-LAST-BUTTONS)	;Left button changes things
 	     (MULTIPLE-VALUE (MOVEMENT-LIST ON-P)
 	       (ADD-MOVING-WINDOW WINDOW-AND-EDGES CORNER-OR-EDGE MOVEMENT-LIST))
 	     ;; If we turned things on, also turn on the associated things
@@ -1093,9 +1501,10 @@ SHEET specifies the area within which we are allowed to act."
 				   (> (TIME-DIFFERENCE (TIME) TIME)
 				      MULTIPLE-MOVE-RELEASE-TIME)))
 			   (TIME))))
-      (COND ((NOT (ZEROP MOUSE-LAST-BUTTONS))	;Still held down?
-	     (SETQ WINDOW-EDGE-ALIST (DO-MULTIPLE-MOVE TOP-SHEET WINDOW-EDGE-ALIST
-						       RECTANGLE-LIST MOVEMENT-LIST))
+      (COND ((NOT (ZEROP MOUSE-LAST-BUTTONS))	;Still held down (Left or Right)?
+	     (AND MOVEMENT-LIST			;Could be nothing to move
+		  (SETQ WINDOW-EDGE-ALIST (DO-MULTIPLE-MOVE TOP-SHEET WINDOW-EDGE-ALIST
+							    RECTANGLE-LIST MOVEMENT-LIST)))
 	     (RETURN T))))
     (BLINKER-SET-VISIBILITY MULTIPLE-MOVE-BLINKER NIL)))
   WINDOW-EDGE-ALIST)
@@ -1130,6 +1539,7 @@ SHEET specifies the area within which we are allowed to act."
 	  (RELATIVE-RECTANGLE-LIST RECTANGLE-LIST)
 	(MOUSE-SET-BLINKER-DEFINITION ':MULTIPLE-RECTANGLE 0 0 T ':SET-RECTANGLE-LIST L)
 	(MOUSE-WARP X Y)))
+    (SETQ WHO-LINE-MOUSE-GRABBED-DOCUMENTATION "Move edges and corners.  Middle aborts.")
     (DO ((MIN-X (SHEET-INSIDE-LEFT TOP-SHEET))
 	 (MAX-X (SHEET-INSIDE-RIGHT TOP-SHEET))
 	 (MIN-Y (SHEET-INSIDE-TOP TOP-SHEET))
@@ -1140,7 +1550,7 @@ SHEET specifies the area within which we are allowed to act."
       (SETQ NEW-EDGE-ALIST WINDOW-EDGE-ALIST)
       (MULTIPLE-VALUE (DELTA-X DELTA-Y)
 	(GET-MOVEMENT-DELTA))
-      (IF (BIT-TEST MOUSE-LAST-BUTTONS 6)	;Middle or right abort
+      (IF (BIT-TEST 2 MOUSE-LAST-BUTTONS)	;Middle aborts
 	  (RETURN NIL)
 	  (IF (DOLIST (MOVE MOVEMENT-LIST)
 		(LET ((NEW-EDGES (COPYLIST (CAR MOVE))))
@@ -1176,8 +1586,10 @@ SHEET specifies the area within which we are allowed to act."
   (WITH-MOUSE-GRABBED
    (UNWIND-PROTECT
      (MULTIPLE-VALUE-BIND (WINDOW-AND-EDGES CORNER-OR-EDGE)
-	 (FIND-EDGE-OR-CORNER WINDOW-EDGE-ALIST)
-       (COND ((NOT (BIT-TEST 6 MOUSE-LAST-BUTTONS))	;Middle or right button aborts
+	 (FIND-EDGE-OR-CORNER WINDOW-EDGE-ALIST
+	   "Choose an edge or corner.  Middle aborts."
+	   "Move inside a window to choose an edge or corner.  Middle aborts.")
+       (COND ((NOT (BIT-TEST 6 MOUSE-LAST-BUTTONS))	;Middle or right aborts
 	      (LET* ((MOVEMENT-LIST (ADD-MOVING-WINDOW WINDOW-AND-EDGES CORNER-OR-EDGE NIL))
 		     (RECTANGLE-LIST (CONSTRUCT-MOVEMENT-RECTANGLE-LIST MOVEMENT-LIST)))
 		(SETQ WINDOW-EDGE-ALIST (DO-MULTIPLE-MOVE TOP-SHEET WINDOW-EDGE-ALIST
@@ -1186,4 +1598,4 @@ SHEET specifies the area within which we are allowed to act."
   WINDOW-EDGE-ALIST)
 
 (COMPILE-FLAVOR-METHODS MOUSE-FOLLOWING-ARROW-BLINKER MOUSE-BOX-BLINKER)
- 
+

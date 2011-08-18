@@ -1,10 +1,10 @@
-;;;The font editor -*- Mode:LISP; Package:FED -*-
+;;;The font editor -*- Mode:LISP; Package:FED; Base:8 -*-
 
 (DEFVAR FED-WINDOW)
 (DEFUN FED ()
   (OR (BOUNDP 'FED-WINDOW)
-      (SETQ FED-WINDOW (TV:WINDOW-CREATE 'FED ':HEIGHT (// TV:(SHEET-HEIGHT DEFAULT-SCREEN)
-								  2))))
+      (SETQ FED-WINDOW (TV:MAKE-WINDOW 'FED ':HEIGHT (// TV:(SHEET-HEIGHT DEFAULT-SCREEN)
+							 2))))
   (FUNCALL FED-WINDOW ':SETUP-LAYOUT)
   (FUNCALL FED-WINDOW ':SELECT))
 
@@ -12,6 +12,10 @@
 (DECLARE (SPECIAL DRAW-MODE PROMPT-WINDOW CURSOR-ON CURSOR-X CURSOR-Y
 		  CURRENT-FONT CURRENT-CHARACTER REDISPLAY-DEGREE PLANE SAMPLE-STRING
 		  TV:TYPEOUT-WINDOW))
+
+(DECLARE (SPECIAL WINDOW-X-POS WINDOW-Y-POS WINDOW-X-SIZE WINDOW-Y-SIZE
+		  BOX-X-SIZE BOX-Y-SIZE CHAR-BOX-X1 CHAR-BOX-X2
+		  CHAR-BOX-Y1 CHAR-BOX-Y2 CHAR-BOX-Y3))
 
 ;;;Windows that display a bunch of points inside a grid
 (DEFFLAVOR GRID-MIXIN
@@ -54,21 +58,21 @@ in the display."))
   (DEDUCE-WINDOW-ARRAY-SIZE))
 
 ;;;Figure out how many boxes to make with these edges
-(DECLARE-FLAVOR-INSTANCE-VARIABLES (GRID-MIXIN)
-(DEFUN DEDUCE-WINDOW-ARRAY-SIZE (&OPTIONAL (ARRAY-TYPE (ARRAY-TYPE WINDOW-ARRAY)))
-  (SETQ WINDOW-X-SIZE (// (TV:SHEET-INSIDE-WIDTH) BOX-X-SIZE)
-	WINDOW-Y-SIZE (// (TV:SHEET-INSIDE-HEIGHT) BOX-Y-SIZE))
-  (OR (AND (BOUNDP 'WINDOW-ARRAY)
-	   ( WINDOW-X-SIZE (ARRAY-DIMENSION-N 1 WINDOW-ARRAY))
-	   ( WINDOW-Y-SIZE (ARRAY-DIMENSION-N 2 WINDOW-ARRAY)))
-      (SETQ WINDOW-ARRAY (MAKE-ARRAY NIL ARRAY-TYPE
-				     (LIST WINDOW-X-SIZE WINDOW-Y-SIZE))))
-;;;*** this will make things get smaller and smaller, it needs to be thought about ***
-;  (SETQ TV:RIGHT-MARGIN-SIZE (- TV:WIDTH TV:LEFT-MARGIN-SIZE
-;				(* WINDOW-X-SIZE BOX-X-SIZE))
-;	TV:BOTTOM-MARGIN-SIZE (- TV:HEIGHT TV:TOP-MARGIN-SIZE
-;				 (* WINDOW-Y-SIZE BOX-Y-SIZE)))
-  ))
+(DEFUN DEDUCE-WINDOW-ARRAY-SIZE (&OPTIONAL ARRAY-TYPE)
+  (DECLARE-FLAVOR-INSTANCE-VARIABLES (GRID-MIXIN)
+    (OR ARRAY-TYPE (SETQ ARRAY-TYPE (ARRAY-TYPE WINDOW-ARRAY)))
+    (LET ((LAST-ROW-OF-DOTS
+	    (IF (AND (> BOX-X-SIZE MIN-BOX-SIZE)
+		     (> BOX-Y-SIZE MIN-BOX-SIZE))
+		2
+		0)))
+      (SETQ WINDOW-X-SIZE (// (- (TV:SHEET-INSIDE-WIDTH) LAST-ROW-OF-DOTS) BOX-X-SIZE)
+	    WINDOW-Y-SIZE (// (- (TV:SHEET-INSIDE-HEIGHT) LAST-ROW-OF-DOTS) BOX-Y-SIZE))
+      (OR (AND (BOUNDP 'WINDOW-ARRAY)
+	       ( WINDOW-X-SIZE (ARRAY-DIMENSION-N 1 WINDOW-ARRAY))
+	       ( WINDOW-Y-SIZE (ARRAY-DIMENSION-N 2 WINDOW-ARRAY)))
+	  (SETQ WINDOW-ARRAY (MAKE-ARRAY NIL ARRAY-TYPE
+					 (LIST WINDOW-X-SIZE WINDOW-Y-SIZE)))))))
 
 ;;;If we didn't come back, remember that the screen is clobbered
 (DEFMETHOD (GRID-MIXIN :AFTER :REFRESH) (&OPTIONAL IGNORE)
@@ -115,6 +119,12 @@ in the display."))
 		      MAX-CHANGED-X (1- WINDOW-X-SIZE)
 		      MAX-CHANGED-Y (1- WINDOW-Y-SIZE))
 		(SETQ REDISPLAY-DEGREE REDISPLAY-SOME)))
+	 ;; Since the commands don't seem to clip the change boundaries, do so here
+	 ;; in case the font is too big to fit in the window
+	 (SETQ MIN-CHANGED-X (MAX MIN-CHANGED-X 0)
+	       MIN-CHANGED-Y (MAX MIN-CHANGED-Y 0)
+	       MAX-CHANGED-X (MIN MAX-CHANGED-X (1- WINDOW-X-SIZE))
+	       MAX-CHANGED-Y (MIN MAX-CHANGED-Y (1- WINDOW-Y-SIZE)))
 	 ;; Now, for each box which isn't already displayed in the right state,
 	 ;; update it.
 	 (DO-NAMED ABORT-REDISPLAY
@@ -145,36 +155,50 @@ The :listen method defined is a no-op."))
 
 ;;;This is a message so you can put some daemons on it to draw other things (like the
 ;;;character box)
+(DEFVAR GRID-BITBLT-KLUDGE (MAKE-ARRAY NIL 'ART-1B '(64. 64.)))
+(DEFVAR GRID-BITBLT-ONES (MAKE-ARRAY NIL 'ART-1B '(32. 32.)))
+
 (DEFMETHOD (GRID-MIXIN :DRAW-GRID) ()
-  (TV:SHEET-CLEAR SELF)
+  (FUNCALL-SELF ':CLEAR-SCREEN)
   ;; Now add in the grid points, unless the grid is too small.
-  (OR (< BOX-X-SIZE MIN-BOX-SIZE) (< BOX-Y-SIZE MIN-BOX-SIZE)
-      (DO ((I 0 (1+ I))) ((> I WINDOW-X-SIZE))
-	(DO ((J 0 (1+ J))) ((> J WINDOW-Y-SIZE))
-	  (TV:DRAW-RECTANGLE-INSIDE-CLIPPED GRID-POINT-SIZE GRID-POINT-SIZE
-					    (1- (* BOX-X-SIZE I))
-					    (1- (* BOX-Y-SIZE J))
-					    TV:ALU-XOR SELF)))))
+  (COND ((NOT (OR (< BOX-X-SIZE MIN-BOX-SIZE) (< BOX-Y-SIZE MIN-BOX-SIZE)))
+	 ;; Make an array containing the necessary dots
+	 (BITBLT 0 64. 64. GRID-BITBLT-KLUDGE 0 0 GRID-BITBLT-KLUDGE 0 0)
+	 (BITBLT 17 32. 32. GRID-BITBLT-ONES 0 0 GRID-BITBLT-ONES 0 0)
+	 (DO I 0 (+ I BOX-X-SIZE) (> (+ I GRID-POINT-SIZE) 64.)
+	   (DO J 0 (+ J BOX-Y-SIZE) (> (+ J GRID-POINT-SIZE) 64.)
+	     (BITBLT TV:ALU-IOR GRID-POINT-SIZE GRID-POINT-SIZE
+		     GRID-BITBLT-ONES 0 0 GRID-BITBLT-KLUDGE I J)))
+	 ;; Smear the array over the window
+	 (LOOP WITH XINC = (* (// 64. BOX-X-SIZE) BOX-X-SIZE)
+	       WITH XSIZE = (* (1+ WINDOW-X-SIZE) BOX-X-SIZE)
+	       FOR I FROM 0 BY XINC BELOW XSIZE
+	    DO (LOOP WITH YINC = (* (// 64. BOX-Y-SIZE) BOX-Y-SIZE)
+		     WITH YSIZE = (* (1+ WINDOW-Y-SIZE) BOX-Y-SIZE)
+		     FOR J FROM 0 BY YINC BELOW YSIZE
+		  DO (FUNCALL-SELF ':BITBLT TV:ALU-SETA
+		        (MIN (- XSIZE I) XINC) (MIN (- YSIZE J) YINC)
+			GRID-BITBLT-KLUDGE 0 0 I J))))))
 
 ;;;Complement the state of a point in the grid, and store the new value in our array
 ;;;FROM-REDISPLAY means that this value came from the other data structure, so don't
 ;;;bother trying to update it.
 (DEFMETHOD (GRID-MIXIN :DRAW-POINT) (I J &OPTIONAL NEW-VALUE FROM-REDISPLAY)
-  (TV:%DRAW-RECTANGLE BOX-X-SIZE BOX-Y-SIZE
-		      (+ TV:LEFT-MARGIN-SIZE (* I BOX-X-SIZE))
-		      (+ TV:TOP-MARGIN-SIZE (* J BOX-Y-SIZE))
-		      TV:ALU-XOR SELF)
-  (ASET NEW-VALUE WINDOW-ARRAY I J)
-  (OR FROM-REDISPLAY (FUNCALL-SELF ':ASET NEW-VALUE (+ I WINDOW-X-POS) (+ J WINDOW-Y-POS))))
+  (FUNCALL-SELF ':DRAW-RECTANGLE BOX-X-SIZE BOX-Y-SIZE
+		(* I BOX-X-SIZE)
+		(* J BOX-Y-SIZE)
+		TV:ALU-XOR)
+    (ASET NEW-VALUE WINDOW-ARRAY I J)
+    (OR FROM-REDISPLAY
+	(FUNCALL-SELF ':ASET NEW-VALUE (+ I WINDOW-X-POS) (+ J WINDOW-Y-POS))))
 
 (DEFVAR GRAY-ARRAY)
 (DEFMETHOD (GRID-MIXIN :GRAY-POINT) (X Y)
   (COND ((NOT (BOUNDP 'GRAY-ARRAY))
 	 (SETQ GRAY-ARRAY (MAKE-ARRAY NIL 'ART-1B '(40 4)))
 	 (DOTIMES (I 40) (DOTIMES (J 4) (ASET (LOGXOR I J) GRAY-ARRAY I J)))))
-  (BITBLT TV:ALU-XOR BOX-X-SIZE BOX-Y-SIZE GRAY-ARRAY 0 0
-	  TV:SCREEN-ARRAY (+ TV:LEFT-MARGIN-SIZE (* X BOX-X-SIZE))
-			  (+ TV:TOP-MARGIN-SIZE (* Y BOX-Y-SIZE))))
+  (FUNCALL-SELF ':BITBLT TV:ALU-XOR BOX-X-SIZE BOX-Y-SIZE GRAY-ARRAY 0 0
+		(* X BOX-X-SIZE) (* Y BOX-Y-SIZE)))
 
 (DEFMETHOD (GRID-MIXIN :SET-BOX-SIZE) (&OPTIONAL (NEW-X-SIZE DEFAULT-BOX-SIZE)
 						  (NEW-Y-SIZE NEW-X-SIZE))
@@ -217,7 +241,7 @@ The :listen method defined is a no-op."))
 ;	REDISPLAY-DEGREE REDISPLAY-SOME
 	REDISPLAY-DEGREE REDISPLAY-ALL))
 
-(DEFMETHOD (GRID-MIXIN :DRAW-GRID-LINE) (X0 Y0 X1 Y1 &AUX DX DY YI FLAG)
+(DEFMETHOD (GRID-MIXIN :DRAW-GRID-LINE) (X0 Y0 X1 Y1 DRAW-MODE &AUX DX DY YI FLAG)
   (SETQ DX (- X1 X0)
 	DY (- Y1 Y0))
   (AND (MINUSP DX)
@@ -229,8 +253,16 @@ The :listen method defined is a no-op."))
   (DO ((A (// DX 2))
        (C DX (1- C)))
       ((< C 0))
-    (AND (ZEROP (AREF WINDOW-ARRAY X0 Y0))
-	 (FUNCALL-SELF ':DRAW-POINT X0 Y0 1))
+    (SELECTQ DRAW-MODE
+      ;; IOR
+      (7 (AND (ZEROP (AREF WINDOW-ARRAY X0 Y0))
+	      (FUNCALL-SELF ':DRAW-POINT X0 Y0 1)))
+      ;; ANDCA
+      (2 (OR (ZEROP (AREF WINDOW-ARRAY X0 Y0))
+	     (FUNCALL-SELF ':DRAW-POINT X0 Y0 0)))
+      ;; XOR
+      (6 (FUNCALL-SELF ':DRAW-POINT X0 Y0
+		       (- 1 (AREF WINDOW-ARRAY X0 Y0)))))
     (COND ((MINUSP (SETQ A (- A DY)))
 	   (SETQ A (+ A DX))
 	   (SETQ X0 (1+ X0) Y0 (+ Y0 YI)))
@@ -239,7 +271,7 @@ The :listen method defined is a no-op."))
 	  (T
 	   (SETQ X0 (1+ X0))))))
 
-(DEFMETHOD (GRID-MIXIN :DRAW-CURVE) (PX PY &OPTIONAL END)
+(DEFMETHOD (GRID-MIXIN :DRAW-CURVE) (PX PY &OPTIONAL END (DRAW-MODE 7))
   (OR END (SETQ END (ARRAY-ACTIVE-LENGTH PX)))
   (DO ((I 1 (1+ I))
        (X0)
@@ -254,7 +286,7 @@ The :listen method defined is a no-op."))
     (SETQ Y0 Y1)
     (OR (SETQ Y1 (AREF PY I)) (RETURN NIL))
     (SETQ Y1 (FIX Y1))
-    (FUNCALL HANDLER ':DRAW-GRID-LINE X0 Y0 X1 Y1)))
+    (FUNCALL HANDLER ':DRAW-GRID-LINE X0 Y0 X1 Y1 DRAW-MODE)))
 
 ;;;Grid windows that display a plane
 (DEFFLAVOR PLANE-GRID-MIXIN
@@ -279,10 +311,10 @@ is changed via the mouse."))
 	 (SETQ MAX-CHANGED-Y (MIN MAX-CHANGED-Y (+ START-Y (SECOND DIMENSIONS)))))))
 
 (DEFMETHOD (PLANE-GRID-MIXIN :AREF) (I J)
-  (PLANE-AR-N PLANE I J))
+  (PLANE-AREF PLANE I J))
 
 (DEFMETHOD (PLANE-GRID-MIXIN :ASET) (VAL I J)
-  (PLANE-AS-N VAL PLANE I J))
+  (PLANE-ASET VAL PLANE I J))
 
 ;;;Plane windows with a special outline someplace (the character box and baseline)
 (DEFFLAVOR CHAR-BOX-GRID-MIXIN
@@ -330,14 +362,14 @@ The outline is used to show the actual character area and baseline by the font-e
 	X2 (1- (* BOX-X-SIZE (- DISPLAYED-CHAR-BOX-X2 WINDOW-X-POS)))
         Y2 (1- (* BOX-Y-SIZE (- DISPLAYED-CHAR-BOX-Y2 WINDOW-Y-POS)))
         Y3 (1- (* BOX-Y-SIZE (- DISPLAYED-CHAR-BOX-Y3 WINDOW-Y-POS))))
-  (TV:DRAW-RECTANGLE-INSIDE-CLIPPED 2 (- Y2 Y1) X1 Y1 TV:ALU-XOR SELF)
+  (FUNCALL-SELF ':DRAW-RECTANGLE 2 (- Y2 Y1) X1 Y1 TV:ALU-XOR)
   (COND ((= X1 X2))
 	(T
-	 (TV:DRAW-RECTANGLE-INSIDE-CLIPPED (- X2 X1) 2 (+ 2 X1) Y1 TV:ALU-XOR SELF)
-	 (TV:DRAW-RECTANGLE-INSIDE-CLIPPED 2 (- Y2 Y1) X2 (+ 2 Y1) TV:ALU-XOR SELF)
-	 (TV:DRAW-RECTANGLE-INSIDE-CLIPPED (- X2 X1) 2 X1 Y2 TV:ALU-XOR SELF)
+	 (FUNCALL-SELF ':DRAW-RECTANGLE (- X2 X1) 2 (+ 2 X1) Y1 TV:ALU-XOR)
+	 (FUNCALL-SELF ':DRAW-RECTANGLE 2 (- Y2 Y1) X2 (+ 2 Y1) TV:ALU-XOR)
+	 (FUNCALL-SELF ':DRAW-RECTANGLE (- X2 X1) 2 X1 Y2 TV:ALU-XOR)
 	 (OR (= Y2 Y3)
-	     (TV:DRAW-RECTANGLE-INSIDE-CLIPPED (- X2 -2 X1) 2 X1 Y3 TV:ALU-XOR SELF)))))
+	     (FUNCALL-SELF ':DRAW-RECTANGLE (- X2 -2 X1) 2 X1 Y3 TV:ALU-XOR)))))
 
 ;Push this button when the mouse is near an edge or corner of the character box,
 ;and then as long as you hold the button down you are moving that corner.
@@ -345,6 +377,8 @@ The outline is used to show the actual character area and baseline by the font-e
   (MULTIPLE-VALUE (XOFF YOFF) (TV:SHEET-CALCULATE-OFFSETS SELF TV:MOUSE-SHEET))
   ;; Decide which corner or edge of the character box we will move
   ;; (or maybe we aren't in range of any of them).
+  ;; All horizontal edges move together, since the vertical dimensions
+  ;; are not changeable for individual characters in a font.
   (COND ((< (ABS (- TV:MOUSE-X (* (- CHAR-BOX-X1 WINDOW-X-POS) BOX-X-SIZE) XOFF))
 	    (// BOX-X-SIZE 2))
 	 (SETQ X-POS-NAME 'CHAR-BOX-X1))
@@ -362,7 +396,8 @@ The outline is used to show the actual character area and baseline by the font-e
 	 (SETQ Y-POS-NAME 'CHAR-BOX-Y3)))
   (IF (NOT (OR X-POS-NAME Y-POS-NAME))
       (TV:BEEP)					;Not in range to move any edge, complain
-      (DO ((NOT-FIRST NIL T) (X) (Y) (OX) (OY) (OLD-M-X) (OLD-M-Y))
+      (DO ((NOT-FIRST NIL T) (X) (Y) (OX) (OY) (OLD-M-X) (OLD-M-Y)
+	   DELTA-Y)
 	  ((AND NOT-FIRST (ZEROP TV:MOUSE-LAST-BUTTONS)))
 	(AND NOT-FIRST (TV:MOUSE-WAIT OLD-M-X OLD-M-Y))
 	(OR (TV:WINDOW-OWNS-MOUSE-P SELF)
@@ -376,20 +411,24 @@ The outline is used to show the actual character area and baseline by the font-e
 	(SETQ X (+ X WINDOW-X-POS) Y (+ Y WINDOW-Y-POS))
 	;; Try moving the edges, remember where they used to be.
 	(SETQ OX (SYMEVAL X-POS-NAME) OY (SYMEVAL Y-POS-NAME))
-	(AND Y-POS-NAME (SET Y-POS-NAME Y))
 	(AND X-POS-NAME (SET X-POS-NAME X))
+	(SETQ DELTA-Y (IF Y-POS-NAME (- Y OY) 0))
+	(INCF CHAR-BOX-Y1 DELTA-Y)
+	(INCF CHAR-BOX-Y2 DELTA-Y)
+	(INCF CHAR-BOX-Y3 DELTA-Y)
 	;; Don't move an edge past or up to its opposite edge.
 	(OR (AND ( CHAR-BOX-X1 CHAR-BOX-X2)
 		 (< CHAR-BOX-Y1 CHAR-BOX-Y2)
 		 ( CHAR-BOX-Y2 CHAR-BOX-Y3))
-	    (PROGN (SET X-POS-NAME OX)
-		   (SET Y-POS-NAME OY)
-		   (TV:BEEP)))
+	    (PROGN (AND X-POS-NAME (SET X-POS-NAME OX))
+		   (DECF CHAR-BOX-Y1 DELTA-Y)
+		   (DECF CHAR-BOX-Y2 DELTA-Y)
+		   (DECF CHAR-BOX-Y3 DELTA-Y))
+		   (TV:BEEP))
 	;; If we are really moving an edge to a new place, redisplay.
 	(OR (AND (OR (NOT X-POS-NAME)
 		     (= (SYMEVAL X-POS-NAME) OX))
-		 (OR (NOT Y-POS-NAME)
-		     (= (SYMEVAL Y-POS-NAME) OY)))
+		 (ZEROP DELTA-Y))
 	    (FUNCALL-SELF ':REDISPLAY)))))
 
 ;;;Things for the layout of the fed window, this may want to be a frame or something
@@ -404,15 +443,18 @@ The outline is used to show the actual character area and baseline by the font-e
 Should be a frame, don't look at this."))
 
 (DEFMETHOD (FED-LAYOUT-FRAME :AFTER :INIT) (INIT-PLIST)
-  (SETQ COMMAND-MENU (TV:WINDOW-CREATE 'TV:COMMAND-MENU
-				       ':SUPERIOR TV:SUPERIOR
-				       ':IO-BUFFER TV:IO-BUFFER
-				       ':ITEM-LIST (GET INIT-PLIST ':COMMAND-MENU-ALIST))
-	PROMPT-WINDOW (TV:WINDOW-CREATE 'TV:WINDOW
-					':SUPERIOR TV:SUPERIOR ':VSP 0 ':MORE-P NIL
-					':IO-BUFFER TV:IO-BUFFER
-					':HEIGHT (+ 4 (FONT-CHAR-HEIGHT FONTS:CPTFONT))
-					':LABEL NIL ':BLINKER-DESELECTED-VISIBILITY ':OFF)))
+  (SETQ COMMAND-MENU (TV:MAKE-WINDOW 'TV:COMMAND-MENU
+				     ':SUPERIOR TV:SUPERIOR
+				     ':IO-BUFFER TV:IO-BUFFER
+				     ':ITEM-LIST (GET INIT-PLIST ':COMMAND-MENU-ALIST))
+	PROMPT-WINDOW (TV:MAKE-WINDOW 'TV:WINDOW
+				      ':SUPERIOR TV:SUPERIOR ':VSP 0 ':MORE-P NIL
+				      ':IO-BUFFER TV:IO-BUFFER
+				      ':HEIGHT (+ 4 (FONT-CHAR-HEIGHT FONTS:CPTFONT))
+				      ':LABEL NIL ':BLINKER-DESELECTED-VISIBILITY ':OFF)))
+
+(DEFMETHOD (FED-LAYOUT-FRAME :AFTER :CHANGE-OF-SIZE-OR-MARGINS) (&REST IGNORE)
+  (FUNCALL-SELF ':SETUP-LAYOUT))
 
 (DEFMETHOD (FED-LAYOUT-FRAME :SETUP-LAYOUT) ()
   (TV:DELAYING-SCREEN-MANAGEMENT
@@ -436,6 +478,12 @@ Should be a frame, don't look at this."))
     (SETQ PROMPT-LINE-USED T)
     (READLINE PROMPT-WINDOW)))
 
+(DEFUN PROMPT-LINE-READ (&OPTIONAL STRING &REST FORMAT-ARGS)
+  (TV:WINDOW-CALL (PROMPT-WINDOW)
+    (AND STRING (LEXPR-FUNCALL #'PROMPT-LINE STRING FORMAT-ARGS))
+    (SETQ PROMPT-LINE-USED T)
+    (READ PROMPT-WINDOW)))
+
 (DEFUN PROMPT-LINE-Y-OR-N-P (&OPTIONAL STRING &REST FORMAT-ARGS)
   (TV:WINDOW-CALL (PROMPT-WINDOW)
     (AND STRING (LEXPR-FUNCALL #'PROMPT-LINE STRING FORMAT-ARGS))
@@ -456,7 +504,8 @@ Should be a frame, don't look at this."))
 		(CURSOR-X 0)
 		(CURSOR-Y 0)
 		(CURSOR-ON NIL))
-	       (PLANE-GRID-MIXIN CHAR-BOX-GRID-MIXIN TV:KBD-MOUSE-BUTTONS-MIXIN)
+	       (PLANE-GRID-MIXIN CHAR-BOX-GRID-MIXIN
+	        TV:KBD-MOUSE-BUTTONS-MIXIN TV:ANY-TYI-MIXIN)
   (:DOCUMENTATION :SPECIAL-PURPOSE "The font editor itself
 Uses its grid for displaying the character being edited."))
 
@@ -464,13 +513,13 @@ Uses its grid for displaying the character being edited."))
   (FUNCALL-SELF ':ERASE-ALL))
 
 (DEFMETHOD (BASIC-FED :ERASE-ALL) ()
-  (SETQ PLANE (MAKE-PLANE ART-4B 2 0 10))
+  (SETQ PLANE (MAKE-PLANE 2 ':TYPE ART-4B ':DEFAULT-VALUE 0 ':EXTENSION 10))
   (SETQ CHAR-BOX-X1 0 CHAR-BOX-Y1 0
 	CHAR-BOX-X2 7 CHAR-BOX-Y2 11 CHAR-BOX-Y3 14)
   (AND CURRENT-FONT
        (LET ((FD (FONT-GET-FD CURRENT-FONT)))
 	 (SETQ CHAR-BOX-Y2 (FD-BASELINE FD)
-	       CHAR-BOX-X2 (FD-SPACE-WIDTH FD)
+	       CHAR-BOX-X2 (FIXR (FD-SPACE-WIDTH FD))
 	       CHAR-BOX-Y3 (FD-LINE-SPACING FD))))
   (FUNCALL-SELF ':HOME-BOX))
 
@@ -500,13 +549,19 @@ Uses its grid for displaying the character being edited."))
   (:DEFAULT-INIT-PLIST :COMMAND-MENU-ALIST MENU-COMMAND-ALIST)
   (:DOCUMENTATION :COMBINATION "The actual fed window"))
 
+(DEFMETHOD (FED :WHO-LINE-DOCUMENTATION-STRING) ()
+  (SELECTQ DRAW-MODE
+    (7 "L:Draw dots, M:Change mode (Draw//Erase//Flip), R:Move edges of char box, R2:System menu")
+    (2 "L:Erase dots, M:Change mode (Draw//Erase//Flip), R:Move edges of char box, R2:System menu")
+    (6 "L:Flip dots, M:Change mode (Draw//Erase//Flip), R:Move edges of char box, R2:System menu")))
+
 (DEFMETHOD (FED :AFTER :INIT) (IGNORE)
   (OR TV:TYPEOUT-WINDOW
-      (SETQ TV:TYPEOUT-WINDOW (TV:WINDOW-CREATE 'TV:TYPEOUT-WINDOW
+      (SETQ TV:TYPEOUT-WINDOW (TV:MAKE-WINDOW 'TV:TYPEOUT-WINDOW
 				':DEEXPOSED-TYPEOUT-ACTION '(:EXPOSE-FOR-TYPEOUT)
 				':IO-BUFFER TV:IO-BUFFER
 				':SUPERIOR SELF)))
-  (SETQ TV:PROCESS (PROCESS-CREATE TV:NAME NIL ':SPECIAL-PDL-SIZE 4000.))
+  (SETQ TV:PROCESS (MAKE-PROCESS TV:NAME NIL ':SPECIAL-PDL-SIZE 4000.))
   (PROCESS-PRESET TV:PROCESS SELF ':COMMAND-LOOP)
   (FUNCALL TV:PROCESS ':RUN-REASON SELF))
 
@@ -524,46 +579,54 @@ Uses its grid for displaying the character being edited."))
   (TV:DRAW-LABEL))
 
 (DEFMETHOD (FED :AFTER :EXPOSE) (&REST IGNORE)
+  (FUNCALL COMMAND-MENU ':EXPOSE)
+  (FUNCALL PROMPT-WINDOW ':EXPOSE)
   (FUNCALL-SELF ':FORCE-KBD-INPUT '(REDISPLAY)))	;Make the command loop wake up
 
+;Return  the X and Y co-ords of the grid point the user clicks on
+;if he clicks with the left button.  Return NIL, char if he clicks anything else.
+;If he types something, untyi it and return NIL.
 (DEFMETHOD (FED :MOUSE-SELECT-POINT) (&AUX CH X Y)
-  (SETQ CH (FUNCALL-SELF ':TYI))
+  (SETQ CH (FUNCALL-SELF ':ANY-TYI))
   (COND ((LDB-TEST %%KBD-MOUSE CH)
-	 (MULTIPLE-VALUE-BIND (DX DY) (TV:SHEET-CALCULATE-OFFSETS SELF TV:MOUSE-SHEET)
-	   (SETQ X (// (- TV:MOUSE-X DX TV:LEFT-MARGIN-SIZE) BOX-X-SIZE)
-		 Y (// (- TV:MOUSE-Y DY TV:TOP-MARGIN-SIZE) BOX-Y-SIZE)))
-	 (AND (LESSP -1 X WINDOW-X-SIZE) (LESSP -1 Y WINDOW-Y-SIZE)
-	      (PROG () (RETURN X Y))))))
+	 (COND ((= (LDB %%KBD-MOUSE-BUTTON CH) 0)
+		(MULTIPLE-VALUE-BIND (DX DY) (TV:SHEET-CALCULATE-OFFSETS SELF TV:MOUSE-SHEET)
+		  (SETQ X (// (- TV:MOUSE-X DX TV:LEFT-MARGIN-SIZE) BOX-X-SIZE)
+			Y (// (- TV:MOUSE-Y DY TV:TOP-MARGIN-SIZE) BOX-Y-SIZE)))
+		(AND (LESSP -1 X WINDOW-X-SIZE) (LESSP -1 Y WINDOW-Y-SIZE)
+		     (PROG () (RETURN X Y))))
+	       (T (VALUES NIL CH))))
+	(T (FUNCALL-SELF ':UNTYI CH)
+	   NIL)))
 
+;Make sure our label has room for the font being edited.
 (DEFMETHOD (FED :PARSE-LABEL-SPEC) (SPEC LM TM RM BM)
-  (TV:PARSE-LABEL-SPEC SPEC LM TM RM BM))
+  (TV:PARSE-LABEL-SPEC SPEC LM TM RM BM
+		       (+ 2 (MAX (FONT-CHAR-HEIGHT
+				   (IF (BOUNDP 'TV:CURRENT-FONT)
+				       TV:CURRENT-FONT
+				       FONTS:CPTFONT))
+				 (IF CURRENT-FONT
+				     (FD-LINE-SPACING (FONT-GET-FD CURRENT-FONT))
+				     0)))))
 
-;;; This can't work, since the label area doesn't get redefined when the
-;;; things this depends on change
-(DEFMETHOD (FED :LABEL-HEIGHT) ()
-  (+ 2 (MAX (FONT-CHAR-HEIGHT TV:CURRENT-FONT)
-	    (IF CURRENT-FONT (FD-LINE-SPACING (FONT-GET-FD CURRENT-FONT)) 0))))
-
-;;; There are so many things wrong with this code, I don't even want to think about it!
-(DEFMETHOD (FED :DRAW-LABEL) (IGNORE X IGNORE IGNORE IGNORE &AUX OLD-FONT OLD-X OLD-Y)
+;;; The reason this is so kludgy is that it has to output
+;;; using multiple fonts.  If there were a way to generate a stream
+;;; that outputs to a window but with its own fonts and cursor position
+;;; and limits, that would be the clearly winning way to do this.
+(DEFMETHOD (FED :DRAW-LABEL) (SPEC LEFT TOP RIGHT BOTTOM &AUX OLD-X OLD-Y OLD-FONT)
+  SPEC RIGHT
   (BIND (LOCF (TV:SHEET-BOTTOM-MARGIN-SIZE SELF)) 0)
   (BIND (LOCF (TV:SHEET-LINE-HEIGHT SELF)) 0)
   (MULTIPLE-VALUE (OLD-X OLD-Y) TV:(SHEET-READ-CURSORPOS SELF))
   (SETQ OLD-FONT TV:CURRENT-FONT)
   (UNWIND-PROTECT
     (PROGN
-      (BIND (LOCF TV:(SHEET-LINE-HEIGHT SELF)) (FUNCALL SELF ':LABEL-HEIGHT))
+      (BIND (LOCF TV:(SHEET-LINE-HEIGHT SELF)) (- TOP BOTTOM))
       (AND CURRENT-FONT
 	   (BIND (LOCF TV:(SHEET-BASELINE SELF))
 		 (MAX TV:BASELINE (FD-BASELINE (FONT-GET-FD CURRENT-FONT)))))
-      ;; Gross crock, which was in here before but didn't work.  Display the label
-      ;; not where we're told to, but in the bottom however much of the window as
-      ;; we need.
-      (TV:SHEET-SET-CURSORPOS SELF X TV:(- (SHEET-INSIDE-BOTTOM SELF)
-					   (SHEET-LINE-HEIGHT SELF)
-					   2))
-      (TV:SHEET-CLEAR-EOL SELF)
-      ;; Now display which font and which character we are editing.
+      (TV:SHEET-SET-CURSORPOS SELF LEFT TOP)
       TV:(SHEET-SET-FONT SELF (SCREEN-DEFAULT-FONT (SHEET-GET-SCREEN SELF)))
       (TV:SHEET-STRING-OUT SELF "Font: ")
       (TV:SHEET-STRING-OUT SELF (GET-PNAME CURRENT-FONT))
@@ -609,7 +672,7 @@ Uses its grid for displaying the character being edited."))
 	     PROMPT-LINE-USED NIL)
        (SETQ NUMERIC-ARG 1 NUMERIC-ARG-P NIL)
     ARG
-       (SETQ COMMAND-CHAR (FUNCALL-SELF ':TYI)
+       (SETQ COMMAND-CHAR (FUNCALL-SELF ':ANY-TYI)
 	     COMMAND (COMMAND-LOOKUP COMMAND-CHAR))
        (COND ((EQ COMMAND 'COM-NUMBER)
 	      (SETQ NUMERIC-ARG (+ (IF NUMERIC-ARG-P (* NUMERIC-ARG 10.) 0)
@@ -650,7 +713,8 @@ Uses its grid for displaying the character being edited."))
 		     #/D COM-DISPLAY-FONT
 		     #/V COM-SET-SAMPLE
 		     #/ COM-REFLECT
-		     #/Š COM-ROTATE-CHARACTER-RIGHT
+		     #/
+ COM-ROTATE-CHARACTER-RIGHT
 		     #/R COM-READ-FILE
 		     #/W COM-WRITE-FILE
 		     #/. COM-COMPLEMENT-SQUARE
@@ -659,10 +723,18 @@ Uses its grid for displaying the character being edited."))
 		     ))
 
 (DEFVAR MENU-COMMAND-ALIST)
-(SETQ MENU-COMMAND-ALIST '(("Erase" . COM-ERASE-ALL)
-			   ("Home" . COM-HOME)
-			   ("Save" . COM-SAVE-CHARACTER)
-			   ("Draw line" . COM-MOUSE-DRAW-LINE)))
+(SETQ MENU-COMMAND-ALIST '(("Erase All" :VALUE COM-ERASE-ALL
+			    :DOCUMENTATION "Clear all dots and reset character width.")
+			   ("Home" :VALUE COM-HOME
+			    :DOCUMENTATION "Move drawing so char box moves to upper left corner.")
+			   ("Move" :VALUE COM-MOUSE-SHIFT-WINDOW
+			    :DOCUMENTATION "Move drawing in window arbitrarily.")
+			   ("Save" :VALUE COM-SAVE-CHARACTER
+			    :DOCUMENTATION "Make edits to this character permanent.")
+			   ("Draw Line" :VALUE COM-MOUSE-DRAW-LINE
+			    :DOCUMENTATION "Click on two points; draws line between them.")
+			   ("Draw Spline" :VALUE COM-MOUSE-DRAW-SPLINE
+			    :DOCUMENTATION "Click on points; draws spline thru them.")))
 
 (DEFVAR COMMAND-TABLE)
 (DEFVAR MOUSE-COMMAND-TABLE)
@@ -671,7 +743,7 @@ Uses its grid for displaying the character being edited."))
 (DEFUN COMMAND-LOOKUP (CHAR)
   (COND ((LISTP CHAR)
 	 (SELECTQ (CAR CHAR)
-	   (:MENU (CDADR CHAR))
+	   (:MENU (CADDR (CADR CHAR)))
 	   (REDISPLAY 'FALSE)))			;Noop command to cause redisplay
 	((LDB-TEST %%KBD-MOUSE CHAR)
 	 (AREF MOUSE-COMMAND-TABLE (LDB %%KBD-MOUSE-BUTTON CHAR)
@@ -703,7 +775,8 @@ S - Store back edited character   E - Erase all dots
 R - Read file   W - Write KST file
 R - Read QFASL file	W - Write QFASL file
 P - set font Parameters   M - Merge in character
- - reflect character   Š - rotate character
+ - reflect character   
+ - rotate character
 [, ], \, // - move non-mouse cursor
 . - complement dot under non-mouse cursor
 , , ,  - move window   H - move window to Home
@@ -726,8 +799,8 @@ D - Display entire font   V - set sample string
   (IF (NOT CURSOR-ON)
       (BARF)
       (SETQ X (+ WINDOW-X-POS CURSOR-X) Y (+ WINDOW-Y-POS CURSOR-Y))
-      (SETQ OLD-INTEN (PLANE-AR-N PLANE X Y))
-      (PLANE-AS-N (IF (ZEROP OLD-INTEN) 1 0) PLANE X Y)
+      (SETQ OLD-INTEN (PLANE-AREF PLANE X Y))
+      (PLANE-ASET (IF (ZEROP OLD-INTEN) 1 0) PLANE X Y)
       (FUNCALL-SELF ':MUST-REDISPLAY REDISPLAY-ONE X Y)))
 
 (DEFUN COM-ERASE-ALL ()
@@ -766,32 +839,48 @@ D - Display entire font   V - set sample string
   (SETQ DY (* DISTANCE (OR (CADR (ASSQ ARROW '((#/ 1) (#/ -1)))) 0)))
   (FUNCALL-SELF ':SET-OFFSET (+ WINDOW-X-POS DX) (+ WINDOW-Y-POS DY)))
 
+(DEFUN COM-MOUSE-SHIFT-WINDOW (&AUX OX OY X Y)
+  (PROG ()
+	(PROMPT-LINE "Select point, and another point to move it to, with left button")
+	(SETF (VALUES OX OY) (FUNCALL-SELF ':MOUSE-SELECT-POINT))
+	(OR OX (RETURN (BARF "Aborted")))
+	(FUNCALL-SELF ':GRAY-POINT OX OY)
+	(SETF (VALUES X Y) (FUNCALL-SELF ':MOUSE-SELECT-POINT))
+	(FUNCALL-SELF ':GRAY-POINT OX OY)
+	(OR X (RETURN (BARF "Aborted")))
+	(FUNCALL-SELF ':SET-OFFSET
+		      (- WINDOW-X-POS (- X OX))
+		      (- WINDOW-Y-POS (- Y OY)))
+	(FUNCALL PROMPT-WINDOW ':CLEAR-SCREEN)))
+
 ;Set the box-size (in both X and Y) of the fed-window to SCALE.
-;We try to keep the center of the window in the center.
+;We try to keep the center of the window in the center.  [Sure we do]
 (DEFUN COM-SCALE ()
   (LET ((SCALE (IF NUMERIC-ARG-P NUMERIC-ARG 14)))
-    (IF (AND (> SCALE 0)
-	     (< SCALE (// (TV:SHEET-INSIDE-WIDTH SELF) 2))
-	     (< SCALE (// (TV:SHEET-INSIDE-HEIGHT SELF) 2)))
-	(SETQ BOX-X-SIZE SCALE BOX-Y-SIZE SCALE
-	      REDISPLAY-DEGREE REDISPLAY-ALL)
-	(BARF "Bad scale: ~D" SCALE))))
-
+    (COND ((AND (> SCALE 0)
+		(< SCALE (// (TV:SHEET-INSIDE-WIDTH SELF) 2))
+		(< SCALE (// (TV:SHEET-INSIDE-HEIGHT SELF) 2)))
+	   (SETQ BOX-X-SIZE SCALE BOX-Y-SIZE SCALE
+		 REDISPLAY-DEGREE REDISPLAY-ALL)
+	   (FUNCALL FED-WINDOW ':CHANGE-OF-SIZE-OR-MARGINS))
+	  ((BARF "Bad scale: ~D" SCALE)))))
 
 ;Read the name of a font and select it.
-(DEFUN COM-SPECIFY-FONT (&AUX NEW-FONT TEM)
+(DEFUN COM-SPECIFY-FONT (&AUX NEW-FONT TEM PLIST)
   (SETQ TEM (PROMPT-LINE-READLINE "Font: "))
   (IF (ZEROP (STRING-LENGTH TEM))
       (BARF)
       (SETQ TEM (STRING-UPCASE (STRING-TRIM '(#\SP) TEM))
 	    NEW-FONT (INTERN TEM "FONTS"))
       (AND (COND ((BOUNDP NEW-FONT))			;Font already exists
-		 ((AND (FILE-EXISTS-P (SETQ TEM (STRING-APPEND "LMFONT; " TEM " QFASL")))
+		 ((AND (PROBEF (SETQ TEM (STRING-APPEND "LMFONT; " TEM " QFASL")))
 		       (PROMPT-LINE-Y-OR-N-P "Load ~A? " TEM))
 		  (LOAD TEM "FONTS"))
 		 ((PROMPT-LINE-Y-OR-N-P "~A does not exist, create it? " NEW-FONT)))
 	   (FONT-GET-FD (SETQ CURRENT-CHARACTER NIL CURRENT-FONT NEW-FONT))))
   (COND ((AND NEW-FONT (BOUNDP NEW-FONT))
+	 (FUNCALL-SELF ':REDEFINE-MARGINS (LOCF PLIST))
+;	 (print (funcall-self ':any-tyi))
 	 (COM-DISPLAY-FONT)
 	 (SETQ REDISPLAY-DEGREE REDISPLAY-ALL))))
 
@@ -817,6 +906,7 @@ D - Display entire font   V - set sample string
   (SETQ CHAR-BOX-Y1 (- CHAR-BOX-Y2 (FD-BASELINE FD))
 	CHAR-BOX-Y3 (+ CHAR-BOX-Y1 (FD-LINE-SPACING FD)))
   (FUNCALL TV:TYPEOUT-WINDOW ':MAKE-COMPLETE)
+  (LET (FOO) (FUNCALL-SELF ':REDEFINE-MARGINS (LOCF FOO)))
   (SETQ REDISPLAY-DEGREE REDISPLAY-ALL))
 
 (DEFUN READ-DEFAULTED-FONT-PARAMETER (NAME CURRENT-VALUE &OPTIONAL (STREAM T))
@@ -831,7 +921,9 @@ D - Display entire font   V - set sample string
 					  (SELECTQ (CHAR-UPCASE COMMAND-CHAR)
 					    (#/R "KST")
 					    (#/R "QFASL")
-					    (#/R "AL"))))
+					    (#/R "AC")
+					    (#/R "AL")
+					    (#/R "AST"))))
   (OR CURRENT-FONT
       (SETQ CURRENT-FONT (INTERN (FUNCALL FILENAME ':NAME) "FONTS")))
   (SELECTQ (CHAR-UPCASE COMMAND-CHAR)
@@ -839,45 +931,75 @@ D - Display entire font   V - set sample string
      (SETQ FD (READ-KST-INTO-FONT-DESCRIPTOR FILENAME CURRENT-FONT))
      (PUTPROP CURRENT-FONT FILENAME 'KST-FILE)
      (FONT-NAME-SET-FONT-AND-DESCRIPTOR CURRENT-FONT FD))
+    (#/R	;Super R.  Isnt this command interface wonderful?
+     (SETQ FD (READ-AST-INTO-FONT-DESCRIPTOR FILENAME CURRENT-FONT))
+     (PUTPROP CURRENT-FONT FILENAME 'AST-FILE)
+     (FONT-NAME-SET-FONT-AND-DESCRIPTOR CURRENT-FONT FD))
     (#/R
      (LOAD FILENAME))
-    (#/R
-     (READ-AL-INTO-FONT FILENAME CURRENT-FONT))))
+    (#/R
+     (READ-AC-FONT FILENAME CURRENT-FONT))
+    (#/R
+     (READ-AL-INTO-FONT FILENAME CURRENT-FONT)))
+  (LET (FOO) (FUNCALL-SELF ':REDEFINE-MARGINS (LOCF FOO))))
 
 (DEFUN COM-WRITE-FILE (&AUX FILENAME)
   (SETQ FILENAME (READ-DEFAULTED-FILENAME CURRENT-FONT "Write"
 					  (SELECTQ (CHAR-UPCASE COMMAND-CHAR)
 					    (#/W "KST")
-					    (#/W "QFASL"))))
+					    (#/W "QFASL")
+					    (#/W "AC")
+					    (#/W "AST"))))
   (SELECTQ (CHAR-UPCASE COMMAND-CHAR)
     (#/W
      (WRITE-FONT-INTO-KST CURRENT-FONT FILENAME)
      (PUTPROP CURRENT-FONT FILENAME 'KST-FILE))
+    (#/W		;Super W.
+     (WRITE-FONT-INTO-AST CURRENT-FONT FILENAME)
+     (PUTPROP CURRENT-FONT FILENAME 'AST-FILE))
     (#/W
-     (COMPILER:FASD-SYMBOL-VALUE FILENAME CURRENT-FONT))))
+     (COMPILER:FASD-SYMBOL-VALUE FILENAME CURRENT-FONT))
+    (#/W
+     (WRITE-AC-FONT FILENAME CURRENT-FONT))))
 
 ;Returns a filename object which is the user's typein merged with the default
 ;for the font.
-(DEFUN READ-DEFAULTED-FILENAME (FONT OPERATION FN2 &AUX TEM TEM1 SPEC)
-  (SETQ TEM (STRING-APPEND "LMFONT;"
-			   (IF (< (STRING-LENGTH FONT) 7) (STRING FONT) (SUBSTRING FONT 0 6))
-			   #\SP FN2))
-  (AND (STRING-EQUAL FN2 "KST") (SETQ TEM1 (GET FONT 'KST-FILE))
-       (SETQ TEM (FS:FILE-MERGE-PATHNAMES TEM1 TEM)))
-  (SETQ SPEC (PROMPT-LINE-READLINE "~A ~A file: (default ~A) " OPERATION FN2 TEM))
-  (FS:FILE-MERGE-PATHNAMES SPEC TEM))
+(DEFVAR PATHNAME-DEFAULTS)
+
+(DEFUN PATHNAME-DEFAULTS ()
+  ;; First time, make the defaults with default directory LMFONT.
+  (COND ((NOT (BOUNDP 'PATHNAME-DEFAULTS))
+	 (SETQ PATHNAME-DEFAULTS (FS:MAKE-PATHNAME-DEFAULTS))
+	 (FS:SET-DEFAULT-PATHNAME (FS:MAKE-PATHNAME ':HOST FS:USER-LOGIN-MACHINE
+						    ':DIRECTORY "LMFONT")
+				  PATHNAME-DEFAULTS)))
+  PATHNAME-DEFAULTS)
+
+(DEFUN READ-DEFAULTED-FILENAME (FONT OPERATION TYPE &AUX TEM TEM1 SPEC)
+  (SETQ TEM (FS:MAKE-PATHNAME ':DEFAULTS (PATHNAME-DEFAULTS)
+			      ':NAME (STRING FONT)
+			      ':TYPE TYPE))
+  (IF (AND (STRING-EQUAL TYPE "KST") (SETQ TEM1 (GET FONT 'KST-FILE)))
+      (SETQ TEM (FS:MERGE-PATHNAME-DEFAULTS TEM1 TEM))
+      (SETQ TEM (FS:MERGE-PATHNAME-DEFAULTS TEM PATHNAME-DEFAULTS)))
+  (SETQ SPEC (PROMPT-LINE-READLINE "~A ~A file: (default ~A) " OPERATION TYPE TEM))
+  (SETQ TEM (FS:MERGE-PATHNAME-DEFAULTS SPEC TEM TYPE))
+  (FS:SET-DEFAULT-PATHNAME TEM PATHNAME-DEFAULTS)
+  TEM)
 
 ;C => Read the name of a character and select it in the current font.
 ;C-C => Read name of character and select it, keeping data in fed-buffer
 ;instead of gobbling the current definition of the new character.
 ;Typing a control or mouse character as the arg to the C command aborts it.
 (DEFUN COM-SPECIFY-CHARACTER (&AUX CH)
-  (SETQ CH (PROMPT-LINE-TYI "Character: "))
-  (COND ((= CH (LOGAND 177 CH))
-	 (SETQ CURRENT-CHARACTER CH)
-	 (AND (NOT (LDB-TEST %%KBD-CONTROL COMMAND-CHAR))
-	      (GOBBLE-CHARACTER CURRENT-FONT CURRENT-CHARACTER)))
-	(T (BARF "Aborted"))))
+  (COND (NUMERIC-ARG-P
+	 (SETQ CH 0)
+	 (SETQ CURRENT-CHARACTER NUMERIC-ARG))
+	(T (SETQ CH (PROMPT-LINE-TYI "Character: "))
+	   (SETQ CURRENT-CHARACTER CH)))
+  (COND ((> CH 400) (BARF "Aborted"))
+	((NOT (LDB-TEST %%KBD-CONTROL COMMAND-CHAR))
+	 (GOBBLE-CHARACTER CURRENT-FONT CURRENT-CHARACTER))))
 
 ;Copy the data from character CHAR in font FONT
 ;into the fed window to be edited.
@@ -885,13 +1007,13 @@ D - Display entire font   V - set sample string
   ;; If we have no FD format array for this font, make one.
   (SETQ FD (FONT-GET-FD FONT))
   ;; Get the character descriptor for the desired character out of the FD.
-  (IF (NOT (AND (SETQ CD (AREF FD CHAR))
-		(NOT (ZEROP (ARRAY-DIMENSION-N 2 CD)))))
+  (IF (NOT (AND (< CHAR (ARRAY-LENGTH FD))
+		(SETQ CD (AREF FD CHAR))))
       (FUNCALL-SELF ':ERASE-ALL)
-      (SETQ PLANE (MAKE-PLANE ART-4B 2 0 10))
+      (SETQ PLANE (MAKE-PLANE 2 ':TYPE ART-4B ':DEFAULT-VALUE 0 ':EXTENSION 10))
       ;; Put sides of character frame at right place, according to char width and left kern.
       (SETQ CHAR-BOX-X1 (CD-CHAR-LEFT-KERN CD)
-	    CHAR-BOX-X2 (+ (CD-CHAR-WIDTH CD) (CD-CHAR-LEFT-KERN CD)))
+	    CHAR-BOX-X2 (+ (FIXR (CD-CHAR-WIDTH CD)) (CD-CHAR-LEFT-KERN CD)))
       ;; Put top of character at top of font line, and bottom at baseline
       ;; so that descenders go below the "bottom".
       (SETQ CHAR-BOX-Y1 0
@@ -903,30 +1025,38 @@ D - Display entire font   V - set sample string
 	    (YWIDTH (FIRST (ARRAY-DIMENSIONS CD))))
 	(DO I 0 (1+ I) (= I XWIDTH)
 	    (DO J 0 (1+ J) (= J YWIDTH)
-		(PLANE-AS-N (AREF CD J I) PLANE I J))))
+		(PLANE-ASET (AREF CD J I) PLANE I J))))
       ;; Now put the window at home position, causing a full redisplay.
       (FUNCALL-SELF ':HOME-BOX)))
 
 ;M => Read the name of a character and merge it into the data already there. 
-;Typing a control or mouse character as the arg to the C command aborts it.
-(DEFUN COM-MERGE-CHARACTER (&AUX CH FONT)
-  (SETQ FONT (IF (LDB-TEST %%KBD-CONTROL-META COMMAND-CHAR)
+;Control asks for a font, Meta asks for a scale
+;Typing a control or mouse character as the arg to the M command aborts it.
+(DEFUN COM-MERGE-CHARACTER (&AUX CH FONT NUM DENOM)
+  (SETQ FONT (IF (LDB-TEST %%KBD-CONTROL COMMAND-CHAR)
 		 (INTERN
 		   (STRING-UPCASE (PROMPT-LINE-READLINE "Font to merge character from: "))
 		   "FONTS")
 		 CURRENT-FONT))
-  (SETQ CH (PROMPT-LINE-TYI "Character to merge: "))
-  (IF (= CH (LOGAND 177 CH))
-      (MERGE-CHARACTER FONT CH)
-      (BARF "Aborted")))
+  (COND (NUMERIC-ARG-P
+	 (SETQ CH NUMERIC-ARG))
+	(T (SETQ CH (PROMPT-LINE-TYI "Character to merge: "))))
+  (COND ((> CH 400)
+	 (BARF "Aborted"))
+	((LDB-TEST %%KBD-META COMMAND-CHAR)
+	 (LET ((IBASE 10.))
+	   (SETQ NUM (PROMPT-LINE-READ "Scale numerator: "))
+	   (SETQ DENOM (PROMPT-LINE-READ "Scale denominator: ")))
+	 (MERGE-CHARACTER-SCALED FONT CH NUM DENOM))
+	(T (MERGE-CHARACTER FONT CH))))
 
 (DEFUN MERGE-CHARACTER (FONT CHAR &AUX FD CD)
   (LET ((XOFFS (+ CURSOR-X WINDOW-X-POS)) (YOFFS (+ CURSOR-Y WINDOW-Y-POS)))
     ;; If we have no FD format array for this font, make one.
     (SETQ FD (FONT-GET-FD FONT))
     ;; Get the character descriptor for the desired character out of the FD.
-    (COND ((AND (SETQ CD (AREF FD CHAR))
-             (NOT (ZEROP (ARRAY-DIMENSION-N 2 CD))))
+    (COND ((AND (< CHAR (ARRAY-LENGTH FD))
+		(SETQ CD (AREF FD CHAR)))
 	   (SETQ XOFFS (+ (- XOFFS (CD-CHAR-LEFT-KERN CD)) CHAR-BOX-X1))
 	   ;; Now XWIDTH and YWIDTH get the size of the character's raster,
 	   ;; and copy the data into the plane in PLANE.
@@ -934,9 +1064,39 @@ D - Display entire font   V - set sample string
 		 (YEND (+ YOFFS (FIRST (ARRAY-DIMENSIONS CD)))))
 	     (DO I XOFFS (1+ I) (= I XEND)
 		 (DO J YOFFS (1+ J) (= J YEND)
-		     (PLANE-AS-N (LOGIOR (PLANE-AR-N PLANE I J)
+		     (PLANE-ASET (LOGIOR (PLANE-AREF PLANE I J)
 					 (AREF CD (- J YOFFS) (- I XOFFS)))
 				 PLANE I J)))
+	     (FUNCALL-SELF ':MUST-REDISPLAY REDISPLAY-SOME XOFFS YOFFS XEND YEND))))))
+
+(DEFUN MERGE-CHARACTER-SCALED (FONT CHAR NUM DENOM &AUX FD CD)
+  (LET ((XOFFS (+ CURSOR-X WINDOW-X-POS)) (YOFFS (+ CURSOR-Y WINDOW-Y-POS)))
+    ;; If we have no FD format array for this font, make one.
+    (SETQ FD (FONT-GET-FD FONT))
+    ;; Get the character descriptor for the desired character out of the FD.
+    (COND ((AND (< CHAR (ARRAY-LENGTH FD))
+		(SETQ CD (AREF FD CHAR)))
+	   (SETQ XOFFS (+ (- XOFFS (CD-CHAR-LEFT-KERN CD)) CHAR-BOX-X1))
+	   ;; Now XWIDTH and YWIDTH get the size of the character's raster,
+	   ;; and copy the data into the plane in PLANE.
+	   (LET ((XEND (+ XOFFS (// (* (ARRAY-DIMENSION-N 2 CD) NUM) DENOM)))
+		 (YEND (+ YOFFS (// (* (ARRAY-DIMENSION-N 1 CD) NUM) DENOM)))
+		 (BIG (MAKE-ARRAY NIL 'ART-1B (LIST (* (ARRAY-DIMENSION-N 2 CD) NUM)
+						    (* (ARRAY-DIMENSION-N 1 CD) NUM)))))
+	     (DO I (1- (ARRAY-DIMENSION-N 2 CD)) (1- I) (MINUSP I)
+	       (DO J (1- (ARRAY-DIMENSION-N 1 CD)) (1- J) (MINUSP J)
+		 (IF (NOT (ZEROP (AREF CD J I)))
+		     (DO M 0 (1+ M) (= M NUM)
+		       (DO N 0 (1+ N) (= N NUM)
+			 (ASET 1 BIG (+ (* I NUM) M) (+ (* J NUM) N)))))))
+	     (DO I XOFFS (1+ I) (= I XEND)
+	       (DO J YOFFS (1+ J) (= J YEND)
+		 (IF (> (LOOP FOR X FROM (* (- I XOFFS) DENOM) BELOW (* (- I XOFFS -1) DENOM)
+			      SUMMING (LOOP FOR Y FROM (* (- J YOFFS) DENOM)
+						  BELOW (* (- J YOFFS -1) DENOM)
+					    COUNT (NOT (ZEROP (AREF BIG X Y)))))
+			(// (* DENOM DENOM) 2))
+		     (PLANE-ASET 1 PLANE I J))))
 	     (FUNCALL-SELF ':MUST-REDISPLAY REDISPLAY-SOME XOFFS YOFFS XEND YEND))))))
 
 (DEFUN COM-REFLECT (&AUX AXIS)
@@ -946,7 +1106,7 @@ D - Display entire font   V - set sample string
       (REFLECT-CHARACTER AXIS)))
 
 (DEFUN REFLECT-CHARACTER (AXIS &AUX NEW-CHAR ORIGINS EXTENTS)
-  (SETQ NEW-CHAR (MAKE-PLANE ART-4B 2 0 10))
+  (SETQ NEW-CHAR (MAKE-PLANE 2 ':TYPE ART-4B ':DEFAULT-VALUE 0 ':EXTENSION 10))
   (SETQ ORIGINS (PLANE-ORIGIN PLANE))
   (SETQ EXTENTS (ARRAY-DIMENSIONS PLANE))
   (DO ((HPOS (FIRST ORIGINS) (1+ HPOS))
@@ -973,13 +1133,13 @@ D - Display entire font   V - set sample string
 		     (- (+ CHAR-BOX-X1 CHAR-BOX-X2 -1) HPOS))
 	       (PSETQ NEWHPOS (+ CHAR-BOX-X1 (- NEWVPOS CHAR-BOX-Y1))
 		      NEWVPOS (+ CHAR-BOX-Y1 (- NEWHPOS CHAR-BOX-X1)))))
-	(PLANE-AS-N (PLANE-AR-N PLANE HPOS VPOS)
+	(PLANE-ASET (PLANE-AREF PLANE HPOS VPOS)
 		    NEW-CHAR NEWHPOS NEWVPOS))))
   (SETQ PLANE NEW-CHAR)
   (SETQ REDISPLAY-DEGREE REDISPLAY-ALL))
 
 (DEFUN COM-ROTATE-CHARACTER-RIGHT (&AUX NEW-CHAR ORIGINS EXTENTS)
-  (SETQ NEW-CHAR (MAKE-PLANE ART-4B 2 0 10))
+  (SETQ NEW-CHAR (MAKE-PLANE 2 ':TYPE ART-4B ':DEFAULT-VALUE 0 ':EXTENSION 10))
   (SETQ ORIGINS (PLANE-ORIGIN PLANE))
   (SETQ EXTENTS (ARRAY-DIMENSIONS PLANE))
   (DO ((HPOS (FIRST ORIGINS) (1+ HPOS))
@@ -990,7 +1150,7 @@ D - Display entire font   V - set sample string
 	(( VPOS VEND))
       (LET ((NEWVPOS (+ CHAR-BOX-Y1 (- HPOS CHAR-BOX-X1)))
 	    (NEWHPOS (- CHAR-BOX-X2 1 (- VPOS CHAR-BOX-Y1))))
-	(PLANE-AS-N (PLANE-AR-N PLANE HPOS VPOS)
+	(PLANE-ASET (PLANE-AREF PLANE HPOS VPOS)
 		    NEW-CHAR NEWHPOS NEWVPOS))))
   (SETQ PLANE NEW-CHAR)
   (SETQ REDISPLAY-DEGREE REDISPLAY-ALL))
@@ -1061,7 +1221,7 @@ Dots above character top will be lost.  Store anyway? ")
     (SETQ KERN (- CHAR-BOX-X1 (+ XSTART PLANE-X1)))
     ;; Copy the data in the FED buffer into a CD
     (SETQ CD (MAKE-CHAR-DESCRIPTOR
-                      MAKE-ARRAY (NIL ART-4B (LIST YWIDTH XWIDTH))
+                      :MAKE-ARRAY (:TYPE 'ART-4B :DIMENSIONS (LIST YWIDTH XWIDTH))
                       CD-CHAR-WIDTH (- CHAR-BOX-X2 CHAR-BOX-X1)
                       CD-CHAR-LEFT-KERN KERN))
     (DO I 0 (1+ I) (= I XWIDTH)
@@ -1073,6 +1233,8 @@ Dots above character top will be lost.  Store anyway? ")
            (FONT-NAME-STORE-CD FONT CD CHAR))
           (T
            ;; Store the CD in the FD.
+	   (AND (>= CHAR (ARRAY-LENGTH FD))
+		(ADJUST-ARRAY-SIZE FD (1+ CHAR)))
            (AS-1 CD FD CHAR)
            (AND (= CHAR #\SP)
                 (SETF (FD-SPACE-WIDTH FD) (CD-CHAR-WIDTH CD)))))))
@@ -1084,61 +1246,89 @@ Dots above character top will be lost.  Store anyway? ")
 				   (CLEAR-FIRST-P T))
   (OR FONT (SETQ FONT (AND (BOUNDP CURRENT-FONT) (SYMEVAL CURRENT-FONT))))
   (IF FONT
-      (LET ((NAME (FONT-NAME FONT))
-	    (DF (TV:SCREEN-DEFAULT-FONT (TV:SHEET-GET-SCREEN WINDOW))))
+      (LET* ((NAME (FONT-NAME FONT))
+	     (FD (FONT-GET-FD NAME))
+	     (DF (TV:SCREEN-DEFAULT-FONT (TV:SHEET-GET-SCREEN WINDOW))))
 	(AND CLEAR-FIRST-P (FUNCALL WINDOW ':CLEAR-SCREEN))
 	(FORMAT WINDOW "~2&Font ~A:~%" NAME)
-	(DO ((CH 0) (OCH)) ((= CH 128.))
+	(DO ((CH 0) (OCH) (LEN (ARRAY-LENGTH FD))) ((= CH LEN))
 	  (TV:SHEET-CRLF WINDOW)
-	  (SETQ OCH CH)
-	  ;; Output one line of chars in the default font,
-	  ;; spaced so that they lie above the corresponding chars in the next line.
-	  ;; Stop at margin, or when we reach a char code that's a multiple of 32.
-	  (DO ()
-	      ((> (+ (TV:SHEET-CURSOR-X WINDOW) (FONT-CHARACTER-WIDTH FONT CH))
-		  (TV:SHEET-INSIDE-RIGHT WINDOW)))
-	    (COND ((OR (AND (AREF (FONT-GET-FD NAME) CH)
-			    (NOT (ZEROP (FONT-CHARACTER-WIDTH FONT CH))))
-		       (EQ CH CHARACTER))
-		   (TV:SHEET-TYO WINDOW CH)
-		   (TV:SHEET-INCREMENT-BITPOS WINDOW (- (MAX (FONT-CHARACTER-WIDTH FONT CH)
-							     (FONT-CHARACTER-WIDTH DF CH))
+	  ;; If there is not room for a line in the default font
+	  ;; followed by a line in the font being edited
+	  ;; before we would need to **more**,
+	  ;; then **more** right now, and go to top of window afterward.
+	  (COND ((TV:PREPARE-SHEET (WINDOW)
+		   (> (+ (TV:SHEET-CURSOR-Y WINDOW)
+			 (TV:SHEET-LINE-HEIGHT WINDOW)
+			 (FONT-CHAR-HEIGHT FONT))
+		      (- (TV:SHEET-INSIDE-BOTTOM WINDOW)
+			 (TV:SHEET-LINE-HEIGHT WINDOW))))
+		 (SETF (TV:SHEET-MORE-FLAG WINDOW) 1)
+		 (TV:SHEET-HANDLE-EXCEPTIONS WINDOW)
+		 (SETF (TV:SHEET-END-PAGE-FLAG WINDOW) 1)))
+	  (TV:PREPARE-SHEET (WINDOW)
+	    (SETQ OCH CH)
+	    ;; Output one line of chars in the default font,
+	    ;; spaced so that they lie above the corresponding chars in the next line.
+	    ;; Stop at margin, or when we reach a char code that's a multiple of 32.
+	    (DO ()
+		((> (+ (TV:SHEET-CURSOR-X WINDOW)
+		       (MAX (FED-CHAR-DISPLAY-WIDTH FD CH)
+			    (FONT-CHARACTER-WIDTH DF CH)))
+		    (TV:SHEET-INSIDE-RIGHT WINDOW)))
+	      (COND ((OR (AREF FD CH)
+			 (EQ CH CHARACTER))
+		     (TV:SHEET-TYO WINDOW CH)
+		     (TV:SHEET-INCREMENT-BITPOS WINDOW
+						(- (MAX (FED-CHAR-DISPLAY-WIDTH FD CH)
 							(FONT-CHARACTER-WIDTH DF CH))
-					      0)))
-	    (SETQ CH (1+ CH))
-	    (AND (ZEROP (\ CH 32.)) (RETURN)))
-	  (TV:SHEET-CRLF WINDOW)
-	  ;; Clear out what we will move down over with SHEET-INCREMENT-BITPOS.
-	  (TV:%DRAW-RECTANGLE (TV:SHEET-INSIDE-WIDTH WINDOW)
-			      (FONT-CHAR-HEIGHT FONT)
-			      (TV:SHEET-INSIDE-LEFT WINDOW)
-			      (+ (TV:SHEET-CURSOR-Y WINDOW) (TV:SHEET-LINE-HEIGHT WINDOW))
-			      TV:ALU-ANDCA WINDOW)
-	  ;; Now output the corresponding chars in the font being edited.
-	  ;; First leave space so it won't overlap if font is taller.
-	  (TV:SHEET-INCREMENT-BITPOS WINDOW 0 (- (FONT-BASELINE FONT)
-						 (TV:SHEET-BASELINE WINDOW)))
-	  (TV:SHEET-SET-FONT WINDOW FONT)
-	  (DO ()
-	      ((> (+ (TV:SHEET-CURSOR-X WINDOW) (FONT-CHARACTER-WIDTH FONT OCH))
-		  (TV:SHEET-INSIDE-RIGHT WINDOW)))
-	    (COND ((OR (AND (AREF (FONT-GET-FD NAME) OCH)
-			    (NOT (ZEROP (FONT-CHARACTER-WIDTH FONT OCH))))
-		       (EQ CH CHARACTER))
-		   (FED-TYO WINDOW OCH CHARACTER)
-		   (TV:SHEET-INCREMENT-BITPOS WINDOW (- (MAX (FONT-CHARACTER-WIDTH FONT OCH)
-							     (FONT-CHARACTER-WIDTH DF OCH))
-							(FONT-CHARACTER-WIDTH FONT OCH))
-					      0)))
-	    (SETQ OCH (1+ OCH))
-	    (AND (ZEROP (\ OCH 32.)) (RETURN)))
-	  (TV:SHEET-SET-FONT WINDOW DF)
-	  ;; Move down, leaving space for font's descenders.
-	  (TV:SHEET-INCREMENT-BITPOS WINDOW 0 (- (FONT-CHAR-HEIGHT FONT)
-						 (- (FONT-BASELINE FONT)
-						    (TV:SHEET-BASELINE WINDOW))))
-	  (SETF (TV:SHEET-CURSOR-X WINDOW) (TV:SHEET-INSIDE-LEFT WINDOW))))
+						   (FONT-CHARACTER-WIDTH DF CH))
+						0)))
+	      (SETQ CH (1+ CH))
+	      (AND (= CH LEN) (RETURN))
+	      (AND (ZEROP (\ CH 32.)) (RETURN)))
+	    (TV:SHEET-CRLF WINDOW)
+	    ;; Clear out what we will move down over with SHEET-INCREMENT-BITPOS.
+	    (TV:%DRAW-RECTANGLE (TV:SHEET-INSIDE-WIDTH WINDOW)
+				(FONT-CHAR-HEIGHT FONT)
+				(TV:SHEET-INSIDE-LEFT WINDOW)
+				(+ (TV:SHEET-CURSOR-Y WINDOW) (TV:SHEET-LINE-HEIGHT WINDOW))
+				TV:ALU-ANDCA WINDOW)
+	    ;; Now output the corresponding chars in the font being edited.
+	    ;; First leave space so it won't overlap if font is taller.
+	    (TV:SHEET-INCREMENT-BITPOS WINDOW 0 (- (FONT-BASELINE FONT)
+						   (TV:SHEET-BASELINE WINDOW)))
+	    (TV:SHEET-SET-FONT WINDOW FONT)
+	    (DO ()
+		((> (+ (TV:SHEET-CURSOR-X WINDOW)
+		       (MAX (FED-CHAR-DISPLAY-WIDTH FD OCH)
+			    (FONT-CHARACTER-WIDTH DF OCH)))
+		    (TV:SHEET-INSIDE-RIGHT WINDOW)))
+	      (COND ((OR (AREF FD OCH)
+			 (EQ CH CHARACTER))
+		     (FED-TYO WINDOW OCH CHARACTER)
+		     (TV:SHEET-INCREMENT-BITPOS WINDOW
+						(- (MAX (FED-CHAR-DISPLAY-WIDTH FD OCH)
+							(FONT-CHARACTER-WIDTH DF OCH))
+						   (FONT-CHARACTER-WIDTH FONT OCH))
+						0)))
+	      (SETQ OCH (1+ OCH))
+	      (AND (= OCH LEN) (RETURN))
+	      (AND (ZEROP (\ OCH 32.)) (RETURN)))
+	    (TV:SHEET-SET-FONT WINDOW DF)
+	    ;; Move down, leaving space for font's descenders.
+	    (TV:SHEET-INCREMENT-BITPOS WINDOW 0 (- (FONT-CHAR-HEIGHT FONT)
+						   (- (FONT-BASELINE FONT)
+						      (TV:SHEET-BASELINE WINDOW))))
+	    (SETF (TV:SHEET-CURSOR-X WINDOW) (TV:SHEET-INSIDE-LEFT WINDOW)))))
       (BARF "No current font")))
+
+(DEFUN FED-CHAR-DISPLAY-WIDTH (FD CHAR)
+  (COND ((AND (< CHAR (ARRAY-LENGTH FD))
+	      (AREF FD CHAR))
+	 (+ 3 (ARRAY-DIMENSION-N 2 (AREF FD CHAR))
+	    (MAX 0 (- (CD-CHAR-LEFT-KERN (AREF FD CHAR))))))
+	(T 0)))
 
 ;; Return the width of a given char in a given font.
 (DEFUN FONT-CHARACTER-WIDTH (FONT CHAR)
@@ -1151,13 +1341,14 @@ Dots above character top will be lost.  Store anyway? ")
 (DEFUN FONT-GET-FD (FONT-SYMBOL &AUX FD)
   (IF (BOUNDP FONT-SYMBOL)
       (FONT-NAME-FONT-DESCRIPTOR FONT-SYMBOL)
-      (SETQ FD (MAKE-FONT-DESCRIPTOR FD-LINE-SPACING 14
+      (SETQ FD (MAKE-FONT-DESCRIPTOR MAKE-ARRAY (:LENGTH 200)
+				     FD-LINE-SPACING 14
 				     FD-BASELINE 11
 				     FD-BLINKER-HEIGHT 14
 				     FD-BLINKER-WIDTH 7
 				     FD-SPACE-WIDTH 7))
       (ASET (MAKE-CHAR-DESCRIPTOR
-	      MAKE-ARRAY (NIL ART-4B '(11 7))
+	      :MAKE-ARRAY (:TYPE 'ART-4B :DIMENSIONS '(11 7))
 	      CD-CHAR-WIDTH 7
 	      CD-CHAR-LEFT-KERN 0)
 	    FD #\SP)
@@ -1184,12 +1375,13 @@ Dots above character top will be lost.  Store anyway? ")
 	    ;; Last+1 vertical idx to print from in plane.
 	    (PLANE-BOTTOM (MIN (SECOND (ARRAY-DIMENSIONS PLANE))
 			       (- CHAR-BOX-Y3 (SECOND (PLANE-ORIGIN PLANE))))))
-	(DOTIMES (HPOS PLANE-WIDTH)
-	  (DO ((VPOS PLANE-TOP (1+ VPOS)))
-	      ((>= VPOS PLANE-BOTTOM))
-	    (OR (ZEROP (AREF PLANE HPOS VPOS))
-		(%DRAW-RECTANGLE 1 1 (+ HPOS LEFT) (+ VPOS TOP) TV:ALU-IOR SHEET))))
-	(TV:SHEET-INCREMENT-BITPOS SHEET (- CHAR-BOX-X2 CHAR-BOX-X1) 0))))
+	(TV:PREPARE-SHEET (SHEET)
+	  (DOTIMES (HPOS PLANE-WIDTH)
+	    (DO ((VPOS PLANE-TOP (1+ VPOS)))
+		((>= VPOS PLANE-BOTTOM))
+	      (OR (ZEROP (AREF PLANE HPOS VPOS))
+		  (%DRAW-RECTANGLE 1 1 (+ HPOS LEFT) (+ VPOS TOP) TV:ALU-IOR SHEET))))
+	  (TV:SHEET-INCREMENT-BITPOS SHEET (- CHAR-BOX-X2 CHAR-BOX-X1) 0)))))
 
 (DEFUN COM-MOUSE-DRAW ()
   (SETQ CURSOR-ON NIL)
@@ -1200,7 +1392,7 @@ Dots above character top will be lost.  Store anyway? ")
   (FUNCALL-SELF ':MOUSE-MOVE-CHAR-BOX))
 
 (DEFUN COM-MOUSE-DRAW-LINE (&AUX X0 Y0 X1 Y1)
-  (PROMPT-LINE "Select end points with mouse")
+  (PROMPT-LINE "Select end points with left mouse button")
   (PROG ABORT ()
     (MULTIPLE-VALUE (X0 Y0) (FUNCALL-SELF ':MOUSE-SELECT-POINT))
     (OR X0 (RETURN-FROM ABORT (BARF "Aborted")))
@@ -1209,30 +1401,32 @@ Dots above character top will be lost.  Store anyway? ")
     (OR X1 (RETURN-FROM ABORT (BARF "Aborted")))
     (FUNCALL PROMPT-WINDOW ':CLEAR-SCREEN)	;Make extraneous prompt go away
     (FUNCALL-SELF ':GRAY-POINT X0 Y0)		;Erase first point
-    (FUNCALL-SELF ':DRAW-GRID-LINE X0 Y0 X1 Y1)))
+    (FUNCALL-SELF ':DRAW-GRID-LINE X0 Y0 X1 Y1 DRAW-MODE)))
 
 (DEFVAR SPLINE-X)
 (DEFVAR SPLINE-Y)
 (DEFVAR SPLINE-CX NIL)
 (DEFVAR SPLINE-CY NIL)
-(DEFUN COM-MOUSE-DRAW-SPLINE (&AUX I)
+(DEFUN COM-MOUSE-DRAW-SPLINE (&AUX I Y)
   (COND ((NOT (BOUNDP 'SPLINE-X))
 	 (SETQ SPLINE-X (MAKE-ARRAY NIL 'ART-Q 100. NIL '(0))
 	       SPLINE-Y (MAKE-ARRAY NIL 'ART-Q 100. NIL '(0)))))
   (STORE-ARRAY-LEADER 0 SPLINE-X 0)
   (STORE-ARRAY-LEADER 0 SPLINE-Y 0)
-  (PROMPT-LINE "Select points with mouse")
-  (DO ((X) (Y)) (NIL)
+  (PROMPT-LINE "Select points with left mouse button.  Middle to abort.  Click right when done.")
+  (DO ((X)) (NIL)
     (MULTIPLE-VALUE (X Y) (FUNCALL-SELF ':MOUSE-SELECT-POINT))
     (OR X (RETURN NIL))
     (FUNCALL-SELF ':GRAY-POINT X Y)
     (ARRAY-PUSH-EXTEND SPLINE-X X)
     (ARRAY-PUSH-EXTEND SPLINE-Y Y))
-  (MULTIPLE-VALUE (SPLINE-CX SPLINE-CY I)
-    (:SPLINE SPLINE-X SPLINE-Y 10. SPLINE-CX SPLINE-CY))
   (DOTIMES (I (ARRAY-ACTIVE-LENGTH SPLINE-X))	;Erase old marks
     (FUNCALL-SELF ':GRAY-POINT (AREF SPLINE-X I) (AREF SPLINE-Y I)))
-  (FUNCALL PROMPT-WINDOW ':CLEAR-SCREEN)
-  (FUNCALL-SELF ':DRAW-CURVE SPLINE-CX SPLINE-CY I))
+  (COND ((AND Y (= (LDB %%KBD-MOUSE-BUTTON Y) 2))
+	 (MULTIPLE-VALUE (SPLINE-CX SPLINE-CY I)
+	   (TV:SPLINE SPLINE-X SPLINE-Y 10. SPLINE-CX SPLINE-CY))
+	 (FUNCALL PROMPT-WINDOW ':CLEAR-SCREEN)
+	 (FUNCALL-SELF ':DRAW-CURVE SPLINE-CX SPLINE-CY I DRAW-MODE))
+	(T (BARF "Aborted"))))
 
 (COMPILE-FLAVOR-METHODS FED)
