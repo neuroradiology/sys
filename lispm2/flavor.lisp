@@ -311,9 +311,7 @@
 		   &AUX FFL PL ALREADY-EXISTS NO-VANILLA-P INSTV)
   ;; This can happen if you get an error in a compilation and do things.
   ;; Avoid arbitrary propagation of lossage and destruction.
-  (AND (BOUNDP 'COMPILER:FASD-TEMPORARY-AREA)	  ;This gets executed during bootstraping
-       (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
-       (FERROR NIL "You are about to lose with flavor data structure in a temporary area"))
+  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
   (RECORD-SOURCE-FILE-NAME FLAVOR-NAME)
   (WITHOUT-INTERRUPTS
     (OR (MEMQ FLAVOR-NAME *ALL-FLAVOR-NAMES*)
@@ -419,6 +417,11 @@
 	       (SETQ *FLAVOR-PENDING-DEPENDS* (DELQ X *FLAVOR-PENDING-DEPENDS*))))))
     (PUTPROP FLAVOR-NAME FL 'FLAVOR)
     FLAVOR-NAME))
+
+(DEFUN FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE ()
+  (AND (BOUNDP 'COMPILER:FASD-TEMPORARY-AREA)	  ;This gets executed during bootstraping
+       (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
+       (FERROR NIL "You are about to lose with flavor data structure in a temporary area")))
 
 ;Check for typos in user-specified lists of instance variables.
 ;This assumes that only locally-specified (not inherited) instance variables
@@ -578,9 +581,7 @@
 (DEFUN FLAVOR-ADD-METHOD (FL TYPE MESSAGE METHOD-SYMBOL &AUX MTE)
   ;; This can happen if you get an error in a compilation and do things.
   ;; Avoid arbitrary propagation of lossage and destruction.
-  (AND (BOUNDP 'COMPILER:FASD-TEMPORARY-AREA)
-       (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
-       (FERROR NIL "You are about to lose with flavor data structure in a temporary area"))
+  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
   (IF (NULL (SETQ MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))))
       ;; Message not previously known about, put into table
       (PUSH (LIST* MESSAGE NIL NIL (LIST TYPE METHOD-SYMBOL) NIL)
@@ -788,8 +789,7 @@
 (DEFUN COMPOSE-FLAVOR-COMBINATION (FL &AUX FLS VARS ORDS REQS SIZE)
   ;; This can happen if you get an error in a compilation and do things.
   ;; Avoid arbitrary propagation of lossage and destruction.
-  (AND (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
-       (FERROR NIL "You are about to lose with flavor data structure in a temporary area"))
+  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
   ;; Make list of all component flavors' names.
   ;; This list is in outermost-first order.
   ;; Would be nice for this not to have to search to all levels, but for
@@ -866,8 +866,7 @@ This may cause you problems.~%"		;* This should perhaps do something about it *
 				        MSG ELEM SYMS SM FFL PL)
   ;; This can happen if you get an error in a compilation and do things.
   ;; Avoid arbitrary propagation of lossage and destruction.
-  (AND (EQ DEFAULT-CONS-AREA COMPILER:FASD-TEMPORARY-AREA)
-       (FERROR NIL "You are about to lose with flavor data structure in a temporary area"))
+  (FLAVOR-CHECK-FOR-TEMPORARY-AREA-LOSSAGE)
   ;; Look through all the flavors depended upon and collect the following:
   ;; A list of all the messages handled and all the methods for each, called MAGIC-LIST.
   ;; The default handler for unknown messages.
