@@ -803,12 +803,15 @@ inserted somewhere.  The LIST-FUN should return a private copy of the list."
     (SCROLL-PUTPROP FLAGS-PLIST OLD-STATE ':OLD-STATE)
     ITEM))
 
-(DEFUN SCROLL-MAINTAIN-LIST (INIT-FUN ITEM-FUN &OPTIONAL PER-ELT-FUN STEPPER COMPACT-P)
+(DEFUN SCROLL-MAINTAIN-LIST (INIT-FUN ITEM-FUN
+			     &OPTIONAL PER-ELT-FUN STEPPER COMPACT-P
+				       (PRE-PROC-FUN 'SCROLL-MAINTAIN-LIST-UPDATE-FUNCTION))
+									     
   "Given a function that returns a list, and a function that returns an item spec
 when given an element of that list, maintains one item for each element in the list.
 This is not useful when recursion is necessary.  Returns an item that should be
 inserted somewhere.  The LIST-FUN should return a private copy of the list."
-  (LIST (LIST ':PRE-PROCESS-FUNCTION 'SCROLL-MAINTAIN-LIST-UPDATE-FUNCTION
+  (LIST (LIST ':PRE-PROCESS-FUNCTION PRE-PROC-FUN
 	      ':FUNCTION PER-ELT-FUN
 	      ':INIT-FUNCTION INIT-FUN
 	      ':ITEM-FUNCTION ITEM-FUN

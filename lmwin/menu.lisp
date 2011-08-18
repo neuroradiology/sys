@@ -786,7 +786,8 @@ Clicking on a choice box simulates clicking on a menu item")
 (DEFFLAVOR MULTIPLE-MENU-MIXIN (SPECIAL-CHOICE-ITEMS) (MENU-HIGHLIGHTING-MIXIN)
   (:INIT-KEYWORDS :SPECIAL-CHOICES)
   (:DEFAULT-INIT-PLIST :FONT-MAP '(FONTS:MEDFNT FONTS:HL12I)
-		       :SPECIAL-CHOICES '(("Done" :EVAL (FUNCALL-SELF ':HIGHLIGHTED-VALUES))))
+		       :SPECIAL-CHOICES '(("Do It"
+					   :EVAL (FUNCALL-SELF ':HIGHLIGHTED-VALUES))))
   (:DOCUMENTATION :MIXIN "A menu in which you can select more than one choice.
  HIGHLIGHTED-ITEMS is a list of those items in the ITEM-LIST that are currently
  selected.  SPECIAL-CHOICES are those items that don't highlight when

@@ -9,7 +9,7 @@
 					; and their wait conditions.  This list structure is
 					; all in contiguous memory to decrease the size of
 					; the scheduler's working set.
-(DEFVAR ALL-PROCESSES NIL)		;A list of all processes that have not bee "killed"
+(DEFVAR ALL-PROCESSES NIL)		;A list of all processes that have not been "killed"
 (DEFVAR PROCESS-ACTIVE-LENGTH 30.)	;Initial length of ACTIVE-PROCESSES
 (DEFVAR WARM-BOOTED-PROCESS NIL)	;When you warm boot
 

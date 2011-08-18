@@ -951,17 +951,18 @@
 
   (AND (NULL PROCESS)
        (SETQ PROCESS (TV:FIND-PROCESS-IN-ERROR)))
-  (COND ((NULL PROCESS))
+  (COND ((NULL PROCESS) "cannot find a process")
 	(T
 	 ;; If arg is a window or stream, extract process from it.
-	 (OR (MEMQ (TYPEP PROCESS) '(ARRAY :STACK-GROUP SI:PROCESS))
+	 (OR (TYPEP PROCESS ':STACK-GROUP) (TYPEP PROCESS 'SI:PROCESS)
 	     (SETQ PROCESS (FUNCALL PROCESS ':PROCESS)))
 	 ;; If arg is process or was converted to one, stop it.
-	 (COND ((EQ (TYPEP PROCESS) 'SI:PROCESS)
+	 (COND ((TYPEP PROCESS 'SI:PROCESS)
 		(FUNCALL PROCESS ':ARREST-REASON CURRENT-PROCESS)
 		(SETQ ARREST-REASON CURRENT-PROCESS)
 		(SETQ SG (PROCESS-STACK-GROUP PROCESS)))
 	       (T (SETQ SG PROCESS PROCESS NIL)))
+	 (OR (TYPEP SG ':STACK-GROUP) (FERROR NIL "~S not a stack group" SG))
 	 (SETQ ORIGINAL-FRAME (SG-AP SG))
 	 (SETQ CURRENT-FRAME (SG-OUT-TO-INTERESTING-ACTIVE SG ORIGINAL-FRAME))
 	 ;; Although we get the package each time around the r-e-p loop, we must get it

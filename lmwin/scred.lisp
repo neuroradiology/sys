@@ -93,6 +93,7 @@ SHEET specifies the area within which we are allowed to act."
 				 ':VISIBILITY NIL)))
 
 ;;; Move a window around using the mouse
+;;; If MOVE-P is NIL move just an outline of it and return where it would have moved to
 (DEFUN MOUSE-SET-WINDOW-POSITION (WINDOW &OPTIONAL (MOVE-P T)
 					 &AUX (SUPERIOR (SHEET-SUPERIOR WINDOW))
 				      (X (SHEET-X WINDOW))
@@ -119,6 +120,10 @@ SHEET specifies the area within which we are allowed to act."
       (PROCESS-WAIT "Release Button" #'(LAMBDA () (ZEROP MOUSE-LAST-BUTTONS)))
       (SETQ X (- MOUSE-X XOFF)
 	    Y (- MOUSE-Y YOFF))
+      ;; If trying to move off screen, most reasonable thing to do is to
+      ;; warp it back onto the screen.
+      (SETQ X (MIN (- (SHEET-WIDTH SUPERIOR) (SHEET-WIDTH WINDOW)) X)
+	    Y (MIN (- (SHEET-HEIGHT SUPERIOR) (SHEET-HEIGHT WINDOW)) Y))
       (IF (FUNCALL WINDOW ':SET-POSITION X Y ':VERIFY)
 	  (RETURN (BLINKER-SET-VISIBILITY MOUSE-BLINKER NIL))
  	  (BEEP))))

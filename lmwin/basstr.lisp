@@ -148,7 +148,12 @@ read from the buffer."
 (DEFVAR KBD-IO-BUFFER (MAKE-IO-BUFFER 1000))	;Intermediate buffer so char is read out of
 						; hardware immediatly
 (DEFVAR KBD-ESC-HAPPENED NIL)			;An escape was typed
-
+(DEFVAR KBD-ESC-TIME NIL)	;If non-NIL, this is the time we started processing
+				;an escape (Terminal or System) which is still in process.
+				;We try not to look at the keyboard while one is still
+				;in process to provide more predictable behavior with
+				;typeahead.  However, we don't wait forever so that if
+				;the process hangs forever the system doesn't "die".
 
 (DEFUN KBD-PROCESS-MAIN-LOOP ()
   "This function runs in the keyboard process.  It is responsible for reading characters
@@ -164,8 +169,13 @@ from the hardware, and performing any immediate processing associated with the c
 			    (OR KBD-ESC-HAPPENED
 				(AND (NOT (IO-BUFFER-FULL-P KBD-IO-BUFFER))
 				     (KBD-HARDWARE-CHAR-AVAILABLE)))))
-	  (AND KBD-ESC-HAPPENED (FUNCALL KBD-ESC-HAPPENED))
-	  (SETQ KBD-ESC-HAPPENED NIL)
+	  (COND (KBD-ESC-HAPPENED
+		  (FUNCALL KBD-ESC-HAPPENED)
+		  (PROCESS-WAIT "ESC Finish"
+				#'(LAMBDA () (LET ((X KBD-ESC-TIME))
+					       (OR (NULL X)	;Wait at most 10 seconds
+						   (> (TIME-DIFFERENCE (TIME) X) 600.)))))
+		  (SETQ KBD-ESC-HAPPENED NIL)))
 	  (KBD-PROCESS-MAIN-LOOP-INTERNAL))))))
 
 ;Note that KBD-CONVERT-TO-SOFTWARE-CHAR must be called in order,
@@ -407,6 +417,7 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 			:TYPEAHEAD)
 	(#/M KBD-ESC-MORE "**MORE** enable (complement, or arg=1:on, 0 off)"
 			  :KEYBOARD-PROCESS)
+	(#/O KBD-OTHER-EXPOSED-WINDOW "Select another exposed window" :TYPEAHEAD)
 	(#/Q (SI:SCREEN-XGP-HARDCOPY-BACKGROUND DEFAULT-SCREEN)
 	     "Hardcopy the screen on the XGP")
 	(#/S KBD-SWITCH-WINDOWS
@@ -435,7 +446,7 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
   (LET-GLOBALLY ((WHO-LINE-PROCESS CURRENT-PROCESS))
     (WHO-LINE-RUN-STATE-UPDATE)  ;Necessary to make above take effect
     (DO () (NIL)
-      (SETQ CH (CHAR-UPCASE (KBD-GET-SOFTWARE-CHAR "ESC")))
+      (SETQ CH (CHAR-UPCASE (KBD-GET-SOFTWARE-CHAR "Terminal-")))
       (COND ((= CH #\ESC)					;Typed another ESC, reset
 	     (SETQ ARG NIL MINUS NIL))
 	    ((AND ( CH #/0) ( CH #/9))
@@ -450,9 +461,14 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 		(KBD-SNARF-INPUT SELECTED-IO-BUFFER T)))
 	 (SETQ FCN (SECOND CH))
 	 (AND (LISTP FCN) (SETQ ARG FCN FCN #'EVAL))
-	 (IF (MEMQ ':KEYBOARD-PROCESS (CDDDR CH))
-	     (FUNCALL FCN ARG)
-	     (PROCESS-RUN-FUNCTION "KBD ESC" FCN ARG)))))
+	 (COND ((MEMQ ':KEYBOARD-PROCESS (CDDDR CH))
+		(FUNCALL FCN ARG))
+	       (T (SETQ KBD-ESC-TIME (TIME))
+		  (PROCESS-RUN-FUNCTION "KBD ESC"
+					#'(LAMBDA (FCN ARG)
+					    (FUNCALL FCN ARG)
+					    (SETQ KBD-ESC-TIME NIL))
+					FCN ARG))))))
 
 (DEFUN KBD-ESC-MORE (ARG) ;esc M
   (SETQ MORE-PROCESSING-GLOBAL-ENABLE
@@ -471,6 +487,22 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 	 (DOLIST (R (FUNCALL P ':ARREST-REASONS))
 	   (FUNCALL P ':REVOKE-ARREST-REASON R)))
 	(T (FUNCALL P ':ARREST-REASON ':USER))))
+
+(DEFUN KBD-OTHER-EXPOSED-WINDOW (IGNORE)
+  ;; ESC O selects the least recently-selected window that is exposed.
+  ;; Thus repeated esc O cycles among all the selectable exposed windows 
+  ;; on all the screens.  Real useful with split-screen!
+  (DO ((I 0 (1+ I))
+       (N (ARRAY-LENGTH PREVIOUSLY-SELECTED-WINDOWS))
+       (TEM)
+       (WINDOW NIL))
+      (( I N)
+       (IF WINDOW (FUNCALL WINDOW ':MOUSE-SELECT)
+	   (BEEP)))
+    (AND (SETQ TEM (AREF PREVIOUSLY-SELECTED-WINDOWS I))
+	 (EQ (FUNCALL TEM ':STATUS) ':EXPOSED)
+	 (NOT (NULL (FUNCALL TEM ':NAME-FOR-SELECTION)))
+	 (SETQ WINDOW TEM))))
 
 (DEFUN KBD-SWITCH-WINDOWS (ARG &AUX TEM) ;esc S
   ;; ESC n S rotates the n most recently selected windows, selecting the nth
@@ -577,6 +609,7 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 						   "Who's on AI and MC")))
   (FUNCALL POP-UP-FINGER-WINDOW ':SET-PROCESS CURRENT-PROCESS)
   (WINDOW-CALL (POP-UP-FINGER-WINDOW :DEACTIVATE)
+    (SETQ KBD-ESC-TIME NIL)	;Window configuration stable now, let kbd process proceed
     (COND ((NULL ARG)
 	   (CHAOS:FINGER "@AI" POP-UP-FINGER-WINDOW))
 	  ((= ARG 0)
@@ -615,22 +648,35 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
   (WHO-LINE-RUN-STATE-UPDATE)
   (WHO-LINE-UPDATE))
 
-(DEFUN KBD-ESC-HELP (IGNORE &AUX DOC (INDENT 8))
+(DEFUN KBD-ESC-HELP (IGNORE &AUX DOC (INDENT 15.))
   (SETF (SHEET-TRUNCATE-LINE-OUT-FLAG POP-UP-FINGER-WINDOW) 0)
-  (FUNCALL POP-UP-FINGER-WINDOW ':SET-LABEL "Keyboard escape commands")
+  (FUNCALL POP-UP-FINGER-WINDOW ':SET-LABEL "Keyboard documentation")
   (WINDOW-MOUSE-CALL (POP-UP-FINGER-WINDOW :DEACTIVATE)
-     (FORMAT POP-UP-FINGER-WINDOW "~16TKeyboard escape commands:
+     (FORMAT POP-UP-FINGER-WINDOW "~25TType Terminal//Escape followed by:
 
 0-9, -~VTNumeric argument to following command~%" INDENT)
      (DOLIST (X *ESCAPE-KEYS*)
        (COND ((NULL (CAR X))
-	      (SETQ INDENT 16.)
+	      (SETQ INDENT 20.)
 	      (FORMAT POP-UP-FINGER-WINDOW "~%~5XThese are for wizards:~2%"))
 	     ((SETQ DOC (EVAL (CADDR X)))
 	      (FORMAT POP-UP-FINGER-WINDOW "~:C~VT~A~%" (CAR X) INDENT
 		      (IF (ATOM DOC) DOC (CAR DOC)))
 	      (OR (ATOM DOC) (DOLIST (LINE (CDR DOC))
 			       (FORMAT POP-UP-FINGER-WINDOW "~VT~A~%" INDENT LINE))))))
+     (FORMAT POP-UP-FINGER-WINDOW "~3%~25TNew-keyboard function keys:
+
+Macro		Keyboard macros (ed)		Abort		Kill running program
+Terminal	The above commands		Break		Get read-eval-print loop
+System		Select a Program		Resume		Continue from break/error
+Network		Supdup//Telnet commands		Call		Stop program, get a Lisp
+Quote		(not used)			Status		(not used)
+Overstrike	/"backspace/"			Delete		(not used)
+Clear-Input	Forget typein			End		Terminate input
+Clear-Screen	Refresh screen			Help		Print documentation
+Hold-Output	(not used)			Return		Carriage return
+Stop-Output	(not used)			Line		Next line and indent (ed)
+")
      (FORMAT POP-UP-FINGER-WINDOW "~%Type a space to flush: ")
      (FUNCALL POP-UP-FINGER-WINDOW ':TYI)))
 
@@ -653,13 +699,14 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 (DEFUN KBD-SYS (&AUX CH)
   (LET-GLOBALLY ((WHO-LINE-PROCESS CURRENT-PROCESS))
     (WHO-LINE-RUN-STATE-UPDATE)  ;Necessary to make above take effect
-    (SETQ CH (CHAR-UPCASE (KBD-GET-SOFTWARE-CHAR "SYS"))))
+    (SETQ CH (CHAR-UPCASE (KBD-GET-SOFTWARE-CHAR "System-"))))
   (WHO-LINE-RUN-STATE-UPDATE)	;Switch LAST-WHO-LINE-PROCESS back
   ;; Anything typed before the System belongs to the currently selected window
   ;; Anything typed after this belongs to the new window we are going to get to.
   (WITHOUT-INTERRUPTS
     (AND (KBD-GET-IO-BUFFER)
 	 (KBD-SNARF-INPUT SELECTED-IO-BUFFER T)))
+  (SETQ KBD-ESC-TIME (TIME))
   (PROCESS-RUN-FUNCTION "KBD SYS" #'KBD-SYS-1 CH))
 
 (DEFUN KBD-SYS-1 (CH &AUX E W SW)
@@ -684,6 +731,7 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 	 ;; any characters already typed after the [SYSTEM] command.
 	 (DELAYING-SCREEN-MANAGEMENT	;Inhibit auto selection
 	   (COND ((= (%DATA-TYPE (SECOND E)) DTP-INSTANCE)
+		  (AND (SETQ SW SELECTED-WINDOW) (FUNCALL SW ':DESELECT NIL))
 		  (FUNCALL (SECOND E) ':MOUSE-SELECT))
 		 ((SETQ W (FIND-WINDOW-OF-FLAVOR (SECOND E)))	;Already exists?
 		  (COND ((SETQ SW SELECTED-WINDOW)
@@ -698,7 +746,8 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 		  (AND (SETQ SW SELECTED-WINDOW) (FUNCALL SW ':DESELECT NIL))
 		  (FUNCALL (WINDOW-CREATE (SECOND E)) ':MOUSE-SELECT))
 		 (T (EVAL (FOURTH E))))))
-	(( CH #\RUBOUT) (BEEP))))
+	(( CH #\RUBOUT) (BEEP)))
+  (SETQ KBD-ESC-TIME NIL))
 
 (DEFUN FIND-WINDOW-OF-FLAVOR (FLAVOR)
   ;; Only looks at PREVIOUSLY-SELECTED-WINDOWS, but that should have all the ones

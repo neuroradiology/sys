@@ -66,7 +66,13 @@ use as a menu item-list."
 			       (+ (SHEET-Y EDGES-FROM) (SHEET-HEIGHT EDGES-FROM))))
 			(T (FERROR NIL
 				   "~S is illegal :EDGES-FROM specification" EDGES-FROM)))
-		  ':EDGES))))
+		  ':EDGES)))
+  (LET ((INSIDE-WIDTH (OR (GET INIT-PLIST ':INSIDE-WIDTH)
+			  (FIRST (GET INIT-PLIST ':INSIDE-SIZE))))
+	(INSIDE-HEIGHT (OR (GET INIT-PLIST ':INSIDE-HEIGHT)
+			   (SECOND (GET INIT-PLIST ':INSIDE-SIZE)))))
+    (AND INSIDE-WIDTH (SETQ WIDTH (+ INSIDE-WIDTH LEFT-MARGIN-SIZE RIGHT-MARGIN-SIZE)))
+    (AND INSIDE-HEIGHT (SETQ HEIGHT (+ INSIDE-HEIGHT TOP-MARGIN-SIZE BOTTOM-MARGIN-SIZE)))))
 
 (DEFFLAVOR MINIMUM-WINDOW () (ESSENTIAL-EXPOSE ESSENTIAL-ACTIVATE ESSENTIAL-SET-EDGES
 			      ESSENTIAL-MOUSE ESSENTIAL-WINDOW)
@@ -118,14 +124,24 @@ Also provides for the :STATUS and :SET-STATUS messages (q.v.)."))
 
 (DEFMETHOD (ESSENTIAL-ACTIVATE :STATUS) ()
   (COND ((EQ SELF SELECTED-WINDOW) ':SELECTED)
-	((MEMQ SELF (SHEET-EXPOSED-INFERIORS SUPERIOR)) ':EXPOSED)
-	((MEMQ SELF (SHEET-INFERIORS SUPERIOR)) ':DEEXPOSED)
+	((DO ((WINDOW SELF (SHEET-SUPERIOR WINDOW)))
+	     ((NULL WINDOW) T)
+	   (OR (SHEET-EXPOSED-P WINDOW) (RETURN NIL)))
+	 ':EXPOSED)				;Only if really on screen
+	((AND SUPERIOR (MEMQ SELF (SHEET-EXPOSED-INFERIORS SUPERIOR)))
+	 ':EXPOSED-IN-SUPERIOR)			;Would be exposed if superior was
+	((OR (NULL SUPERIOR) (MEMQ SELF (SHEET-INFERIORS SUPERIOR)))
+	 ':DEEXPOSED)
 	(T ':DEACTIVATED)))
 
 (DEFMETHOD (ESSENTIAL-ACTIVATE :SET-STATUS) (NEW-STATUS)
   (SELECTQ NEW-STATUS
     (:SELECTED (FUNCALL-SELF ':SELECT))
     (:EXPOSED
+      (FUNCALL-SELF ':EXPOSE)
+      (AND (EQ SELF SELECTED-WINDOW)
+	   (FUNCALL-SELF ':DESELECT NIL)))	;Don't restore-selected!
+    (:EXPOSED-IN-SUPERIOR
       (OR (MEMQ SELF (SHEET-EXPOSED-INFERIORS SUPERIOR))
 	  (FUNCALL-SELF ':EXPOSE))
       (AND (EQ SELF SELECTED-WINDOW)
@@ -1131,7 +1147,8 @@ are immediately recognizable."))
 The process can be specified as a list of the function and arguments to make-stack-group.
 When the window is selected, the who line is updated for the state of the process.
 When the window is exposed or selected, if the process is flushed, it gets reset and
-can run again.  The process gets a RUN-REASON of the window itself.  It is mostly
+can run again.  The process gets a RUN-REASON of the window itself, but doesn't get
+it until the window is first exposed or selected.  It is mostly
 ok for the PROCESS to be NIL even when this flavor is included."))
 
 ;;; This is explicit to ensure shadowing
@@ -1141,8 +1158,7 @@ ok for the PROCESS to be NIL even when this flavor is included."))
   (AND (LISTP PROCESS)
        (LET ((PRESET PROCESS))
 	 (SETQ PROCESS (LEXPR-FUNCALL #'PROCESS-CREATE NAME (CDR PRESET)))
-	 (PROCESS-PRESET PROCESS (CAR PRESET) SELF)))
-  (AND PROCESS (FUNCALL PROCESS ':RUN-REASON SELF)))
+	 (PROCESS-PRESET PROCESS (CAR PRESET) SELF))))
 
 ;;; I dont know if this is really the right thing
 (DEFMETHOD (PROCESS-MIXIN :BEFORE :EXPOSE) MAYBE-RESET-PROCESS)
@@ -1152,10 +1168,10 @@ ok for the PROCESS to be NIL even when this flavor is included."))
   (COND ((AND PROCESS (= (%DATA-TYPE PROCESS) DTP-INSTANCE)
 	      (EQ (PROCESS-WAIT-FUNCTION PROCESS) #'FALSE))
 	 ;; Reset the process, then make sure it has a run reason
-	 (FUNCALL PROCESS ':RESET)
-	 (FUNCALL PROCESS ':RUN-REASON SELF)))))
+	 (FUNCALL PROCESS ':RESET)))
+  (AND PROCESS (FUNCALL PROCESS ':RUN-REASON SELF))))
 
-;Don't take away the process's run reason until all methods
+;Don't kill the process until all methods
 ;and wrappers have run first.  This is because we might be
 ;executing inside the process that belongs to the window,
 ;and we don't want to go away before finishing.

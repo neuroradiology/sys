@@ -1,4 +1,5 @@
 ;;; -*- Mode: LISP; Package: TV; Base: 8 -*-
+;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;;; The screen manager, an unseen entity that many have cursed and
 ;;; many have praised, is herewithin presented for all to see.
@@ -264,7 +265,7 @@ might have bit save arrays and get screen managed, such as LISP-LISTENERS with i
 	(T
 	 ;; If no saved bits, Refresh into a temporary array and use that as the bits
 	 (UNWIND-PROTECT
-	   (RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE ARRAY)
+	   (WITH-RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE ARRAY)
 	     (SETQ SCREEN-ARRAY ARRAY)
 	     (SI:PAGE-IN-ARRAY ARRAY NIL (LIST WIDTH HEIGHT))
 	     (SHEET-FORCE-ACCESS (SELF T)
@@ -416,7 +417,7 @@ each time.  It is expected that autoexposure gets run explicitly in this case."
 
 (DEFWRAPPER (GRAY-DEEXPOSED-RIGHT-MIXIN :SCREEN-MANAGE-RESTORE-AREA)
 	        ((RECTS ARRAY X Y ALU) . BODY)
-  `(RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE KLUDGE-ARRAY)
+  `(WITH-RESOURCE (SCREEN-MANAGER-BIT-ARRAY-RESOURCE KLUDGE-ARRAY)
      (SI:PAGE-IN-ARRAY KLUDGE-ARRAY NIL (LIST WIDTH HEIGHT))
      ;; This is a kludge -- fudge the arguments to all methods inside
      (LET ((SI:.DAEMON-CALLER-ARGS. (LIST NIL (COPYLIST RECTS) KLUDGE-ARRAY

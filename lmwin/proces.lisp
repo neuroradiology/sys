@@ -535,8 +535,8 @@ is warm booted."
 			      ':INITIAL-STACK-GROUP %CURRENT-STACK-GROUP
 			      ':INITIAL-FORM '(LISP-TOP-LEVEL2)))))
 
- ;; Below is done every time the machine starts up (warm or cold).  Unfortunatly,
- ;; the state of the current process has been lost, so it must be reset with
+ ;; Below is done every time the machine starts up (warm or cold).  Unfortunately,
+ ;; the state of the current process has been lost, so it must be reset without
  ;; unwinding it.  This is a total loss, but the only way to prevent this
  ;; is to prevent warm booting.  WARM BOOTING IS STRONGLY DISCOURAGED.
  (PROCESS-ENABLE INITIAL-PROCESS)

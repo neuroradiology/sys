@@ -483,6 +483,8 @@
 		       (GET-HANDLER-FOR INFERIOR ':HANDLE-MOUSE)
 		       (RETURN T)))
 		(RETURN NIL)))
+	  ;; Update idle time when buttons pushed
+	  ((PROG1 NIL (SETQ KBD-LAST-ACTIVITY-TIME (TIME))))
 	  ;; We do nothing with buttons when seized nonspecifically.
 	  ((EQ WINDOW T))
 	  ;; If over an exposed window, send it the button-push

@@ -453,7 +453,7 @@
   CHOICE-ITEM-BOXES)
 
 (DEFVAR DEFAULT-FINISHING-CHOICES
-  '(("Done" NIL MULTIPLE-CHOICE-DONE NIL NIL)
+  '(("Do It" NIL MULTIPLE-CHOICE-DONE NIL NIL)
     ("Abort" NIL MULTIPLE-CHOICE-ABORT NIL NIL)))
 
 (DEFMETHOD (BASIC-MULTIPLE-CHOICE :AFTER :INIT) (INIT-PLIST &AUX CHOICES)
@@ -768,7 +768,7 @@
 	 SCROLL-STUFF-ON-OFF-MIXIN MARGIN-CHOICE-MIXIN
 	 ANY-TYI-MIXIN WINDOW)
   (:DEFAULT-INIT-PLIST :MARGIN-CHOICES
-		         '(("Done" NIL CHOOSE-VARIABLE-VALUES-CHOICE-BOX-HANDLER NIL NIL))))
+		         '(("Exit" NIL CHOOSE-VARIABLE-VALUES-CHOICE-BOX-HANDLER NIL NIL))))
 
 (DEFUN CHOOSE-VARIABLE-VALUES-CHOICE-BOX-HANDLER (BOX REGION YPOS)
   REGION YPOS ;ignored
@@ -1054,7 +1054,7 @@
 
 (DEFFLAVOR TEMPORARY-CHOOSE-VARIABLE-VALUES-WINDOW ()
 	   (TEMPORARY-WINDOW-MIXIN CHOOSE-VARIABLE-VALUES-WINDOW))
-;Should this send itself a "done" if it gets deexposed?  I think probably not.
+;Should this send itself a "exit" if it gets deexposed?  I think probably not.
 
 (DEFMETHOD (TEMPORARY-CHOOSE-VARIABLE-VALUES-WINDOW :NAME-FOR-SELECTION) ()
   NIL)
@@ -1072,7 +1072,7 @@
 ;; :FUNCTION  Function called if user changes anything (default is NIL)
 ;; :NEAR-MODE  Where to appear the window (default is (:MOUSE))
 ;; :MARGIN-CHOICES  List of elements.  A string is the label for the
-;;		box which means "done" (Default is "Done"), cons of
+;;		box which means "exit" (Default is "Exit"), cons of
 ;;		a string and a form means eval that form if box clicked upon.
 
 (DEFUN CHOOSE-VARIABLE-VALUES (VARIABLES &REST OPTIONS
@@ -1086,9 +1086,9 @@
       (:NEAR-MODE (SETQ NEAR-MODE VAL))
       (:MARGIN-CHOICES (SETQ MARGIN-CHOICES VAL))
       (OTHERWISE (FERROR NIL "~S invalid option keyword" OP))))
-  ;; MARGIN-CHOICES must always contain a "done" box so user can stop choosing
+  ;; MARGIN-CHOICES must always contain a "exit" box so user can stop choosing
   (DO ((L MARGIN-CHOICES (CDR L)))
-      ((NULL L) (PUSH "Done" MARGIN-CHOICES))
+      ((NULL L) (PUSH "Exit" MARGIN-CHOICES))
     (COND ((STRINGP (CAR L)) (RETURN))
 	  ((OR (ATOM (CAR L)) (NOT (STRINGP (CAAR L))))
 	   (FERROR NIL "~S garbage in MARGIN-CHOICES" (CAR L)))))
@@ -1115,7 +1115,7 @@
       (FUNCALL WINDOW ':DEACTIVATE))))
 
 (DEFUN CHOOSE-VARIABLE-VALUES-PROCESS-MESSAGE (WINDOW MSG)
-  ;; Returns T if message is "done", else does variable-changing or special action
+  ;; Returns T if message is "exit", else does variable-changing or special action
   ;; and returns NIL.  msg is either a list that came in whose cadr is
   ;; this window, or it is a regular character; only #\FORM is used.
   (PROG ()

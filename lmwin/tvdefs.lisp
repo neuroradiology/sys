@@ -100,7 +100,10 @@
 	    (SUPERIOR MOUSE-SHEET) ;Null superior is top.
 	    (INFERIORS NIL)
 	    
-	    (EXPOSED-P NIL)	;T when exposed, NIL otherwise
+	    (EXPOSED-P NIL)	;T when exposed, NIL otherwise.  In this context "exposed"
+				;means that it is among the superior's exposed-inferiors
+				;and the superior either has a bit-array or is exposed.
+				;T here does not necessarily mean it's visible on the screen.
 	    (EXPOSED-INFERIORS NIL)
 	    
 	    (X-OFFSET NIL)	;Position relative to position of superior
@@ -148,7 +151,7 @@
     LEFT-MARGIN-SIZE TOP-MARGIN-SIZE RIGHT-MARGIN-SIZE BOTTOM-MARGIN-SIZE
     SUPERIOR FONT-MAP)
   (:INIT-KEYWORDS :TOP :Y :BOTTOM :LEFT :X :RIGHT :EDGES :BLINKER-P :REVERSE-VIDEO-P
-		  :CHARACTER-WIDTH :CHARACTER-HEIGHT
+		  :CHARACTER-WIDTH :CHARACTER-HEIGHT :INSIDE-SIZE :INSIDE-WIDTH :INSIDE-HEIGHT
 		  :MORE-P :VSP :BLINKER-FUNCTION :BLINKER-DESELECTED-VISIBILITY :INTEGRAL-P
 		  :SAVE-BITS :RIGHT-MARGIN-CHARACTER-FLAG :TRUNCATE-LINE-OUT-FLAG
 		  :BACKSPACE-NOT-OVERPRINTING-FLAG)

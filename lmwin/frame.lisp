@@ -179,6 +179,15 @@ to frame is desired."))
 (DEFWRAPPER (FRAME-FORWARDING-MIXIN :SCREEN-MANAGE-AUTOEXPOSE-INFERIORS) (IGNORE . BODY)
   `(LET-GLOBALLY ((RECURSION T))
      . ,BODY))
+
+(DEFMETHOD (BASIC-FRAME :PANE-TYPES-ALIST) ()
+  NIL)
+
+;;; Simple superior for split-screen
+(DEFFLAVOR SPLIT-SCREEN-FRAME () (BASIC-FRAME))
+
+(DEFMETHOD (SPLIT-SCREEN-FRAME :PANE-TYPES-ALIST) ()
+  DEFAULT-WINDOW-TYPES-ITEM-LIST)
 
 ;;; Constraint frames -- these frames maintain their panes based on a set
 ;;;  of constraints.  These frames are the right thing for most frame applications.

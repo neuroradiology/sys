@@ -337,13 +337,15 @@ should be made the inferior of."
 					   (CONS (LIST *SYSTEM-KEY* FRAME *FRAME-NAME* NIL)
 						 (DELQ (ASSQ *SYSTEM-KEY* *SYSTEM-KEYS*)
 						       *SYSTEM-KEYS*))))
-				(SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW FRAME
-				 (LIST (SHEET-INSIDE-LEFT FRAME) (SHEET-INSIDE-TOP FRAME)
-				       (SHEET-INSIDE-RIGHT FRAME) (SHEET-INSIDE-BOTTOM FRAME))
-				 WINDOW-TYPE-LIST N-WINDOWS LAYWIN)
-				;; This wouldn't be needed if frames weren't broken
-				(AND (MEMQ SELECTED-WINDOW (SHEET-EXPOSED-INFERIORS FRAME))
-				     (FUNCALL FRAME ':SELECT-PANE SELECTED-WINDOW)))))
+				(LET ((SEL (SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW FRAME
+					     (LIST (SHEET-INSIDE-LEFT FRAME)
+						   (SHEET-INSIDE-TOP FRAME)
+						   (SHEET-INSIDE-RIGHT FRAME)
+						   (SHEET-INSIDE-BOTTOM FRAME))
+					     WINDOW-TYPE-LIST N-WINDOWS LAYWIN)))
+				  ;; This wouldn't be needed if frames weren't broken
+				  (AND (MEMQ SEL (SHEET-EXPOSED-INFERIORS FRAME))
+				       (FUNCALL FRAME ':SELECT-PANE SEL))))))
 			(RETURN))))
 	      ((EQ (FIRST RES) ':VARIABLE-CHOICE)
 	       (APPLY #'CHOOSE-VARIABLE-VALUES-CHOICE (CDR RES)))
@@ -356,6 +358,7 @@ should be made the inferior of."
 ;; The general rule for screen layout is that 2 or 3 windows stack vertically,
 ;; 4 are in a square, 5 are a square with 1 below it, etc.
 ;; To generalize, you have floor(n/2) rows in 2 columns and 1 below if n is odd
+;; This returns the window it selects, or NIL
 (DEFUN SPLIT-SCREEN-VIA-MENUS-SETUP-WINDOW (SUP EDGES WINDOW-TYPE-LIST N-WINDOWS LAYWIN
 					    &AUX N-COLUMNS N-ROWS WIDTH HEIGHT TEM WINDOW SEL)
   LAYWIN  ;ignored for now
@@ -405,7 +408,8 @@ should be made the inferior of."
 					 ':RIGHT RIGHT ':BOTTOM BOTTOM))
 	     (OR SEL (SETQ SEL WINDOW))))
       (FUNCALL WINDOW ':EXPOSE))
-    (AND SEL (FUNCALL SEL ':SELECT))))
+    (AND SEL (FUNCALL SEL ':SELECT)))
+  SEL)
 
 (DEFVAR SCREEN-LAYOUT-MENU-ALIST NIL)
 (SYSTEM-WINDOW-ADD-TYPE 'SCREEN-LAYOUT-MENU

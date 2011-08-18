@@ -71,7 +71,7 @@ in the display."))
   ))
 
 ;;;If we didn't come back, remember that the screen is clobbered
-(DEFMETHOD (GRID-MIXIN :AFTER :REFRESH) (IGNORE)
+(DEFMETHOD (GRID-MIXIN :AFTER :REFRESH) (&OPTIONAL IGNORE)
   (OR TV:RESTORED-BITS-P
       (SETQ REDISPLAY-DEGREE REDISPLAY-ALL)))
 

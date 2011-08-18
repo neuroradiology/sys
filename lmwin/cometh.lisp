@@ -35,3 +35,6 @@
 		 ':SUPERIOR DEFAULT-SCREEN
 		 ':HEIGHT (// (SHEET-HEIGHT DEFAULT-SCREEN) 3)))
 
+; It is now time to initialize the window system, which will create and expose
+; the initial-lisp-listener and turn on blinkers.
+(ADD-INITIALIZATION "WINDOW" '(WINDOW-INITIALIZE) '(:SYSTEM))

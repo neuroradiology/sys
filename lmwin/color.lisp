@@ -63,9 +63,10 @@
 ;The mode register is writable at location 766012
 ;XBUS-ADDR is an I/O address like %XBUS-READ.
 (DEFUN XBUS-READ-NO-PARITY (XBUS-ADDR)
-  (PROG2 (%UNIBUS-WRITE 766012 42)	;Turn off error-stop-enable
+  (PROG2 (%UNIBUS-WRITE 766012 42)	;Turn off error-stop-enable (normal speed)
 	 (%XBUS-READ XBUS-ADDR)
-	 (%UNIBUS-WRITE 766012 46)))
+	 (%UNIBUS-WRITE 766012 46)	;Turn on error-stop-enable
+	 (%UNIBUS-WRITE 766044 0)))	;Clear xbus nxm and parity indicators
 
 ;Function to determine if this machine has a color TV (in general if an XBUS
 ; I/O address exists).  This is a bit of a crock.

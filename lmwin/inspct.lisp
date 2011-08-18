@@ -9,18 +9,19 @@
   STACK-FRAME-FUNCTION-NAME)
 
 (DEFSELECT STACK-FRAME
-  (:PRINT (SF STREAM &REST IGNORE &AUX (AP (STACK-FRAME-AP SF))
-	                               (RP (SG-REGULAR-PDL (STACK-FRAME-SG SF)))
-				       (FUNCTION (RP-FUNCTION-WORD RP AP))
-				       (PC (AND (EQ (%DATA-TYPE FUNCTION) DTP-FEF-POINTER)
-						(RP-EXIT-PC RP AP))))
-    (LET ((PRINLENGTH 5) (PRINLEVEL 3))
-      (FORMAT STREAM "#<Stack-Frame ~A ~[PC=~O~;microcoded~;interpreted~]>"
-	      (EH:FUNCTION-NAME FUNCTION)
-	      (COND (PC 0)
-		    ((EQ (%DATA-TYPE FUNCTION) DTP-U-ENTRY) 1)
-		    (T 2))
-	      PC))))
+  ((:PRINT :PRINT-SELF) (SF STREAM &REST IGNORE &AUX (AP (STACK-FRAME-AP SF))
+						     (RP (SG-REGULAR-PDL (STACK-FRAME-SG SF)))
+						     (FUNCTION (RP-FUNCTION-WORD RP AP))
+						     (PC (AND (EQ (%DATA-TYPE FUNCTION)
+								  DTP-FEF-POINTER)
+							      (RP-EXIT-PC RP AP))))
+   (LET ((PRINLENGTH 5) (PRINLEVEL 3))
+     (FORMAT STREAM "#<Stack-Frame ~A ~[PC=~O~;microcoded~;interpreted~]>"
+	     (EH:FUNCTION-NAME FUNCTION)
+	     (COND (PC 0)
+		   ((EQ (%DATA-TYPE FUNCTION) DTP-U-ENTRY) 1)
+		   (T 2))
+	     PC))))
 
 (DEFFLAVOR INSPECT-WINDOW ()
 	   (BASIC-INSPECT

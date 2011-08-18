@@ -56,6 +56,7 @@
      (SETQ CHAR (FUNCALL STANDARD-INPUT ':TYI))
      ;; Now, if the char is special, echo and return it.
      (COND ((OR (LDB-TEST %%KBD-CONTROL-META CHAR)
+		(= CHAR #\RESUME)
 		(= CHAR #\HELP)
 		(= CHAR #/?))
 	    (COND ((SETQ FUNCTION (COMMAND-LOOKUP CHAR))
@@ -87,11 +88,9 @@
        (RETURN CHAR T)))
     (RETURN CHAR NIL)))
 
-(DEFUN COMMAND-LOOKUP (CHAR &AUX TEM)
-  (SETQ TEM (AREF COMMAND-DISPATCH-TABLE (LDB %%KBD-CONTROL-META CHAR) (LDB %%KBD-CHAR CHAR)))
-  (DO ()
-      ((NLISTP TEM) TEM)
-    (SETQ TEM (AREF COMMAND-DISPATCH-TABLE (FIRST TEM) (SECOND TEM)))))
+(DEFUN COMMAND-LOOKUP (CHAR)
+  (AREF COMMAND-DISPATCH-TABLE (LDB %%KBD-CONTROL-META CHAR)
+			       (LDB %%KBD-CHAR (CHAR-UPCASE CHAR))))
 
 ;; Utility function used by the top level, and various commands.
 
@@ -484,8 +483,7 @@
 	 (SG-RUN-GOODBYE SG))
 	(T
 	 (COND ((AND (NEQ SG (PROCESS-INITIAL-STACK-GROUP CURRENT-PROCESS))
-		     (NOT (MEMQ SG (GET (LOCF (PROCESS-PLIST CURRENT-PROCESS))
-					':COROUTINE-STACK-GROUPS))))
+		     (NOT (MEMQ SG (FUNCALL CURRENT-PROCESS ':COROUTINE-STACK-GROUPS))))
 		(UNWIND-SG SG %CURRENT-STACK-GROUP NIL NIL)
 		(SETQ SG (PROCESS-INITIAL-STACK-GROUP CURRENT-PROCESS))))
 	 (SG-THROW SG 'SI:TOP-LEVEL NIL)))
@@ -706,7 +704,7 @@ While in the error hander, G quits back to the error handler top level."
   (SETQ * (RP-FUNCTION-WORD (SG-REGULAR-PDL SG) CURRENT-FRAME))
   (FORMAT T "~&~S" *))
 
-;; This is the dispatch table of error handler commands, a 4 by 220 array.
+;; This is the dispatch table of error handler commands, a 4 by 240 array.
 (DEFVAR COMMAND-DISPATCH-TABLE)
 ;; This is a list, setq'd in this file, from which COMMAND-DISPATCH-TABLE is initialized.
 (DEFVAR COMMAND-DISPATCH-LIST)
@@ -716,166 +714,59 @@ While in the error hander, G quits back to the error handler top level."
 
 (DEFUN ASSURE-DISPATCH-SET-UP ()
   (COND ((NOT (BOUNDP 'COMMAND-DISPATCH-TABLE))
-	 (SETQ COMMAND-DISPATCH-TABLE (MAKE-ARRAY NIL 'ART-Q '(4 220)))
-	 (SETUP-KEYBOARD-DISPATCH-TABLE COMMAND-DISPATCH-TABLE COMMAND-DISPATCH-LIST))))
+	 (SETQ COMMAND-DISPATCH-TABLE (MAKE-ARRAY NIL 'ART-Q '(4 240)))
+	 (DOLIST (X COMMAND-DISPATCH-LIST)
+	   (LET ((CHAR (CAR X))
+		 (COM (CADR X))
+		 (REPEAT (CADDR X)))
+	     (LET ((I (LDB %%KBD-CONTROL-META CHAR)) (J (LDB %%KBD-CHAR CHAR)))
+	       (DOTIMES (N (OR REPEAT 1))
+		 (ASET COM COMMAND-DISPATCH-TABLE I J)
+		 (SETQ J (1+ J)))))))))
 
 ;; The initial dispatch table.
 (SETQ COMMAND-DISPATCH-LIST '(
-       ((:REPEAT 77 NIL)		;Sail graphics.
-	COM-HELP			;?
-	(:REPEAT 105 NIL)
-	NIL				;Backnext.
-	COM-HELP			;Help.
-	NIL				;Rubout.
-	NIL				;Backspace.
-	NIL				;Tab.
-	COM-DOWN-STACK			;Line.
-	NIL				;Vt.
-	COM-CLEAR-AND-SHOW		;Form.
-	COM-UP-STACK			;Return.
-	(:REPEAT 2 NIL))
-       ;; Control characters
-       (
-	(:REPEAT 40 NIL)
-	(:REPEAT 10 NIL)
-	NIL				;(
-	NIL				;)
-	(:REPEAT 6 NIL)
-	(:REPEAT 12 COM-NUMBER)		;digits
-	(:REPEAT 2 NIL)
-	NIL				;<
-	NIL				;=
-	NIL				;>
-	NIL				;?
-	NIL				;@
-	COM-ARGLIST			;A
-	SHORT-BACKTRACE			;B
-	COM-PROCEED			;C
-	NIL				;D
-	COM-EDIT-FRAME-FUNCTION		;E
-	NIL				;F
-	NIL				;G
-	NIL				;H
-	NIL				;I
-	NIL				;J
-	NIL				;K
-	COM-CLEAR-AND-SHOW		;L
-	NIL				;M
-	COM-DOWN-STACK			;N
-	NIL				;O
-	COM-UP-STACK			;P
-	NIL				;Q
-	COM-RETURN-A-VALUE		;R
-	COM-SEARCH			;S
-	COM-THROW			;T
-	NIL				;U
-	NIL				;V
-	NIL				;W
-	NIL				;X
-	NIL				;Y
-	COM-TOP-LEVEL-THROW		;Z
-	(:REPEAT 6 NIL)
-	(:REPEAT-EVAL 32 (LIST 1 (+ 101 SI:RPCNT)))	;Map lower case into upper case.
-	(:REPEAT 5 NIL)
-	(:REPEAT 7 NIL)
-	NIL
-	(:REPEAT 5 NIL)
-	NIL
-	(:REPEAT 2 NIL))
-       ;; Meta characters
-       (
-	(:REPEAT 40 NIL)
-	(:REPEAT 10 NIL)
-	NIL				;(
-	NIL				;)
-	(:REPEAT 6 NIL)
-	(:REPEAT 12 COM-NUMBER)		;digits
-	(:REPEAT 2 NIL)
-	COM-TOP-STACK			;<
-	NIL				;=
-	COM-BOTTOM-STACK		;>
-	NIL				;?
-	NIL				;@
-	NIL				;A
-	FULL-BACKTRACE			;B
-	COM-BASH-AND-PROCEED		;C
-	NIL				;D
-	NIL				;E
-	NIL				;F
-	NIL				;G
-	NIL				;H
-	NIL				;I
-	NIL				;J
-	NIL				;K
-	COM-CLEAR-AND-SHOW-ALL		;L
-	NIL				;M
-	COM-DOWN-STACK-ALL		;N
-	NIL				;O
-	COM-UP-STACK-ALL		;P
-	NIL				;Q
-	COM-RETURN-MANY-VALUES		;R
-	COM-SEARCH-AND-SHOW-ALL		;S
-	NIL				;T
-	NIL				;U
-	NIL				;V
-	NIL				;W
-	NIL				;X
-	NIL				;Y
-	COM-THROW-ONE-ERROR		;Z
-	(:REPEAT 6 NIL)
-	(:REPEAT-EVAL 32 (LIST 2 (+ 101 SI:RPCNT)))	;Map lower case into upper case.
-	(:REPEAT 5 NIL)
-	(:REPEAT 7 NIL)
-	NIL
-	(:REPEAT 5 NIL)
-	NIL
-	(:REPEAT 2 NIL))
-	;;Control-Meta characters
-       (
-	(:REPEAT 40 NIL)
-	(:REPEAT 10 NIL)
-	NIL				;(
-	NIL				;)
-	(:REPEAT 6 NIL)
-	(:REPEAT 12 COM-NUMBER)		;digits
-	(:REPEAT 2 NIL)
-	NIL				;<
-	NIL				;=
-	NIL				;>
-	NIL				;?
-	NIL				;@
-	COM-GET-ARG			;A
-	FULL-BACKTRACE-UNINTERESTING	;B
-	COM-ERROR-RESTART		;C
-	NIL				;D
-	NIL				;E
-	COM-GET-FUNCTION		;F
-	NIL				;G
-	NIL				;H
-	NIL				;I
-	NIL				;J
-	NIL				;K
-	COM-GET-LOCAL			;L
-	NIL				;M
-	COM-DOWN-STACK-UNINTERESTING	;N
-	NIL				;O
-	COM-UP-STACK-UNINTERESTING	;P
-	NIL				;Q
-	COM-RETURN-REINVOCATION		;R
-	NIL				;S
-	NIL				;T
-	COM-UP-TO-INTERESTING		;U
-	NIL				;V
-	COM-WINDOW-ERROR-HANDLER	;W
-	NIL				;X
-	NIL				;Y
-	NIL				;Z
-	(:REPEAT 6 NIL)
-	(:REPEAT-EVAL 32 (LIST 3 (+ 101 SI:RPCNT)))	;MAP LOWER CASE INTO UPPER CASE
-	(:REPEAT 5 NIL)
-	(:REPEAT 7 NIL)
-	NIL
-	(:REPEAT 5 NIL)
-	NIL
-	(:REPEAT 2 NIL))
+       (#/? COM-HELP)
+       (#\HELP COM-HELP)
+       (#\LINE COM-DOWN-STACK)
+       (#\FORM COM-CLEAR-AND-SHOW)
+       (#\RETURN COM-UP-STACK)
+       (#\RESUME COM-PROCEED)
+
+       (#/0 COM-NUMBER 10.)		;control-digits
+       (#/A COM-ARGLIST)
+       (#/B SHORT-BACKTRACE)
+       (#/C COM-PROCEED)
+       (#/E COM-EDIT-FRAME-FUNCTION)
+       (#/L COM-CLEAR-AND-SHOW)
+       (#/N COM-DOWN-STACK)
+       (#/P COM-UP-STACK)
+       (#/R COM-RETURN-A-VALUE)
+       (#/S COM-SEARCH)
+       (#/T COM-THROW)
+       (#/Z COM-TOP-LEVEL-THROW)
+
+       (#/0 COM-NUMBER 10.)		;meta-digits
+       (#/< COM-TOP-STACK)
+       (#/> COM-BOTTOM-STACK)
+       (#/B FULL-BACKTRACE)
+       (#/C COM-BASH-AND-PROCEED)
+       (#/L COM-CLEAR-AND-SHOW-ALL)
+       (#/N COM-DOWN-STACK-ALL)
+       (#/P COM-UP-STACK-ALL)
+       (#/R COM-RETURN-MANY-VALUES)
+       (#/S COM-SEARCH-AND-SHOW-ALL)
+       (#/Z COM-THROW-ONE-ERROR)
+
+       (#/0 COM-NUMBER 10.)		;control-meta-digits
+       (#/A COM-GET-ARG)
+       (#/B FULL-BACKTRACE-UNINTERESTING)
+       (#/C COM-ERROR-RESTART)
+       (#/F COM-GET-FUNCTION)
+       (#/L COM-GET-LOCAL)
+       (#/N COM-DOWN-STACK-UNINTERESTING)
+       (#/P COM-UP-STACK-UNINTERESTING)
+       (#/R COM-RETURN-REINVOCATION)
+       (#/U COM-UP-TO-INTERESTING)
+       (#/W COM-WINDOW-ERROR-HANDLER)
        ))

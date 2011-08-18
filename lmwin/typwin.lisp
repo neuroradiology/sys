@@ -1,4 +1,7 @@
-;;;Typeout window		-*-Mode:LISP;Package:TV-*-
+;;; -*- Mode:LISP; Package:TV; Base:8 -*-
+;;;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
+;;; Typeout window and mouse-sensitive items
 ;;;Menu type item typeout window
 (DEFFLAVOR BASIC-MOUSE-SENSITIVE-ITEMS
 	((ITEM-TYPE-ALIST NIL)			;Associates actions with types of items
