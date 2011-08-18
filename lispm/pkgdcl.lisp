@@ -39,6 +39,7 @@
 	  ("AI: LISPM2; HASH QFASL")
 	  ("AI: LISPM2; ITER QFASL")
 	  ("AI: LISPM2; LOGIN QFASL")
+	  ("AI: LISPM2; LOOP QFASL")
 	  ("AI: LISPM2; METH QFASL")
 	  ("AI: LISPM2; CLASS QFASL")		;Cannot be loaded before METH.
 	  ("AI: LISPM2; NUMER QFASL")
