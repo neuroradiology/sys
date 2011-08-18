@@ -453,7 +453,9 @@ atom in a sublist should be the name of a command, and remaining elements are pa
 	     (LET (X Y)
 	       (MULTIPLE-VALUE (X Y) (FUNCALL STANDARD-OUTPUT ':READ-CURSORPOS FLAVOR))
 	       (FUNCALL STANDARD-OUTPUT ':SET-CURSORPOS
-                        (+ DEST (* (// (+ (- (MAX DEST X) DEST) (1- EXTRA)) EXTRA) EXTRA))
+                        ;(+ DEST (* (// (+ (- (MAX DEST X) DEST) (1- EXTRA)) EXTRA) EXTRA))
+			(IF (< X DEST) DEST
+			    (* (1+ (// X EXTRA)) EXTRA))  ;next multiple of EXTRA after X
 			Y
 			FLAVOR))))
 	  (T (FUNCALL STANDARD-OUTPUT ':STRING-OUT "   "))))

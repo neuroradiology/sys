@@ -951,9 +951,9 @@
            (COND ((OR (NULL LH) (NULL RH))
 		  (UPDATE-PARTITION-COMMENT
 		       PART
-		       (LET ((FILE-NAME (FUNCALL FILE ':NAME)))
-			 (FORMAT NIL "~A ~D"
-				 (FUNCALL FILE-NAME ':NAME) (FUNCALL FILE ':GET ':VERSION)))
+		       (FORMAT NIL "~A ~D"
+			       (FUNCALL (FUNCALL FILE ':FILENAME) ':NAME)
+			       (FUNCALL FILE ':GET ':VERSION))
 		       UNIT)
                   (CLOSE FILE)
                   (*THROW 'DONE NIL)))

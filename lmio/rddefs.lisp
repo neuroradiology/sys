@@ -67,19 +67,26 @@
 
 ;;; Names of special characters, as an a-list.  FORMAT searches this list to
 ;;; get the inverse mapping (numbers to names), so the preferred name for a value
-;;; should be earliest in the list.
+;;; should be earliest in the list.  New-keyboard names are preferred.
+;;; This variable is used by quite a few other programs as well, even
+;;; though it may look like it is internal to READ.
 ;;; Here rather than in READ, because this expression cannot be evaluated
-;;; in the cold-load
+;;; in the cold-load.
 
-(SETQ XR-SPECIAL-CHARACTER-NAMES
-      (APPEND '( (:BREAK . 201) (:BRK . 201)
-		 (:CLEAR . 202) (:CLR . 202) (:CLEAR-INPUT . 202)
-		 (:CALL . 203) (:ESC . 204) (:ESCAPE . 204)
-		 (:BACK-NEXT . 205) (:HELP . 206)
-		 (:RUBOUT . 207)  (:BACKSPACE . 210) (:BS . 210) (:TAB . 211)
-		 (:LF . 212) (:LINE . 212) (:LINEFEED . 212)
-		 (:VT . 213)
-		 (:FORM . 214) (:FF . 214) (:CLEAR-SCREEN . 214)
+(DEFVAR XR-SPECIAL-CHARACTER-NAMES
+      (APPEND '( (:NULL . 200)
+		 (:BREAK . 201) (:BRK . 201)
+		 (:CLEAR-INPUT . 202) (:CLEAR . 202) (:CLR . 202)
+		 (:CALL . 203)
+		 (:TERMINAL . 204) (:ESC . 204) (:ESCAPE . 204)
+		 (:MACRO . 205) (:BACK-NEXT . 205) 
+		 (:HELP . 206)
+		 (:RUBOUT . 207)
+		 (:OVERSTRIKE . 210) (:BACKSPACE . 210) (:BS . 210)
+		 (:TAB . 211)
+		 (:LINE . 212) (:LF . 212) (:LINEFEED . 212)
+		 (:DELETE . 213) (:VT . 213)
+		 (:CLEAR-SCREEN . 214) (:FORM . 214) (:FF . 214)
 		 (:RETURN . 215) (:CR . 215) (:NEWLINE . 215)
 		 (:QUOTE . 216)
 		 (:HOLD-OUTPUT . 217)
@@ -87,7 +94,6 @@
 		 (:ABORT . 221)
 		 (:RESUME . 222)
 		 (:STATUS . 223)
-		 (:DELETE . 213)
 		 (:END . 224)
 		 (:I . 225) (:II . 226) (:III . 227) (:IV . 230)
 		 (:HAND-UP . 231) (:HAND-DOWN . 232)
@@ -96,8 +102,7 @@
 		 (:SPACE . 40) (:SP . 40) (:ALTMODE . 33) (:ALT . 33)
 		 (:LAMBDA . 10) (:GAMMA . 11) (:DELTA . 12)
 		 (:UPARROW . 13) (:PLUS-MINUS . 14)
-		 (:CIRCLE-PLUS . 15) (:INTEGRAL . 177)
-		 (:NULL . 200))
+		 (:CIRCLE-PLUS . 15) (:INTEGRAL . 177))
 	      (MAPCAR #'(LAMBDA (X) (CONS (CAR X) (DPB 1 %%KBD-MOUSE (CDR X))))
 		  '( (:MOUSE-L-1 . 0) (:MOUSE-L-2 . 10) (:MOUSE-L-3 . 20)
 		     (:MOUSE-M-1 . 1) (:MOUSE-M-2 . 11) (:MOUSE-M-3 . 21)
