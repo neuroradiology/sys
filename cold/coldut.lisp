@@ -1,4 +1,4 @@
-; -*- Mode:Lisp; Package:Cold; Lowercase:T; Base:8 -*-
+; -*- Mode:LISP; Package:COLD; Base:8; Lowercase:T; Readtable:T -*-
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ; Utilities for cold-load generator
@@ -22,12 +22,23 @@
 
 ;(i,0) is virtual page number, (i,1) is rqb
 ;Both slots are nil if unused
-(defvar vmem-pages (make-array nil 'art-q (list n-vmem-pages 2)))
+(defvar vmem-pages (make-array (list n-vmem-pages 2)))
 
 (defvar vmem-page-reuse-pointer)
 
 (defvar vmem-part-base)
 (defvar vmem-part-size)
+(defvar vmem-highest-address nil)
+
+(defun ceiling (number &optional (divisor 1))
+  (let ((tru (// number divisor))
+	(rem (\ number divisor)))
+    (if (and (not (zerop rem))
+	     (if (minusp divisor)
+		 (minusp number)
+	       (plusp number)))
+	(+ tru 1)
+      tru)))
 
 (defun vmem-initialize (part-name)
   (setq vmem-page-reuse-pointer 0)
@@ -47,16 +58,18 @@
 
 (defun vmem-disk-io (rqb vpn writep)
   (and (or (minusp vpn) ( vpn vmem-part-size))
-       (ferror nil "Disk i//o outside of partition"))
+       (ferror nil "Disk I//O outside of partition"))
   (funcall (if writep #'sys:disk-write #'sys:disk-read) rqb 0 (+ vpn vmem-part-base)))
 
 ;Given address returns art-16b array containing that page.  With second arg of nil
 ;initializes to dtp-free instead of reading in from disk.
 (defun vmem-find-page (address &optional (get-from-disk-p t))
+  (if (> (logand q-pointer-mask address) vmem-highest-address)
+      (ferror nil "vmem-highest-address exceeded"))
   (do ((i 0 (1+ i))
        (vpn (// ;(ldb sym:%%q-pointer address)
-	        (logand q-pointer-mask address)
-		sym:page-size))
+	              (logand q-pointer-mask address)
+		      sym:page-size))
        (rqb) (buf) (tem))
       (( i n-vmem-pages)
        (setq i vmem-page-reuse-pointer)
@@ -70,8 +83,8 @@
 	       (vmem-disk-io rqb vpn nil))
 	     (t (setq tem (dpb sym:dtp-free sym:%%q-data-type (* vpn sym:page-size)))
 		(do ((j 0 (1+ j))
-		     (high (ldb 2020 tem))
-		     (low (ldb 0020 tem)))
+		     (high (ldb #o2020 tem))
+		     (low (ldb #o0020 tem)))
 		    (( j sym:page-size))
 		  (aset (+ low j) buf (+ j j))
 		  (aset high buf (+ j j 1)))))
@@ -81,16 +94,33 @@
 		(setq vmem-page-reuse-pointer (\ (1+ i) n-vmem-pages)))
 	   (return (sys:rqb-buffer (aref vmem-pages i 1)))))))
 
+(defun print-vmem-status ()
+  (dotimes (i n-vmem-pages)
+    (format t "~%Buffer index ~s holds virtual page ~s, rqb ~s"
+	    i
+	    (aref vmem-pages i 0)
+	    (aref vmem-pages i 1))))
+
 (defun vread (address)
   (let ((buf (vmem-find-page address))
 	(i (* 2 (\ address sym:page-size))))
-    (dpb (aref buf (1+ i)) 2020 (aref buf i))))
+    (dpb (aref buf (1+ i)) #o2020 (aref buf i))))
 
 (defun vwrite (address value)
   (let ((buf (vmem-find-page address))
 	(i (* 2 (\ address sym:page-size))))
-    (aset (ldb 0020 value) buf i)
-    (aset (ldb 2020 value) buf (1+ i))))
+    (aset (ldb #o0020 value) buf i)
+    (aset (ldb #o2020 value) buf (1+ i))))
+
+(defun vwrite-low (address value)
+  (let ((buf (vmem-find-page address))
+	(i (* 2 (\ address sym:page-size))))
+    (aset value buf i)))
+
+(defun vwrite-high (address value)
+  (let ((buf (vmem-find-page address))
+	(i (* 2 (\ address sym:page-size))))
+    (aset value buf (1+ i))))
 
 (defun vcontents (address)
   (logand q-typed-pointer-mask (vread address)))
@@ -98,16 +128,13 @@
 (defun vcdr-code (address)
   (ldb sym:%%q-cdr-code (vread address)))
 
-(defun vflag-bit (address)
-  (ldb sym:%%q-flag-bit (vread address)))
-
 (defun vstore-contents (address value)
   (let ((buf (vmem-find-page address))
 	(i (* 2 (\ address sym:page-size))))
-    (aset (ldb 0020 value) buf i)
+    (aset (ldb #o0020 value) buf i)
     (aset (deposit-field (aref buf (1+ i))
-			 (- sym:%%q-all-but-typed-pointer 2000)
-			 (ldb 2020 value))
+			 (- sym:%%q-all-but-typed-pointer #o2000)
+			 (ldb #o2020 value))
 	  buf (1+ i))))
 
 (defun vstore-cdr-code (address value)
@@ -115,118 +142,276 @@
 	(i (* 2 (\ address sym:page-size))))
     (aset (dpb value (- sym:%%q-cdr-code 2000) (aref buf (1+ i))) buf (1+ i))))
 
-(defun vstore-flag-bit (address value)
-  (let ((buf (vmem-find-page address))
-	(i (* 2 (\ address sym:page-size))))
-    (aset (dpb value (- sym:%%q-flag-bit 2000) (aref buf (1+ i))) buf (1+ i))))
-
 (defun vwrite-cdr (address cdr-code value)
   (vwrite address (dpb cdr-code sym:%%q-cdr-code value)))
 
 (defsubst vmake-pointer (data-type address)
   (dpb data-type sym:%%q-all-but-pointer address))
 
+(defsubst vpointer (value)
+  (logand q-pointer-mask value))
+
 (defsubst vdata-type (value)
   (ldb sym:%%q-data-type value))
 
 (defsubst vfix (value)
   (vmake-pointer sym:dtp-fix value))
+
+(defun vlist (area &rest elements)
+  (if (null elements)
+      qnil
+    (let ((value (vmake-pointer sym:dtp-list
+				(store-cdr-q area sym:cdr-next (car elements)))))
+      (dolist (element (cdr elements))
+	(store-cdr-q area sym:cdr-next element))
+      (vstore-cdr-code (+ value (length elements) -1) sym:cdr-nil)
+      value)))
+
+(defun vlist* (area &rest elements)
+  (cond ((null elements) (ferror nil "Too few arguments to VLIST*"))
+	((null (cdr elements)) (car elements))
+	(t
+	 (let ((value (vmake-pointer sym:dtp-list
+				     (store-cdr-q area sym:cdr-next (car elements)))))
+	   (dolist (element (cdr elements))
+	     (store-cdr-q area sym:cdr-next element))
+	   (vstore-cdr-code (+ value (length elements) -1) sym:cdr-error)
+	   (vstore-cdr-code (+ value (length elements) -2) sym:cdr-normal)
+	   value))))
+
+(defun vcar (location)
+  (vcontents location))
+
+(defun vcdr (location)
+  (let ((cdr-code (vcdr-code location)))
+    (select cdr-code
+      (sym:cdr-nil qnil)
+      (sym:cdr-next (1+ location))
+      (sym:cdr-normal
+       (vcontents (1+ location)))
+      (sym:cdr-error (ferror nil "Location ~O contains CDR-ERROR." (vpointer location))))))
+
+;If no property, returns a NIL in this machine.
+;If property found, returns other-machine pointer to cell whose car is the property value.
+(defun vget-location-or-nil (location property)
+  (do ((cell (vcontents location) (vcdr (vcdr cell))))
+      ((= cell qnil) qnil)
+    (if (= (vcontents cell) property)
+	(return (vcdr cell)))))
 
-(defvar sym-package (pkg-find-package "cold-symbols"))
+;;;; a bit of stuff for debugging
+
+(defun vprint-q (q)
+  (format t "~%CDR-CODE ~s, DATA-TYPE ~s (~s), POINTER ~s"
+	  (ldb sym:%%q-cdr-code q)
+	  (vdata-type q)
+	  (nth (vdata-type q) sym:q-data-types)
+	  (vpointer q)))
+
+(defvar vprinlength #o200)
+(defvar vprinlevel  #o20)
+(defvar vmax-stringlength #o200)
+
+(defun vprint (typed-pointer &optional (vprinlevel vprinlevel))
+  (let ((prinlength-count 0)
+	(data-type (vdata-type typed-pointer))
+	(pointer (vpointer typed-pointer)))
+    (cond ((vatom? typed-pointer)
+	   (cond ((= data-type sym:dtp-symbol)
+		  (vprint-string (vcontents pointer)))
+		 ((= data-type sym:dtp-fix)
+		  (prin1 pointer))
+		 (t (vprint-bomb typed-pointer))))
+	  ((= data-type sym:dtp-array-pointer)
+	   (let ((header (vcontents pointer)))
+	     (cond ((= (mask-field-from-fixnum sym:%%array-type-field header)
+		       sym:art-string)
+		    (princ "/"")
+		    (vprint-string typed-pointer)
+		    (princ "/""))
+		   (t (vprint-bomb typed-pointer)))))
+	  ((= data-type sym:dtp-list)
+	   (cond ((= vprinlevel 0)
+		  (princ "#"))
+		 (t
+		  (princ "(")
+		  (prog ((l typed-pointer))
+		    l	(cond ((> (setq prinlength-count (1+ prinlength-count))
+				  vprinlength)
+			       (princ "...")
+			       (return nil))
+			      ((vatom? l)
+			       (cond ((vnull? l)
+				      (princ ")"))
+				     (t
+				      (princ " . ")
+				      (vprint l (1- vprinlevel))))))
+		       (vprint (vcar l) (1- vprinlevel))
+		       (setq l (vcdr l))
+		       (go l)))))
+	  (t (vprint-bomb typed-pointer)))))
+
+(defun vprint-bomb (typed-pointer)
+  (vprint-q typed-pointer))
+
+(defun vprint-string (string)
+  (let* ((pointer (vpointer string))
+	 (header (vcontents pointer))
+	 (long-flag (ldb sym:%%array-long-length-flag header))
+	 (len (min vmax-stringlength
+		   (if (zerop long-flag)
+		       (ldb sym:%%array-index-length-if-short header)
+		     (vpointer (1+ (vcontents pointer)))))))
+    (dotimes (c len)
+      (let ((wd (vread (+ pointer 1 long-flag (lsh c -2)))))
+	(tyo (logand 377 (ash wd (minus (* 8 (logand c 3)))))))))
+  )
+
+(defun vatom? (typed-pointer)
+  (let ((data-type (vdata-type typed-pointer)))
+    (cond ((or (= data-type sym:dtp-symbol)
+	       (= data-type sym:dtp-fix)
+	       (= data-type sym:dtp-extended-number))
+	   t))))
+
+(defun vnull? (typed-pointer)
+  (= typed-pointer qnil))
+
+(defun mask-field-from-fixnum (ppss word)
+   (logand word (dpb -1 ppss 0)))
+
+(defvar sym-package (pkg-find-package "COLD-SYMBOLS"))
 (defvar misc-function-list)
 (defvar misc-instruction-list)
 
 ;;; Set up the sym: package by loading the appropriate files
 (defun load-parameters ()
-  (load "ai:lispm;qcom >" sym-package)
-  (load "ai:lispm;qdefs >" sym-package)
+  (load "SYS: COLD; QCOM LISP >" sym-package)
+  (load "SYS: COLD; QDEFS LISP >" sym-package)
   (setq misc-function-list nil)
   (setq misc-instruction-list nil)
-  (load "ai:lispm;defmic >" sym-package)
+  (load "SYS: COLD; DEFMIC LISP >" sym-package)
   (dolist (l sym:system-constant-lists)	;Make declarations so can compile self
     (dolist (s (symeval l))
       (putprop s t 'special)))
-  (setq big-fixnum (dpb -1 (1- sym:%%q-pointer) 0)
+  (setq big-fixnum (1- (ash 1 (1- sym:%%q-pointer)))
 	little-fixnum (1- (- big-fixnum))
 	q-typed-pointer-mask (1- (ash 1 sym:%%q-typed-pointer))
 	q-pointer-mask (1- (ash 1 sym:%%q-pointer))))  
 
-;These have to be explicitly declared special because they only exist in
-;the cold-load generator, and are not sent over.
-(declare (special sym:rm-area-sizes sym:scratch-pad-pointers sym:scratch-pad-parameters
-		  sym:scratch-pad-parameter-offset sym:q-corresponding-variable-lists
-		  sym:support-vector-contents sym:constants-page
-		  sym:read-only-area-list sym:wired-area-list sym:pdl-buffer-area-list
-		  sym:list-structured-areas sym:static-areas
-		  sym:prin1 sym:base sym:ibase sym:*nopoint sym:for-cadr))
+;;; These have to be explicitly declared special because they only exist in
+;;; the cold-load generator, and are not sent over.
+(declare (special sym:cold-load-area-sizes sym:cold-load-region-sizes
+		    sym:scratch-pad-pointers sym:scratch-pad-parameters
+		    sym:scratch-pad-parameter-offset sym:q-corresponding-variable-lists
+		    sym:support-vector-contents sym:constants-page
+		    sym:read-only-area-list sym:wired-area-list sym:pdl-buffer-area-list
+		    sym:list-structured-areas sym:static-areas
+		    sym:a-memory-array-locations sym:new-array-index-order
+		    sym:prin1 sym:base sym:ibase sym:*nopoint sym:for-cadr
+		    sym:*print-base* sym:*read-base* sym:*print-radix*
+		    sym:lambda-list-keywords))
 
 ;Put on QLVAL and QINTCMP properties
 ;Creates MISC-FUNCTION-LIST for STORE-MISC-LINK  (CALLED FROM STORE-MISC-U-ENTRY-LINKS)
 ; and MISC-INSTRUCTION-LIST for STORE-MICRO-CODE-SYMBOL-NAMES
 (defun defmic (&quote name opcode arglist lisp-function-p &optional no-qintcmp)
   (prog (function-name instruction-name)
+    (unless (boundp 'sym:lambda-list-keywords)
+      (setq sym:lambda-list-keywords lambda-list-keywords))
     (cond ((atom name)
 	   (setq function-name name instruction-name name))
 	  ((setq function-name (car name) instruction-name (cdr name))))
     (cond ((not no-qintcmp)
+	   (loop for x in arglist
+		 when (memq x sym:lambda-list-keywords)
+		   do (ferror nil "~S has ~S in its arglist which is not allowed"
+				  name x))
 	   (putprop instruction-name (length arglist) 'sym:qintcmp)
 	   (or (eq function-name instruction-name)
 	       (putprop function-name (length arglist) 'sym:qintcmp)))
 	  (t ;The number of arguments is needed anyway for the cold-load generator
-	   (putprop instruction-name (length arglist) 'qintcmp-kludge)
-	   (or (eq function-name instruction-name)
-	       (putprop function-name (length arglist) 'qintcmp-kludge))))
+	   (let ((nargs (length arglist))
+		 (restarg (memq 'sym:&rest arglist)))
+	     (loop for x in arglist
+		   when (memq x sym:lambda-list-keywords)
+		     when (neq x 'sym:&rest)		;&rest allowed if no-qintcmp
+		       do (ferror nil "~S has ~S in its arglist which is not allowed"
+				      name x))
+	     ;; Note that if it says &rest, for a microcode function we don't really
+	     ;; want to get a list of args, we want to see the args on the stack, so
+	     ;; we translate this into the maximum possible number of optional arguments.
+	     ;; EVAL doesn't check the rest-arg bits for microcode entries anyway.
+	     (cond (restarg
+		    (or (not lisp-function-p)
+			(= (length restarg) 2)
+			(ferror nil "~S has garbage ~S in its arglist" name restarg))
+		    (setq nargs (cons (- nargs 2) #o77))))	;(min . max)
+	     (putprop instruction-name nargs 'defmic-nargs-info)
+	     (or (eq function-name instruction-name)
+		 (putprop function-name nargs 'defmic-nargs-info)))))
     (putprop instruction-name opcode 'sym:qlval)
     (setq misc-instruction-list (cons instruction-name misc-instruction-list))
     (and lisp-function-p
 	 (setq misc-function-list (cons name misc-function-list)))))
 
-;;; Basic area-processing and data-storing stuff
+;;;; Basic area-processing and data-storing stuff
 
-;Note that area names are always symbols in the sym: package
+;;; Note that area names are always symbols in the sym: package
 
 (defvar symbol-creation-trace-list nil)
 (defvar qnil)
 (defvar qtruth)
-(defvar area-origins (make-array nil 'art-q 400))
-(defvar area-alloc-pointers (make-array nil 'art-q 400))
-(defvar area-alloc-bounds (make-array nil 'art-q 400))
+(defvar area-origins (make-array #o400))
+(defvar area-alloc-pointers (make-array #o400))
+(defvar area-alloc-bounds (make-array #o400))
 
 (defvar area-corresponding-arrays
 	'sym:(area-name region-origin region-length region-free-pointer
-	      region-gc-pointer region-bits area-region-list area-region-size
-	      area-maximum-size region-list-thread))
+	      region-gc-pointer region-bits area-region-list ; area-region-bits
+	      area-region-size area-maximum-size region-list-thread))
 
 (defvar micro-code-entry-corresponding-arrays
-	'sym:(constants-area micro-code-entry-area 
+	'sym:(micro-code-entry-area
 	      micro-code-entry-name-area micro-code-entry-args-info-area
-	      micro-code-entry-arglist-area micro-code-exit-area 
-	      micro-code-entry-max-pdl-usage micro-code-symbol-area
-	      micro-code-symbol-name-area support-entry-vector))
+	      micro-code-entry-arglist-area
+	      micro-code-entry-max-pdl-usage))
 
 (defvar areas-with-fill-pointers
-	(append area-corresponding-arrays micro-code-entry-corresponding-arrays))
+	(append '(sym:micro-code-symbol-area
+		   sym:micro-code-symbol-name-area
+		   sym:support-entry-vector
+		   sym:constants-area)
+		area-corresponding-arrays micro-code-entry-corresponding-arrays))
 
- ;areas in this list get art-q-list
+;;; areas in this list get art-q-list
 (defvar list-referenced-areas areas-with-fill-pointers)
 
- ;areas in this list get art-q, all other areas get art-32b
-(defvar array-referenced-areas 'sym:(system-communication-area page-table-area
-				     region-sorted-by-origin))
+;;; areas in this list get art-q, all other areas get art-32b
+(defvar array-referenced-areas 'sym:(system-communication-area page-table-area))
 
-(defun create-areas (&aux high-loc)
-  (do l sym:rm-area-sizes (cddr l) (null l)	;Area sizes in pages
+(defun create-areas (&aux high-loc the-region-bits)
+  (do ((l sym:cold-load-area-sizes (cddr l)))	;Area sizes in pages
+      ((null l))
     (putprop (car l) (cadr l) 'area-size))
   (fillarray area-origins '(nil))
   ;; Set up the area origin and allocation tables
-  (do ((l sym:area-list (cdr l))
-       (i 0 (1+ i))
-       (loc 0 (+ loc (* (get-area-size (car l)) sym:page-size))))
-      ((null l) (setq high-loc loc))
-    (aset loc area-origins i))
+  (loop with quantum = sym:page-size
+	for area in sym:area-list
+	for area-number from 0 by 1
+	for loc = 0 then (+ loc size)
+	as size = (* (ceiling (* (get-area-size area) sym:page-size) quantum)
+		     quantum)
+	when (eq area 'sym:init-list-area)	;Last fixed area
+	  do (setq quantum sym:%address-space-quantum-size)
+	     (let ((foo (\ (+ loc size) quantum)))	;Start next area on quantum boundary
+	       (or (zerop foo) (setq size (+ (- size foo) quantum))))
+	do (aset loc area-origins area-number)
+	finally (setq high-loc loc))
   (copy-array-contents area-origins area-alloc-pointers)
   (copy-array-portion area-origins 1 400 area-alloc-bounds 0 400)
   (aset high-loc area-alloc-bounds (1- (length sym:area-list)))
+  (setq vmem-highest-address high-loc)
   ;; Fill various areas with default stuff
   (init-area-contents 'sym:area-region-size (vfix 40000))
   (init-area-contents 'sym:area-maximum-size (vfix big-fixnum))
@@ -235,6 +420,11 @@
   (init-area-contents 'sym:region-free-pointer (vfix 0))
   (init-area-contents 'sym:region-gc-pointer (vfix 0))
   (init-area-contents 'sym:region-bits (vfix 0))  ;Suitable for free region
+  ; (init-area-contents 'sym:area-region-bits (vfix 0))
+  ;; Crank up region size for certain big areas
+  (do l sym:cold-load-region-sizes (cddr l) (null l)
+      (vwrite (+ (get-area-origin 'sym:area-region-size) (get-area-number (car l)))
+	      (vfix (cadr l))))
   ;; Set up contents of certain initial areas
   (do ((i 0 (1+ i))
        (al sym:area-list (cdr al))
@@ -244,11 +434,12 @@
     (vwrite (+ (get-area-origin 'sym:area-region-list) i) (vfix i))
     (vwrite (+ (get-area-origin 'sym:region-list-thread) i) (vfix (+ i little-fixnum)))
     (vwrite (+ (get-area-origin 'sym:region-bits) i)
-	    (vfix (+ (dpb (cond ((memq (car al) sym:read-only-area-list) 1200)	;ro
-				((memq (car al) sym:wired-area-list) 1400)	;rw
+	    (setq the-region-bits 
+		  (vfix (+ (dpb (cond ((memq (car al) sym:read-only-area-list) #o1200)	;ro
+				((memq (car al) sym:wired-area-list) #o1400)	;rw
 				((memq (car al) sym:pdl-buffer-area-list)
-				 500)			;may be in pdl-buffer, no access.
-				(t 1300))			;rwf
+				 #o500)			;may be in pdl-buffer, no access.
+				(t #o1300))			;rwf
 			  sym:%%region-map-bits
 			  0)
 		     (dpb 1 sym:%%region-oldspace-meta-bit 0)
@@ -261,7 +452,32 @@
 				(fixed-p sym:%region-space-fixed)
 				((memq (car al) sym:static-areas) sym:%region-space-static)
 				(t sym:%region-space-new))
-			  sym:%%region-space-type 0))))
+			  sym:%%region-space-type 0)
+		     ;; Set up the scavenge enable.  Note!  The extra-pdl does not follow the
+		     ;; prescribed protocol for header/body forward, and gets randomly reset.
+		     ;; Fortunately it never points at anything.
+		     (dpb (cond ((eq (car al) 'sym:extra-pdl-area) 0)
+				(fixed-p	;These usually should be scavenged, except
+						;for efficiency certain ones
+						;that only contain fixnums will be bypassed
+				 (if (memq (car al)
+					   'sym:(micro-code-symbol-area page-table-area
+						 physical-page-data region-origin
+						 region-length region-bits region-free-pointer
+						 address-space-map
+						 region-gc-pointer region-list-thread
+						 area-region-list
+						 ; area-region-bits
+						 area-region-size area-maximum-size 
+						 micro-code-entry-area
+						 micro-code-entry-max-pdl-usage))
+				     0 1))
+				((memq (car al) sym:static-areas) 1)	;Static needs scav
+				(t 0))		;Newspace doesn't need scavenging
+			  sym:%%region-scavenge-enable 0)
+		     ))))
+;    (vwrite (+ (get-area-origin 'sym:area-region-bits) i)
+;	    the-region-bits)
     (vwrite (+ (get-area-origin 'sym:region-origin) i)
 	    (vfix (aref area-origins i)))
     (vwrite (+ (get-area-origin 'sym:region-length) i)
@@ -269,11 +485,17 @@
 
 (defun get-area-number (area)
   (cond ((numberp area) area)
-	((find-position-in-list area sym:area-list))	;symeval??
+	((find-position-in-list area sym:area-list))	;No symeval, the might have changed.
 	((ferror nil "~S bad area-name" area))))
 
 (defun get-area-origin (area)
   (aref area-origins (get-area-number area)))
+
+(defun get-area-bound (area)
+  (aref area-alloc-bounds (get-area-number area)))
+
+(defun get-area-free-pointer (area)
+  (aref area-alloc-pointers (get-area-number area)))
 
 (defun allocate-block (area size &aux address high)
   (setq area (get-area-number area))
@@ -283,20 +505,19 @@
        (ferror nil "~A area overflow" (nth area sym:area-list)))
   (aset high area-alloc-pointers area)
   ;Page in all the fresh pages without really paging them in, thus initializing them
-  (do ((vpn (// (+ address sym:page-size -1) sym:page-size) (1+ vpn))
-       (hpn (// (+ high sym:page-size -1) sym:page-size)))
+  (do ((vpn (ceiling address sym:page-size) (1+ vpn))
+       (hpn (ceiling high sym:page-size)))
       (( vpn hpn))
     (vmem-find-page (* vpn sym:page-size) nil))
   address)
 
-;In pages
+;;; In pages
 (defun get-area-size (area)
   (check-arg area (memq area sym:area-list) "an area-name")
-  (cond ((eq area 'sym:free-area) 0)
-	((get area 'area-size))
+  (cond ((get area 'area-size))
 	(t 1)))
 
-;Doesn't advance allocation pointer, i.e. sets it back to origin when done
+;;; Doesn't advance allocation pointer, i.e. sets it back to origin when done
 (defun init-area-contents (area contents)
   (let ((count (* sym:page-size (get-area-size area))))
     (setq area (get-area-number area))
@@ -311,8 +532,8 @@
 (defvar store-halfwords-count)
 (defvar store-halfwords-buffer)
 
-(defun begin-store-halfwords (area-name n-words)
-  (let* ((area-number (get-area-number area-name))
+(defun begin-store-halfwords (name-of-area n-words)
+  (let* ((area-number (get-area-number name-of-area))
 	 (address (allocate-block area-number n-words)))
     (setq store-halfwords-address address
 	  store-halfwords-count (* 2 n-words))
@@ -321,19 +542,23 @@
 (defun store-halfword (hwd)
   (if (oddp (setq store-halfwords-count (1- store-halfwords-count)))
       (setq store-halfwords-buffer hwd)
-      (vwrite store-halfwords-address (dpb hwd 2020 store-halfwords-buffer))
+      (vwrite store-halfwords-address (dpb hwd #o2020 store-halfwords-buffer))
       (setq store-halfwords-address (1+ store-halfwords-address))))
 
 (defun end-store-halfwords ()
   (or (zerop store-halfwords-count)
       (ferror nil "store-halfword called wrong number of times")))
 
+;;; Given an object in our world, construct a matching one in the cold load world
+;;; and return a cold-load pointer to it.
 (defun make-q-list (area s-exp &aux bsize value)
   (cond ((numberp s-exp)
 	 (cond ((small-floatp s-exp) (make-small-flonum s-exp))
-	       ((floatp s-exp) (store-flonum area s-exp))
+	       ((floatp s-exp) (store-flonum 'sym:working-storage-area s-exp))
 	       ((and ( s-exp big-fixnum) ( s-exp little-fixnum)) (vfix s-exp))
-	       (t (store-bignum area s-exp))))
+	       (t (store-bignum 'sym:working-storage-area s-exp))))
+;	((characterp s-exp)
+;	 (vmake-pointer sym:dtp-character (char-int s-exp)))
 	((symbolp s-exp) (qintern s-exp))
 	((stringp s-exp) (store-string 'sym:p-n-string s-exp))
 	((atom s-exp) (ferror nil "~S unknown type" s-exp))
@@ -355,24 +580,34 @@
 	   value)))
 
 (defun make-small-flonum (s-exp)  ;I hope the format doesn't change!
-  (vmake-pointer sym:dtp-small-flonum (%pointer s-exp)))
+  (let ((as-fixnum (%pointer s-exp)))
+;; The following line should be removed once we are running in system 99 or above.
+;   (setq as-fixnum (%pointer-plus as-fixnum #o40000000))
+    (vmake-pointer sym:dtp-small-flonum as-fixnum)))
 
 (defun magic-aref (a i n)
-  (if (< i n) (aref a i) 200))
+  (if (< i n) (aref a i) #o200))
 
 (defun store-string (area string)
    (and (memq area sym:list-structured-areas)
 	(ferror nil "store-string in list-structured area"))
    (let* ((n-chars (string-length string))
-	  (n-words (+ 1 (// (+ n-chars 3) 4)))
-	  (adr (allocate-block area n-words)))
+	  (n-words (+ 1 (ceiling n-chars 4)))
+	  long-flag
+	  adr)
      (and (> n-chars sym:%array-max-short-index-length)
-	  (ferror nil "I don't know how to make a long-array"))
+	  (setq long-flag t
+		n-words (1+ n-words)))
+     (setq adr (allocate-block area n-words))
      (vwrite adr (vmake-pointer sym:dtp-array-header
 				(+ sym:array-dim-mult	;1-dim
 				   sym:art-string
-				   n-chars)))
-     (do ((i 1 (1+ i))
+				   (if long-flag
+				       (dpb 1 sym:%%array-long-length-flag 0)
+				     n-chars))))
+     (when long-flag
+       (vwrite (1+ adr) n-chars))
+     (do ((i (if long-flag 2 1) (1+ i))
 	  (j 0 (+ j 4)))
 	 ((= i n-words))
        (vwrite (+ adr i)
@@ -386,7 +621,7 @@
   (and (memq area sym:list-structured-areas)
        (ferror nil "store-symbol-vector in list-structured area ~S" area))
   (and (eq atom-name '**screw**)
-       (ferror nil "you've probably encountered a bug in froid (coldld)" atom-name))
+       (ferror nil "you've probably encountered a bug in COLDLD" atom-name))
   (prog (adr sym path real-atom-name package-name pname)
      (cond ((setq path (get atom-name 'package-path))
 	    (or (= (length path) 2)
@@ -394,14 +629,14 @@
 	    (setq package-name (qintern (car path))
 		  real-atom-name (car (last path))))
 	   (t (setq package-name qnil real-atom-name atom-name)))
-     (cond (symbol-creation-trace-list  ;debugging tool to track down appears twice in 
-	     (do ((l symbol-creation-trace-list (cdr l)))  ;cold load messages.
-		 ((null l))
-	       (cond ((inhibit-style-warnings
-			(samepnamep real-atom-name (car l)))
-		      (print (list 'a-flavor-of real-atom-name 'being-created
-				   'atom-name atom-name 'path path
-				   'package-name package-name)))))))
+     (when symbol-creation-trace-list	;debugging tool to track down appears twice in 
+       (do ((l symbol-creation-trace-list (cdr l)))	;cold load messages.
+	   ((null l))
+	 (cond ((inhibit-style-warnings
+		  (samepnamep real-atom-name (car l)))
+		(format t "
+A-flavor-of ~S being-created, atom-name ~S, path ~S, package-name ~S"
+			real-atom-name atom-name path  package-name)))))
      (setq pname (store-string 'sym:p-n-string (string real-atom-name)))
      (setq adr (allocate-block area sym:length-of-atom-head))
      (vwrite-cdr adr sym:cdr-next (vmake-pointer sym:dtp-symbol-header pname))
@@ -413,12 +648,36 @@
      (putprop atom-name sym 'q-atom-head)
      (return sym)))
 
-;New version of qintern.  Machine builds obarray when it first comes up (easy enough).
+(deff store-bignum 'store-extended-number)
+(deff store-flonum 'store-extended-number)
+
+(defun store-extended-number (area number)
+  (and (memq area sym:list-structured-areas)
+       (ferror nil "extended-number in list-structured area ~S" area))
+  (let* ((size (%structure-total-size number))
+	 (adr (allocate-block area size)))
+    (loop for i from 0 below size
+	  do (vwrite-low (+ adr i) (%p-ldb-offset 0020 number i))
+	     (vwrite-high (+ adr i) (%p-ldb-offset 2020 number i)))
+    (vmake-pointer sym:dtp-extended-number adr)))
+
+;;; New version of qintern.  Machine builds obarray when it first comes up (easy enough).
 (defun qintern (atom-name)
     (or (eq (car (package-cell-location atom-name)) sym-package)
 	(setq atom-name (intern (string atom-name) sym-package)))
     (or (get atom-name 'q-atom-head)
 	(store-symbol-vector atom-name 'sym:nr-sym)))
+
+(defun q-atom-head-reset (&optional (pkg sym-package))
+  (mapatoms #'(lambda (x) (remprop x 'q-atom-head)) pkg nil))
+
+(defun print-q-symbols (&optional (pkg sym-package))
+  (mapatoms #'(lambda (x)
+		(let ((q-atom (get x 'q-atom-head)))
+		  (if q-atom
+		      (format t "~%Symbol ~s, q-atom-head ~s" x q-atom))))
+	    pkg
+	    nil))
 
 (defun store-nxtnil-cdr-code (area)
   (vstore-cdr-code (1- (aref area-alloc-pointers (get-area-number area))) sym:cdr-nil))
@@ -441,7 +700,7 @@
 	 (adr adr (1+ adr)))
 	((null lst))
       (vwrite-cdr adr (if (null (cdr lst)) sym:cdr-nil sym:cdr-next)
-		      (make-q-list 'init-list-area (car lst))))
+		      (make-q-list 'sym:init-list-area (car lst))))
     adr))
 
 (defun store-nils (area number)
@@ -462,7 +721,7 @@
     (vwrite-cdr adr cdr-code data)
     adr))
 
-;;; Hair for making arrays
+;;;; Hair for making arrays
 
 (defun init-q-array (area name offset type dimlist displaced-p leader)
   (init-q-array-named-str area name offset type dimlist displaced-p leader nil))
@@ -481,7 +740,10 @@
   (prog (tem ndims index-length data-length tem1 leader-length header-q long-array-flag adr)
 	(and (numberp dimlist) (setq dimlist (list dimlist)))
 	(setq ndims (length dimlist))
-	(setq index-length (list-product dimlist))
+	(when sym:new-array-index-order
+	  (setq dimlist (reverse dimlist)))
+	;; The rest of this is correct for column-major order.
+	(setq index-length (sys:list-product dimlist))
 	(cond ((and (> index-length sym:%array-max-short-index-length)
 		    (null displaced-p))
 	       (setq long-array-flag t)))
@@ -507,7 +769,7 @@
 			    ((null l))
 			  (vwrite (+ adr i) (car l)))))
 	       (vwrite (+ adr leader-length -1) (vfix (- leader-length 2)))))
-	(setq data-length (// (+ index-length (1- tem)) tem))
+	(setq data-length (ceiling index-length tem))
 	(setq header-q (vmake-pointer sym:dtp-array-header
 				      (+ (* sym:array-dim-mult ndims)
 					 (symeval type))))
@@ -533,15 +795,15 @@
   (vwrite (- arrayp (+ 2 idx))			;1 for array header, 1 for ldr len
 	  data))
 
-;;; Setting up various magic data structures, mostly having to do with the
-;;; microcode and the fixed-areas
+;;;; Setting up various magic data structures,
+;;;;  mostly having to do with the microcode and the fixed-areas
 
 (defun store-support-vector (item)
   (let ((adr (allocate-block 'sym:support-entry-vector 1)))
     (vwrite-cdr adr sym:cdr-next
 		(cond ((eq (car item) 'sym:function)
 		       (get-q-fctn-cell (cadr item)))
-		      ((eq (car item) 'sym:quote)
+		      ((memq (car item) '(quote sym:quote))
 		       (make-q-list 'sym:init-list-area (cadr item)))
 		      (t (ferror nil "bad-support-code: ~S" item))))
     adr))
@@ -554,42 +816,48 @@
  (prog (fillp area-array-type data-length adr)
     (setq fillp (memq area areas-with-fill-pointers))
     (setq area-array-type 
-	  (cond ((memq area list-referenced-areas) 'sym:art-q-list)
+	  (cond ((eq area 'sym:address-space-map) 'sym:art-8b)	;%address-space-map-byte-size
+		((memq area list-referenced-areas) 'sym:art-q-list)
 		((memq area array-referenced-areas) 'sym:art-q)
 		(t 'sym:art-32b)))
-    (setq data-length 
-	  (init-q-array 'sym:control-tables
-			area  
-			2 
-			area-array-type  
-			(list (* sym:page-size (get-area-size area)))
-			t 
-			(and fillp
-			     (list (vfix (cond ((memq area area-corresponding-arrays)
-						(length area-list))
-					       ((memq area
-						      micro-code-entry-corresponding-arrays)
-						(length micro-code-entry-vector))
-					       (t
-						 (* sym:page-size (get-area-size area)))))))))
+    (init-q-array 'sym:control-tables
+		  area  
+		  2 
+		  area-array-type  
+		  (setq data-length	;In entries, not Qs!
+			(if (eq area 'sym:address-space-map)
+			    (// (1+ q-pointer-mask) sym:%address-space-quantum-size)
+			    (* sym:page-size (get-area-size area))))
+		  t 
+		  (and fillp
+		       (list (vfix (cond ((memq area area-corresponding-arrays)
+					  (length sym:area-list))
+					 ((memq area
+						micro-code-entry-corresponding-arrays)
+					  (length micro-code-entry-vector))
+					 ((eq area 'sym:address-space-map)
+					  (// (1+ q-pointer-mask)
+						    sym:%address-space-quantum-size))
+					 (t
+					  (* sym:page-size (get-area-size area))))))))
     (setq adr (allocate-block 'sym:control-tables 2))
     (vwrite adr (vfix (get-area-origin area)))
     (vwrite (1+ adr) (vfix data-length))))
 
-;x is a symbol or cons function-name instruction-name
+;;; x is a symbol or cons function-name instruction-name
 (defun store-misc-link (x)
   (cond ((atom x)
 	 (misc-store-micro-entry x x))
 	((misc-store-micro-entry (car x) (cdr x)))))
 
-;special kludge which filters out *catch 
+;;; special kludge which filters out *catch 
 (defun store-misc-link-1 (x)
   (or (eq x 'sym:*catch)
       (store-misc-link x)))
 
-;This creates an indirect through the MICRO-CODE-SYMBOL-AREA by using
-;DTP-FIX and 200 less than the misc function index.  This makes
-;the core image independent of the microcode version.
+;;; This creates an indirect through the MICRO-CODE-SYMBOL-AREA by using
+;;; DTP-FIX and #o200 less than the misc function index.  This makes
+;;; the core image independent of the microcode version.
 (defun misc-store-micro-entry (name me-name)
   (prog (misc-index u-entry-prop u-entry-index)
 	(cond ((null (setq misc-index (get me-name 'sym:qlval)))
@@ -604,7 +872,7 @@
 			    u-entry-index)
 			 (make-q-list 'sym:init-list-area (get-q-args-prop name)))))
 
-;This abbreviated version of the stuff in UTIL2 should be enough to get us off the ground
+;;; This abbreviated version of the stuff in UTIL2 should be enough to get us off the ground
 (defun get-q-args-prop (fctn &aux tem)
   (cond ((setq tem (get fctn 'sym:argdesc))
 	 (get-q-args-prop-from-argdesc-prop tem))
@@ -612,18 +880,19 @@
 	 (+ (lsh tem 6) tem))
 	;; You may think this is a kludge, but in the Maclisp cold-load generator
 	;; it gets the number of arguments out of the Maclisp subr of the same name!
-	((setq tem (get fctn 'qintcmp-kludge))
-	 (+ (lsh tem 6) tem))
+	((setq tem (get fctn 'defmic-nargs-info))
+	 (if (listp tem) (+ (lsh (car tem) 6) (cdr tem))
+	     (+ (lsh tem 6) tem)))
 	(t (ferror nil "Cannot find arg desc for ~S" fctn))))
 
 (defun get-q-args-prop-from-argdesc-prop (arg-desc)
   (prog (prop min-args max-args count item)
 	(setq prop 0 min-args 0 max-args 0)
-   l	(cond ((null arg-desc) (return (+ prop (lsh min-args 6) max-args))))
+     l	(cond ((null arg-desc) (return (+ prop (lsh min-args 6) max-args))))
 	(setq count (caar arg-desc))
 	(setq item (cadar arg-desc)) ;list of arg syntax, quote type, other attributes
 	(setq arg-desc (cdr arg-desc))
-   l1	(cond ((= 0 count) (go l))
+     l1	(cond ((= 0 count) (go l))
 	      ((memq 'sym:fef-arg-rest item)
 	       (setq prop (logior prop (if (or (memq 'sym:fef-qt-eval item)
 					       (memq 'sym:fef-qt-dontcare item))
@@ -663,17 +932,19 @@
 		     (qintern name))))
 
 (defun store-lisp-value-list (x)
-  (mapc (function store-lisp-value) (symeval x)))
+  (mapc #'store-lisp-value (symeval x)))
 
 (defun store-lisp-value (sym)
   (storein-q-value-cell sym (make-q-list 'sym:init-list-area (symeval sym))))
 
-;Store cdr-coded list of 1000 NIL's.
+;;; Store cdr-coded list of #o1000 (or however many) NIL's.
 (defun init-micro-code-symbol-name-area ()
-  (store-nils 'sym:micro-code-symbol-name-area 1000))
+  (store-nils 'sym:micro-code-symbol-name-area
+	      (* sym:page-size
+		 (get (locf sym:cold-load-area-sizes) 'sym:micro-code-symbol-name-area))))
 
 (defun cold-load-time-setq (pair-list &aux var value)
-  (do pair-list pair-list (cddr pair-list) (null pair-list)
+  (do ((pair-list pair-list (cddr pair-list))) ((null pair-list))
     (setq var (car pair-list) value (cadr pair-list))
     (cond ((and (atom value) (or (numberp value)
 				 (stringp value)
@@ -693,6 +964,11 @@
 
 (defun init-scratch-pad-area ()
   (init-area-contents 'sym:scratch-pad-init-area (vfix 0))
+  (aset (+ (aref area-origins (get-area-number 'sym:scratch-pad-init-area))
+	   sym:scratch-pad-parameter-offset 
+	   (length sym:scratch-pad-parameters))
+	area-alloc-pointers
+	(get-area-number 'sym:scratch-pad-init-area))
   (scratch-store-q 'sym:initial-top-level-function
 		   (vmake-pointer sym:dtp-locative
 				  (+ (qintern 'sym:lisp-top-level) 2)))
@@ -705,38 +981,41 @@
 
 (defun scratch-store-q (symbolic-name data)
    (prog (tem origin)
-      (setq origin (get-area-origin 'sym:scratch-pad-init-area))
-      (cond ((setq tem (find-position-in-list symbolic-name sym:scratch-pad-pointers))
-	     (vstore-contents (+ origin tem) data))
-	    ((setq tem (find-position-in-list symbolic-name sym:scratch-pad-parameters))
-	     (vstore-contents (+ origin sym:scratch-pad-parameter-offset tem) data))
-	    (t (ferror nil "unknown-scratch-quantity: ~S" symbolic-name)))))
+	 (setq origin (get-area-origin 'sym:scratch-pad-init-area))
+	 (cond ((setq tem (find-position-in-list symbolic-name sym:scratch-pad-pointers))
+		(vstore-contents (+ origin tem) data))
+	       ((setq tem (find-position-in-list symbolic-name sym:scratch-pad-parameters))
+		(vstore-contents (+ origin sym:scratch-pad-parameter-offset tem) data))
+	       (t (ferror nil "unknown-scratch-quantity: ~S" symbolic-name)))))
 
 (defun store-a-mem-location-names ()
     (do ((name sym:a-memory-location-names (cdr name))
-	 (locn (+ 40 sym:a-memory-virtual-address) (1+ locn)))
+	 (locn (+ #o40 sym:a-memory-virtual-address) (1+ locn)))
 	((null name))
      (store-mem-location (car name) locn))
     (do name sym:m-memory-location-names (cdr name) (null name)
-     (store-mem-location (car name) (get (car name) 'sym:forwarding-virtual-address))))
+     (store-mem-location (car name) (get (car name) 'sym:forwarding-virtual-address)))
+    (store-mem-location 'sym:%gc-generation-number
+			(+ #o400 sym:%sys-com-gc-generation-number))
+    )
 
 (defun store-mem-location (name locn)
   (storein-q-value-cell name (vmake-pointer sym:dtp-one-q-forward locn)))
 
 (defun make-ordered-array-list (assoc-list)
-  (mapcar (function (lambda (x) (cdr (assq x assoc-list))))
+  (mapcar #'(lambda (x) (cdr (assq x assoc-list)))
 	  sym:array-types))
 
-;The order store-misc-link is called determines the final micro-code-entry
-; numbers that are assigned.  however, except for 0 which must be *catch,
-; micro-code-entry numbers are unconstrained and independant from everything
-; else.  So the other entries below may be in any order.
+;;;The order store-misc-link is called determines the final micro-code-entry
+;;; numbers that are assigned.  however, except for 0 which must be *catch,
+;;; micro-code-entry numbers are unconstrained and independant from everything
+;;; else.  So the other entries below may be in any order.
 (defun store-misc-u-entry-links ()
   (store-misc-link 'sym:*catch)		;must be first
-  (mapc (function store-misc-link-1) misc-function-list)
-  ;; now set up the first 600 locations of micro-code-symbol-name-area
+  (mapc #'store-misc-link-1 misc-function-list)
+  ;; now set up the first #o600 locations of micro-code-symbol-name-area
   (init-micro-code-symbol-name-area)
-  (mapc (function store-micro-code-symbol-name) misc-instruction-list))
+  (mapc #'store-micro-code-symbol-name misc-instruction-list))
 
 (defun make-initial-stack-group-structure ()
   (make-stack-group-structure 'sym:main-stack-group 'sym:control-tables
@@ -783,27 +1062,27 @@
   (store-q-array-leader sg sym:sg-initial-function-index (vfix 3)))
 
 ;This better agree with the order of the list of qs in QCOM
-(defun init-system-communication-area (&aux (nqs 24.) adr)
+(defun init-system-communication-area (&aux (nqs 27.) adr)
   (setq adr (allocate-block 'sym:system-communication-area nqs))
   (vwrite (+ adr sym:%sys-com-area-origin-pntr)
 	  (vmake-pointer sym:dtp-locative (get-area-origin 'sym:region-origin)))
   (vwrite (+ adr sym:%sys-com-valid-size) (vfix 0))	;fixed later
   (vwrite (+ adr sym:%sys-com-page-table-pntr)
 	  (vmake-pointer sym:dtp-locative (get-area-origin 'sym:page-table-area)))
-  (vwrite (+ adr sym:%sys-com-page-table-size)
+  (vwrite (+ adr sym:%sys-com-page-table-size)	;Real value put in by microcode
 	  (vfix (* (get-area-size 'sym:page-table-area) sym:page-size)))
   (vwrite (+ adr sym:%sys-com-obarray-pntr) (qintern 'sym:obarray))
-  (vwrite (+ adr sym:%sys-com-remote-keyboard) (vfix 0))
-  (vwrite (+ adr sym:%sys-com-micro-load-m-data) (vfix 0))
-  (vwrite (+ adr sym:%sys-com-micro-load-a-data) (vfix 0))
-  (vwrite (+ adr sym:%sys-com-micro-load-address) (vfix 0))
-  (vwrite (+ adr sym:%sys-com-micro-load-flag) (vfix 0))
+  (vwrite (+ adr sym:%sys-com-ether-free-list) qnil)
+  (vwrite (+ adr sym:%sys-com-ether-transmit-list) qnil)
+  (vwrite (+ adr sym:%sys-com-ether-receive-list) qnil)
+  (vwrite (+ adr sym:%sys-com-band-format) (vfix 0))	;not compressed format
+  (vwrite (+ adr sym:%sys-com-gc-generation-number) (vfix 0))
   (vwrite (+ adr sym:%sys-com-unibus-interrupt-list) (vfix 0))
   (vwrite (+ adr sym:%sys-com-temporary) (vfix 0))
   (vwrite (+ adr sym:%sys-com-free-area/#-list) 0)	;fixed later
   (vwrite (+ adr sym:%sys-com-free-region/#-list) 0)	;fixed later
-  (vwrite (+ adr sym:%sys-com-memory-size) (vfix 100000))	;assume 32K, fixed later
-  (vwrite (+ adr sym:%sys-com-wired-size)  ;region-free-pointer is the first pageable area
+  (vwrite (+ adr sym:%sys-com-memory-size) (vfix #o100000))	;assume 32k, fixed later
+  (vwrite (+ adr sym:%sys-com-wired-size)  ;region-gc-pointer is the first pageable area
 	  (vfix (get-area-origin 'sym:region-free-pointer)))
   (vwrite (+ adr sym:%sys-com-chaos-free-list) qnil)
   (vwrite (+ adr sym:%sys-com-chaos-transmit-list) qnil)
@@ -813,35 +1092,30 @@
   (vwrite (+ adr sym:%sys-com-debugger-data-1) (vfix 0))
   (vwrite (+ adr sym:%sys-com-debugger-data-2) (vfix 0))
   (vwrite (+ adr sym:%sys-com-major-version) qnil)	;I.e. fresh cold-load
+  (vwrite (+ adr sym:%sys-com-desired-microcode-version) qnil)	;Set by system initialization
+  (vwrite (+ adr sym:%sys-com-highest-virtual-address)
+	  (vfix 0)) ;used only if compressed band.
+  (vwrite (+ adr sym:%sys-com-pointer-width) (vfix sym:%%q-pointer))
   (or (= nqs (length sym:system-communication-area-qs))
       (ferror nil "QCOM and COLDUT disagree about system-communication-area")))
 
 (defun q-storage-finalize ()
-  (mapc (function store-support-vector) sym:support-vector-contents)
+  (mapc #'store-support-vector sym:support-vector-contents)
   (store-nxtnil-cdr-code 'sym:support-entry-vector)
-  (mapc (function store-displaced-array-pointer) sym:area-list)
+  (mapc #'store-displaced-array-pointer sym:area-list)
   (scratch-store-q 'sym:active-micro-code-entries (vfix (length micro-code-entry-vector)))
   ;; Transfer over free pointers
   (do ((area-number 0 (1+ area-number))
-       (area-list sym:area-list (cdr area-list))
-       (rfp (get-area-origin 'sym:region-free-pointer))
-       (rgp (get-area-origin 'sym:region-gc-pointer))
-       (f))
-      ((null area-list))
-    (setq f (vfix (- (aref area-alloc-pointers area-number) (aref area-origins area-number))))
-    (vwrite (+ rfp area-number) f)
-    (vwrite (+ rgp area-number) f))
+       (a-l sym:area-list (cdr a-l))
+       (rfp (get-area-origin 'sym:region-free-pointer)))
+      ((null a-l))
+    (vwrite (+ rfp area-number)
+	    (vfix (- (aref area-alloc-pointers area-number) (aref area-origins area-number))))
+    )
 
-  ;; Allocate rest of address space to the free area
-  (let ((fa (get-area-number 'sym:free-area))
-	(high-loc (aref area-alloc-bounds (1- (length sym:area-list)))))
+  (let ((high-loc (aref area-alloc-bounds (1- (length sym:area-list)))))
     (vwrite (+ (get-area-origin 'sym:system-communication-area) sym:%sys-com-valid-size)
-	    (vfix high-loc))
-    (multiple-value-bind (ignore n-pages) (sys:find-disk-partition "PAGE")
-      (vwrite (+ (get-area-origin 'sym:region-origin) fa) (vfix high-loc))
-      (vwrite (+ (get-area-origin 'sym:region-length) fa)
-	      (vfix (- (* n-pages sym:page-size) high-loc)))
-      (vwrite (+ (get-area-origin 'sym:region-bits) fa) (vfix 0))))
+	    (vfix high-loc)))
   ;; Set up the area# and region# free lists
   (vwrite (+ (get-area-origin 'sym:system-communication-area) sym:%sys-com-free-area/#-list)
 	  (vfix (length sym:area-list)))
@@ -854,27 +1128,18 @@
   (vwrite (+ (get-area-origin 'sym:area-region-list) sym:size-of-area-arrays) (vfix 0))
   ;; Make certain areas look full
   (dolist (area 'sym:(region-origin region-length region-free-pointer region-gc-pointer
-		      region-bits region-list-thread area-name area-region-list
-		      area-region-size area-maximum-size
+		      region-bits region-list-thread area-name area-region-list 
+		      ; area-region-bits
+		      area-region-size area-maximum-size 
 		      linear-pdl-area linear-bind-pdl-area))
     (vwrite (+ (get-area-origin 'sym:region-free-pointer) (get-area-number area))
 	    (vfix (* (get-area-size area) sym:page-size))))
   ;; Initialize unused portions of the disk
   (initialize-unused-pages)
-  (init-region-sorted-by-origin)
-  ;; Set up the page hash table to be empty except for the wired areas
-  ;; which will look like they are at virtual=real addresses.
+  (init-address-space-map)
+  ;; Don't bother setting up the PHT and PPD, the microcode will take care of it
   ;; Cold-booting into this band will then do the right thing with it
   (init-area-contents 'sym:page-table-area (vfix 0))
-  (dolist (area sym:area-list)			;For each wired area
-    (and (eq area 'sym:region-free-pointer) (return))	;first non-wired area
-    (let* ((area-number (get-area-number area))
-	   (area-base (aref area-origins area-number))
-	   (area-bound (aref area-alloc-bounds area-number)))
-      (do ((pn (// area-base sym:page-size) (1+ pn))	;For each page in that area
-	   (n (// area-bound sym:page-size)))
-	  (( pn n))
-	(cold-create-page area area-number pn pn))))
   ;; Terminate areas which have overlying lists
   (store-nxtnil-cdr-code 'sym:constants-area)
   (store-nxtnil-cdr-code 'sym:scratch-pad-init-area)
@@ -882,30 +1147,47 @@
   (store-nxtnil-cdr-code 'sym:micro-code-entry-area)
   (store-nxtnil-cdr-code 'sym:micro-code-entry-name-area)
   (store-nxtnil-cdr-code 'sym:micro-code-entry-args-info-area)
-  (store-nxtnil-cdr-code 'sym:micro-code-entry-arglist-area)
-  (store-nxtnil-cdr-code 'sym:micro-code-exit-area))
+  (store-nxtnil-cdr-code 'sym:micro-code-entry-arglist-area))
 
 (defun initialize-unused-pages (&aux area address high)
-  (dolist (area-name (memq 'sym:extra-pdl-area sym:area-list))	;no trash low fixed areas
-    (setq area (get-area-number area-name)
+  (dolist (name-of-area (memq 'sym:extra-pdl-area sym:area-list)) ;no trash low fixed areas
+    (setq area (get-area-number name-of-area)
 	  address (aref area-alloc-pointers area)
 	  high (aref area-alloc-bounds area))
     ;Page in all the fresh pages without really paging them in, thus initializing them
-    (do ((vpn (// (+ address sym:page-size -1) sym:page-size) (1+ vpn))
-	 (hpn (// (+ high sym:page-size -1) sym:page-size)))
+    (do ((vpn (ceiling address sym:page-size) (1+ vpn))
+	 (hpn (ceiling high sym:page-size)))
 	(( vpn hpn))
       (vmem-find-page (* vpn sym:page-size) nil))))
 
-;Set up REGION-SORTED-BY-ORIGIN area.  Special notes:
-;    Zero-length regions have to come before other regions at the same address
-;    [alternatively they could not appear at all]
-(defun init-region-sorted-by-origin ()
-  (do ((mum (make-sorted-region-list)
-	    (or (cdr mum) mum)) ;replicate last entry
-       (i 0 (1+ i))
-       (rso (get-area-origin 'sym:region-sorted-by-origin)))
-      ((> i sym:size-of-area-arrays))
-    (vwrite (+ rso i) (vfix (cdar mum)))))
+(defun init-address-space-map ()
+  (or (= sym:%address-space-map-byte-size 8)
+      (ferror nil "This code only works for %address-space-map-byte-size = 8"))
+  (let ((map (make-array #o2000 ':type 'art-8b)) ;Initializes to 0
+	(asm (get-area-origin 'sym:address-space-map))
+	(asqs sym:%address-space-quantum-size))
+    ;For each non-fixed area, find all the address space quanta in the area's initial
+    ;region and store them into the map
+    (loop for area from (1+ (get-area-number 'sym:init-list-area))
+		   below (length sym:area-list)
+	  unless (and (zerop (\ (aref area-origins area) asqs))
+		      (zerop (\ (aref area-alloc-bounds area) asqs)))
+	    do (ferror nil "Area ~A is not an integral number of address space quanta"
+			   (nth area sym:area-list))
+	  do (loop for q from (// (aref area-origins area) asqs)
+			 below (// (aref area-alloc-bounds area) asqs)
+		   do (aset area map q)))
+    ;Now dump this into the cold load
+    (loop for i from 0 below #o400 for j from 0 by 4
+	  do (vwrite (+ asm i)
+		     (dpb (aref map (+ j 3)) #o3010
+			  (dpb (aref map (+ j 2)) #o2010
+			       (dpb (aref map (+ j 1)) #o1010
+				    (aref map j))))))
+    ;cause address-space-map region to appear full so it gets dumped by band dumper.
+    (vwrite (+ (get-area-origin 'sym:region-free-pointer)
+	       (get-area-number 'sym:address-space-map))
+	    (vfix (* (get-area-size 'sym:address-space-map) sym:page-size)))))
 
 (defun make-sorted-region-list ()
   (sort (do ((i 0 (1+ i))
@@ -913,82 +1195,48 @@
 	     (l nil))
 	    ((null al)
 	     (nreverse l))
-	  (or (eq (car al) 'sym:free-area)
-	      (push (cons (aref area-origins i) i) l)))
-	(function (lambda (x y)
-	   (cond ((= (car x) (car y))		;if one is zero length, it -must- go first
-		  (cond ((= (aref area-origins (cdr x)) (aref area-alloc-bounds (cdr x))) t)
-			((= (aref area-origins (cdr y)) (aref area-alloc-bounds (cdr y))) nil)
-			((ferror nil "2 non-zero-length areas at same address"))))
-		 ((< (car x) (car y))))))))
-
-;Set up paging data structures
-(defun cold-create-page (area area-number virpage phypage)
-  (do ((pht-mask (- sym:size-of-page-table 2))
-       (access-and-status-code
-	  (cond ((memq area sym:pdl-buffer-area-list) 5)
-		((memq area sym:read-only-area-list) 12)
-		(t 14)))
-       (meta-bits (cond ((memq area sym:list-structured-areas) 60)
-			((eq area 'sym:extra-pdl-area) 44)
-			(t 64))) ;symbolic?????
-       (swap-status-code 
-	  (cond ;((memq area sym:pdl-buffer-area-list) sym:%pht-swap-status-pdl-buffer)
-		((memq area sym:wired-area-list) sym:%pht-swap-status-wired)
-		(t sym:%pht-swap-status-normal)))
-       (hash (logxor (ash virpage 2) (ash virpage -6)) (+ hash 2))
-       (pht (get-area-origin 'sym:page-table-area))
-       (ppd (get-area-origin 'sym:physical-page-data)))
-      (nil)
-    (cond ((= 0 (ldb sym:%%pht1-valid-bit
-		     (vread (+ pht (setq hash (logand hash pht-mask))))))
-	   (vwrite (+ pht hash)
-		   (vfix (dpb virpage sym:%%pht1-virtual-page-number
-			      (dpb swap-status-code sym:%%pht1-swap-status-code
-				   (dpb 1 sym:%%pht1-valid-bit 0)))))
-	   (vwrite (+ pht hash 1)
-		   (vfix (dpb access-and-status-code sym:%%pht2-access-and-status-bits
-			      (dpb meta-bits sym:%%pht2-meta-bits 
-				   (dpb phypage sym:%%pht2-physical-page-number 0)))))
-	   (vwrite (+ ppd phypage)
-		   (dpb area-number 2020 hash))
-	   (return t)))))
+	  (push (cons (aref area-origins i) i) l))
+	#'(lambda (x y)
+	    (cond ((= (car x) (car y))		;if one is zero length, it -must- go first
+		   (cond
+		     ((= (aref area-origins (cdr x)) (aref area-alloc-bounds (cdr x))) t)
+		     ((= (aref area-origins (cdr y)) (aref area-alloc-bounds (cdr y))) nil)
+		     (t (ferror nil "2 non-zero-length areas at same address"))))
+		  ((< (car x) (car y)))))))
 
-;;; Driver
-
-(defvar qfasl-file-list '(	"AI:LMFONT;CPTFON QFASL"
-				"AI:LISPM;QRAND QFASL"
-				"AI:LMIO;QIO QFASL"
-				;"AI:LMIO;RDTBL QFASL" ;done specially
-				"AI:LMIO;READ QFASL"
-				"AI:LMIO;PRINT QFASL"
-				"AI:LMWIN;COLD QFASL"
-				"AI:LISPM;SGFCTN QFASL"
-				"AI:LISPM;QEV QFASL"
-				"AI:LISPM;LTOP QFASL"
-				"AI:LISPM;QFASL QFASL"
-				"AI:LMIO;MINI QFASL"
-				"AI:LISPM;LFL QFASL"  ))
+;;;; Driver
 
 (defvar cold-list-area 'sym:init-list-area)	;Where FROID (COLDLD) puts lists (usually)
 (defvar evals-to-be-sent-over)
 
-;User calls this to build a cold-load onto a band
+;;; User calls this to build a cold-load onto a band
 (defun make-cold (part-name)
-  (cond ((y-or-n-p (format nil "May I smash the /"~A/" partition, which contains /"~A/"?"
-			       part-name (si:partition-comment part-name 0)))
-	 (si:update-partition-comment part-name "cold" 0)
-	 (or (boundp 'big-fixnum) (load-parameters))
-	 ;; Flush old state
-	 (mapatoms #'(lambda (x) (remprop x 'q-atom-head)) sym-package nil)
-	 (setq evals-to-be-sent-over nil)
-	 (unwind-protect (progn (vmem-initialize part-name)
-				(make-cold-1)
-				(format nil "Boot off the ~A partition to test it."
-					    part-name))
-	   (vmem-finish)))))
+  (if (numberp part-name) (setq part-name (format nil "LOD~d" part-name)))
+  (when (si:find-disk-partition-for-write part-name)
+    (si:update-partition-comment part-name "cold-incomplete" 0)
+    (or (boundp 'big-fixnum) (load-parameters))
+    ;; Flush old state
+    (mapatoms #'(lambda (x) (remprop x 'q-atom-head)) sym-package nil)
+    (q-atom-head-reset)
+    (q-atom-head-reset (pkg-find-package "GLOBAL"))
+    (makunbound 'cold-loaded-file-property-lists)
+    (makunbound 'cold-loaded-function-property-lists)
+    (setq evals-to-be-sent-over nil)
+    (unwind-protect (progn (vmem-initialize part-name)
+			   (make-cold-1 si:cold-load-file-list)
+			   (format nil "Boot off the ~A partition to test it."
+				   part-name))
+      (vmem-finish))
+    (si:update-partition-comment
+      part-name
+      (format nil "cold ~A"
+	      (let ((date-and-time
+		     (with-output-to-string (str)
+		       (time:print-current-time str))))
+		(substring date-and-time 0 (string-search-char 40 date-and-time))))
+      0)))
 
-(defun make-cold-1 ()
+(defun make-cold-1 (file-list)
   ;; Divide up virtual memory into areas and initialize tables
   (assign-values sym:area-list 0)
   (create-areas)
@@ -996,28 +1244,42 @@
   ;; Initialize various fixed areas and really random data tables
   (init-area-contents 'sym:area-name qnil)
   (store-list-of-atoms 'sym:area-name sym:area-list)
-  (storein-q-value-cell 'sym:area-list	;Is this going to win?
-			(vmake-pointer sym:dtp-list (get-area-origin 'sym:area-name)))
-  (mapc (function store-constant) sym:constants-page)	;set up constants page
+  (mapc #'store-constant sym:constants-page)	;set up constants page
   (storein-q-value-cell 'sym:constants-page
 			(vmake-pointer sym:dtp-list (get-area-origin 'sym:constants-area)))
   (init-scratch-pad-area)
   (init-system-communication-area)
   (fix-certain-variables)
-  (mapc (function store-lisp-value-list) sym:q-corresponding-variable-lists)
+  (mapc #'store-lisp-value-list sym:q-corresponding-variable-lists)
   (init-random-variables)
   (store-a-mem-location-names)
   (setq micro-code-entry-vector nil)
   (store-misc-u-entry-links)
+  ;A copy of AREA-LIST was previously sent over.  Change it to share with AREA-NAME.
+  (storein-q-value-cell 'sym:area-list
+			(vmake-pointer sym:dtp-list (get-area-origin 'sym:area-name)))
   ;;Load up all those QFASL files
-  (mapc 'cold-fasload qfasl-file-list)
+  (mapc 'cold-fasload file-list)
   ;;Don't let list-structure portion of the readtable end up in a read-only area
   (let ((cold-list-area 'sym:property-list-area))  ;Random list-structured area
-    (cold-fasload "AI:LMIO;RDTBL QFASL"))
+    (cold-fasload "SYS: IO; RDTBL QFASL >")
+    #+common (cold-fasload "SYS: IO; CRDTBL QFASL >"))
+  ;;Translate all pathnames needed before logical pathnames work
+  (dolist (sym si:mini-file-alist-list)
+    (storein-q-value-cell
+      sym
+      (make-q-list 'sym:init-list-area
+		   (loop for (file pack) in (symeval sym)
+			 as pathname = (fs:merge-pathname-defaults file)
+			 collect (list (funcall (funcall pathname ':translated-pathname)
+					     ':string-for-mini)
+				       pack
+				       (equal (funcall pathname ':type) "QFASL"))))))
+#|  ;MACRO, SETQ, etc. are in QFCTNS, which is now in the cold load.
   ;;THIS KLUDGE FIXES UP MACROS, SINCE THE FUNCTION MACRO IS NOT DEFINED YET
   ;;(BY SPECIAL DISPENSATION WE HAVE DEFPROP, PUTPROP, AND SPECIAL AROUND)
   ;;FURTHERMORE, SETQ ISN'T DEFINED YET, LOAD-TIME-SETQ FASL-OP SHOULD HAVE BEEN USED
-  (do l evals-to-be-sent-over (cdr l) (null l)
+  (do ((l evals-to-be-sent-over (cdr l))) ((null l))
     (cond ((memq (caar l) 'sym:(setq and or cond))
 	   (ferror nil "~A will get undefined function during initialization" (car l)))
 	  ((eq (caar l) 'sym:macro)
@@ -1027,12 +1289,12 @@
 			     '(sym:fset (sym:quote fcn)
 					(sym:quote (sym:macro
 						     . (sym:lambda name . body)))))))))
+|#
  (setq evals-to-be-sent-over (nreverse evals-to-be-sent-over)) ;do in order specified
  (storein-q-value-cell 'sym:lisp-crash-list
 		       ;; This MAKE-Q-LIST must not use the FASL-TEMP-AREA,
 		       ;; because the list structure being created includes
-		       ;; definitions of important macros.  The area used
-		       ;; must not be an immediate write area.
+		       ;; definitions of important macros.
 		       (make-q-list 'sym:init-list-area evals-to-be-sent-over))
  ;;Everything compiled, etc. close off and write it out
  (format t "~&q-storage-finalize...")
@@ -1061,16 +1323,15 @@
 
 ;Fix the values of certain variables before they are sent over
 (defun fix-certain-variables ()
-  (dolist (sym '(sym:a-memory-virtual-address sym:unibus-virtual-address
-		 sym:io-space-virtual-address))
-    (set sym (lsh (ash (symeval sym) -3) 3)))	;Change from bignum to fixnum
   (setq sym:prin1 nil)
-  (setq sym:base (setq sym:ibase 8))
-  (setq sym:*nopoint nil)
-  (setq sym:for-cadr t))	;Is this still used?
+  (setq sym:base (setq sym:ibase 10.))
+  (setq sym:*print-base* (setq sym:*read-base* 10.))
+  (setq sym:*nopoint t)
+  (setq sym:for-cadr t)				;Is this still used?
+  )
 
-;Initializations of all sorts of random variables.  Must follow the map
-;over q-corresponding-variable-lists, because previous initializations are stored over.
+;;; Initializations of all sorts of random variables.  Must follow the map
+;;; over q-corresponding-variable-lists, because previous initializations are stored over.
 (defun init-random-variables ()
   ;;set up array-types symbol (both value and function cells).
   ;;  the function cell is an array which gives maps numeric array type to symbolic name.
@@ -1103,4 +1364,29 @@
   (storein-q-value-cell 'sym:q-data-types
     (vmake-pointer sym:dtp-list (- (aref area-alloc-pointers
 					 (get-area-number 'sym:control-tables))
-				   32.))))
+				   32.)))
+  ;;Make the arrays which are mapped into A-memory
+  (init-q-array 'sym:control-tables 'sym:mouse-cursor-pattern 1
+		'sym:art-1b '(32. 32.) t nil)
+  (let ((adr (allocate-block 'sym:control-tables 2)))
+    (vwrite adr (vfix (+ (cadr (memq 'sym:mouse-cursor-pattern sym:a-memory-array-locations))
+			 sym:a-memory-virtual-address)))
+    (vwrite (1+ adr) (vfix 1024.)))
+  (init-q-array 'sym:control-tables 'sym:mouse-buttons-buffer 1
+		'sym:art-q '(32.) t nil)
+  (let ((adr (allocate-block 'sym:control-tables 2)))
+    (vwrite adr (vfix (+ (cadr (memq 'sym:mouse-buttons-buffer sym:a-memory-array-locations))
+			 sym:a-memory-virtual-address)))
+    (vwrite (1+ adr) (vfix 32.)))
+  (init-q-array 'sym:control-tables 'sym:mouse-x-scale-array 1
+		'sym:art-q '(16.) t nil)
+  (let ((adr (allocate-block 'sym:control-tables 2)))
+    (vwrite adr (vfix (+ (cadr (memq 'sym:mouse-x-scale-array sym:a-memory-array-locations))
+			 sym:a-memory-virtual-address)))
+    (vwrite (1+ adr) (vfix 16.)))
+  (init-q-array 'sym:control-tables 'sym:mouse-y-scale-array 1
+		'sym:art-q '(16.) t nil)
+  (let ((adr (allocate-block 'sym:control-tables 2)))
+    (vwrite adr (vfix (+ (cadr (memq 'sym:mouse-y-scale-array sym:a-memory-array-locations))
+			 sym:a-memory-virtual-address)))
+    (vwrite (1+ adr) (vfix 16.))))
