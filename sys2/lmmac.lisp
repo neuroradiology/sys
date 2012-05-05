@@ -52,6 +52,12 @@
     ;COMPLR DOESNT KNOW (OR CARE) ABOUT COMPILER-LET.
 	  (T LISPM-FORM)))
 
+(DEFMACRO SEND (OBJECT OPERATION &REST ARGUMENTS)
+  `(FUNCALL ,OBJECT ,OPERATION . ,ARGUMENTS))
+
+(DEFMACRO GETF (PLACE PROPERTY &OPTIONAL (DEFAULT NIL))
+  `(OR (GET (LOCF ,PLACE) ,PROPERTY) ,DEFAULT))
+
 ;; Needed when conditionalizing something at top level with #Q or #M because
 ;; splicing readmacros flushed then.  #Q and #M now work at top level, so this
 ;; is for compatibility only.
@@ -330,6 +336,14 @@
 	 ((EQ TEST T) THEN)			;and this one (avoids compiler error msg)
 	 (T `(COND (,TEST ,THEN) (T . ,(OR ELSES '(NIL)))))))
 
+;;; (WHEN pred {form}*)
+(DEFMACRO WHEN (PRED &BODY BODY)
+  `(AND ,PRED (PROGN ,@BODY)))
+
+;;; (UNLESS pred {form}*)
+(DEFMACRO UNLESS (PRED &BODY BODY)
+  `(IF ,PRED () ,@BODY))
+
 ;;; (CHECK-ARG STRING STRINGP "a string") signals an error if STRING is not a string.
 ;;; The error signals condition :WRONG-TYPE-ARGUMENT with arguments
 ;;; which are STRINGP (the predicate), the value of STRING (the losing value),
@@ -558,6 +572,11 @@
 		 (.DOTIMES-INTERNAL. ,FORM))
 		(( ,VAR .DOTIMES-INTERNAL.))
 	      . ,BODY))))
+
+(DEFMACRO DO-FOREVER (&BODY BODY)
+  `(DO ()
+       (())
+     . ,BODY))
 
 ;;; Execute body with a stream open.  Abnormal exit aborts the file (if it's an output file).
 (DEFMACRO-DISPLACE WITH-OPEN-STREAM ((STREAM CONSTRUCTION-FORM) &BODY BODY)
