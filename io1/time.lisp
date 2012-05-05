@@ -273,7 +273,7 @@
 (DEFUN PRINT-TIME (SECONDS MINUTES HOURS DAY MONTH YEAR &OPTIONAL (STREAM STANDARD-OUTPUT))
   (FORMAT STREAM
 	  '( (D) "//" (D 2 60) "//" (D 2 60) " " (D 2 60) ":" (D 2 60) ":" (D 2 60) )
-	      MONTH    DAY         (\ YEAR 100.)   HOURS        MINUTES	  SECONDS))
+	      MONTH    DAY           YEAR         HOURS        MINUTES	  SECONDS))
 
 (DEFUN PRINT-CURRENT-DATE (&OPTIONAL (STREAM STANDARD-OUTPUT))
   (AND (UPDATE-TIMEBASE)
@@ -296,8 +296,8 @@
   (SETQ MONTH (MONTH-STRING MONTH)
 	DAY-OF-THE-WEEK (DAY-OF-THE-WEEK-STRING DAY-OF-THE-WEEK))
   (FORMAT STREAM
-	  "~A the ~:R of ~A, ~D/; ~D:~2,48D:~2,48D ~A"
-	  DAY-OF-THE-WEEK DAY MONTH (+ YEAR 1900.) (1+ (\ (+ HOURS 11.) 12.)) MINUTES SECONDS
+	  "~A the ~:R of ~A, 19~D/; ~D:~2,48D:~2,48D ~A"
+	  DAY-OF-THE-WEEK DAY MONTH YEAR (1+ (\ (+ HOURS 11.) 12.)) MINUTES SECONDS
 	  (COND ((AND (ZEROP SECONDS)
 		      (ZEROP MINUTES)
 		      (MEMQ HOURS '(0 12.)))
@@ -315,7 +315,7 @@ Also never prints seconds.  Used by notifications, for example."
 	(DECODE-UNIVERSAL-TIME REF-UT)
       ;; If not same day, print month and day numerically
       (IF (OR ( DAY REF-DAY) ( MONTH REF-MONTH) ( YEAR REF-YEAR))
-	  (FORMAT STREAM "~D//~D~:[//~2,'0D~] " MONTH DAY (= YEAR REF-YEAR) (\ YEAR 100.)))
+	  (FORMAT STREAM "~D//~D~:[//~2,'0D~] " MONTH DAY (= YEAR REF-YEAR) YEAR))
       ;; Always print hours colon minutes, even if same as now
       (FORMAT STREAM "~2,'0D:~2,'0D" HOURS MINUTES))))
 
@@ -537,7 +537,7 @@ Also never prints seconds.  Used by notifications, for example."
 (DEFUN TIME-PRINT (STREAM SECONDS MINUTES HOURS DAY MONTH YEAR)
   (FORMAT STREAM
 	  '( (D) "//" (D 2 60) "//" (D 2 60) " " (D 2 60) ":" (D 2 60) ":" (D 2 60) )
-	       MONTH DAY           (\ YEAR 100.)   HOURS        MINUTES	  SECONDS))
+	       MONTH DAY           YEAR         HOURS        MINUTES	  SECONDS))
 
 (ADD-INITIALIZATION "Initialize Timebase" '(INITIALIZE-TIMEBASE) '(:WARM :NOW))
 (ADD-INITIALIZATION "Forget Time" '(SETQ *LAST-TIME-UPDATE-TIME* NIL) '(:BEFORE-COLD))
