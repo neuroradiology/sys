@@ -270,8 +270,13 @@
 	%SYS-COM-ETHER-TRANSMIT-LIST
 	%SYS-COM-ETHER-RECEIVE-LIST
 
-	%SYS-COM-SPARE-1			;Available for recycling
-	%SYS-COM-SPARE-2			;Available for recycling
+	%SYS-COM-BAND-FORMAT		;In a saved band, encodes format number.
+  					;  1000 -> new compressed format
+					;   otherwise old expanded format.
+					;In old bands, this is not really initialized
+					; but is usually 410.
+
+  %SYS-COM-GC-GENERATION-NUMBER		;reserved for value of %GC-GENERATION-NUMBER
 
 	%SYS-COM-UNIBUS-INTERRUPT-LIST		;SEE LMIO;UNIBUS (LIST OF UNIBUS CHANNELS)
 
@@ -304,10 +309,16 @@
 		;SWAP OUT SCHEDULER AND DISK STUFF
 		;EVENTUALLY THIS MAY REPLACE SCRATCH-PAD-INIT-AREA
 		;THOSE OF THESE THAT DON'T NEED TO SURVIVE WARM BOOT COULD BE IN A-MEMORY
+  %SYS-COM-HIGHEST-VIRTUAL-ADDRESS	;In new band format.  You better have this amt of
+					; room in the paging partition.
+  %SYS-COM-POINTER-WIDTH		;Either 24 or 25, as fixnum, or DTP-FREE in old sys.
+  ;; 6 left
 ))
 
 (AND (> (LENGTH SYSTEM-COMMUNICATION-AREA-QS) 40)
      (ERROR '|SYSTEM COMMUNICATION AREA OVERFLOW|))
+
+(SETQ NEW-ARRAY-INDEX-ORDER NIL)
 
 ;;; Next three symbols are treated bletcherously, because there isnt the right kind of
 ;;; LDB available
@@ -969,34 +980,72 @@
 
 ;;; Offsets from the base of the ether registers to the specific registers
 (setq ether-register-offsets '(
-  %ether-output-word-count-offset		;0
-  %ether-output-buffer-pointer-offset		;1
-  %ether-output-csr-offset 			;2
-  %ether-output-delay-offset			;3
-  %ether-input-word-count-offset		;4
-  %ether-input-buffer-pointer-offset		;5
-  %ether-input-csr-offset			;6
-  %ether-device-address				;7
-))
-(assign-values ether-register-offsets 0)
+  %ether-mode-offset			;0
+  %ether-int-source-offset		;1
+  %ether-int-mask-offset 		;2
+  %ether-ipgt-offset			;3
+  %ether-ipgr1-offset			;4
+  %ether-ipgr2-offset			;5
+  %ether-packetlen-offset		;6
+  %ether-collconf-offset		;7
+  %ether-tx-bd-num-offset		;8
+  %ether-ctrlmode-offset		;9
+  %ether-mii-mode-offset		;10
+  %ether-mii-command-offset		;11
+  %ether-mii-address-offset		;12
+  %ether-mii-tx-data-offset		;13
+  %ether-mii-rx-data-offset		;14
+  %ether-mii-status-offset		;15
+  %ether-mac-address0-offset		;16
+  %ether-mac-address1-offset		;17
+  %ether-hash0-offset			;18
+  %ether-hash1-offset			;19
+  %ether-txctrl-offset			;20
+  ))
+(si:assign-values ether-register-offsets 0)
 
 ;;; Offsets of the leader elements
-(setq ether-leader-offsets '(
+(setq ether-buffer-leader-qs '(
   %ether-leader-thread				;0
-  %ether-leader-csr				;1
-  %ether-leader-active-length			;2
-  %ether-leader-transmit-count			;3
-))
-(assign-values ether-leader-offsets 0)
+  %ether-leader-active-length			;1
+  ))
+(si:assign-values ether-buffer-leader-qs 0)
 
-;;; Random parameters
-(setq ether-random-parameters '(
-  ether-maximum-packet-length 430		;Max length of packet in words = (// 560. 2)
-  ether-unibus-block 0				;Use unibus blocks 0-3
-))
-(assign-alternate ether-random-parameters)
+(setq ether-hardware-values '(
+  %%ether-desc-length	2020
+  %%ether-desc-tx-ready	1701
+  %%ether-desc-tx-irq	1601
+  %%ether-desc-tx-wrap	1501
+  %%ether-desc-tx-pad	1401
+  %%ether-desc-tx-crc	1301
 
+  %%ether-desc-rx-empty	1701
+  %%ether-desc-rx-irq	1601
+  %%ether-desc-rx-wrap	1501
 
+  %%ether-mode-recsmall		2001
+  %%ether-mode-pad		1701
+  %%ether-mode-hugen		1601
+  %%ether-mode-crc-enable	1501
+  %%ether-mode-fullduplex	1201
+  %%ether-mode-promiscuous	0501
+  %%ether-mode-no-preamble	0201
+  %%ether-mode-tx-enable	0101
+  %%ether-mode-rx-enable	0001
+
+  %%ether-int-rxc	0601
+  %%ether-int-txc	0501
+  %%ether-int-busy	0401
+  %%ether-int-rxe	0301
+  %%ether-int-rxb	0201
+  %%ether-int-txe	0101
+  %%ether-int-txb	0001
+  ))
+
+(si:assign-alternate ether-hardware-values)
+(setq ether-hardware-symbols (si:get-alternate ether-hardware-values))
+
+
 (SETQ A-MEMORY-ARRAY-LOCATIONS '(
 	MOUSE-CURSOR-PATTERN	1600
 	MOUSE-BUTTONS-BUFFER	1640
