@@ -32,7 +32,7 @@
     ("SITE" "//tree//site//")
     ("SYS" "//tree//sys//")
     ("SYS2" "//tree//sys2//")
-    ("UBIN" "//tree/ubin//")
+    ("UBIN" "//tree//ubin//")
     ("UCADR" "//tree//ucadr//")
     ("WINDOW" "//tree//window//")
     ("ZMAIL" "//tree//zmail//")
