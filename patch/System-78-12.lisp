@@ -191,4 +191,4 @@
 (DEFPROP TURD-ALERT "C-C proceeds, perhaps writing garbage on the screen." HELP-MESSAGE)
 
 )
-
+
