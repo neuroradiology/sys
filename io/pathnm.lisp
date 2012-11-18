@@ -1756,34 +1756,32 @@ as an ordinary directory."))
     (LET* ((PATHNAME (FUNCALL SYS-PATHNAME ':BACK-TRANSLATED-PATHNAME
 			      (MERGE-PATHNAME-DEFAULTS (CAR ELEM))))
 	   (GENERIC-PATHNAME (FUNCALL PATHNAME ':GENERIC-PATHNAME)))
-      (DO L (SECOND ELEM) (CDDR L) (NULL L)
-	(LET ((PROP (INTERN (CAR L) "")))	;Lossage in cold load generator
-	  (COND ((EQ PROP ':FILE-ID-PACKAGE-ALIST)
-		 ;; Kludge, built before there are packages
-		 (SETF (CAAADR L) (PKG-FIND-PACKAGE (OR (CAAADR L)
-							SI:PKG-SYSTEM-INTERNALS-PACKAGE)))
-		 ;; And before there are truenames
-		 (LET ((INFO (CADR (CAADR L))))
-		   (AND (STRINGP (CAR INFO))
-			(RPLACA INFO (MERGE-PATHNAME-DEFAULTS (CAR INFO)))))))
-	  (FUNCALL PATHNAME ':PUTPROP (CADR L) PROP)))
-      (DO L (THIRD ELEM) (CDDR L) (NULL L)
-	(LET ((PROP (INTERN (CAR L) ""))
+      (DO L (CDR ELEM) (CDDR L) (NULL L)
+	(LET ((PROP (INTERN (CAR L) ""))	;Lossage in cold load generator
 	      (VAL (CADR L)))
 	  ;;Cold load generator does not know how to put in instances, it makes
 	  ;;strings instead.  Also, during MINI loading, calls to MAKE-PATHNAME-INTERNAL
 	  ;;are saved just as lists.  Note: we do not back translate this pathname, so
 	  ;;that we really remember the machine it was compiled on.
-	  (AND (EQ PROP ':QFASL-SOURCE-FILE-UNIQUE-ID)
-	       (COND ((STRINGP VAL)
-		      (SETQ VAL (MERGE-PATHNAME-DEFAULTS VAL)))
-		     ((LISTP VAL)
-		      ;; Symbols like UNSPECIFIC may be in the wrong package
-		      (SETF (CAR VAL) (GET-PATHNAME-HOST (CAR VAL)))
-		      (DO L (CDR VAL) (CDR L) (NULL L)
-			  (AND (SYMBOLP (CAR L))
-			       (SETF (CAR L) (INTERN (GET-PNAME (CAR L)) ""))))
-		      (SETQ VAL (APPLY #'MAKE-PATHNAME-INTERNAL VAL)))))
+	  (COND ((EQ PROP ':QFASL-SOURCE-FILE-UNIQUE-ID)
+		 (COND ((STRINGP VAL)
+			(SETQ VAL (MERGE-PATHNAME-DEFAULTS VAL)))
+		       ((LISTP VAL)
+			;; Symbols like UNSPECIFIC may be in the wrong package
+			(SETF (CAR VAL) (GET-PATHNAME-HOST (CAR VAL)))
+			(DO L (CDR VAL) (CDR L) (NULL L)
+			    (AND (SYMBOLP (CAR L))
+				 (SETF (CAR L) (INTERN (GET-PNAME (CAR L)) ""))))
+			(SETQ VAL (APPLY #'MAKE-PATHNAME-INTERNAL VAL)))))
+		((EQ PROP ':FILE-ID-PACKAGE-ALIST)
+		 ;; Kludge, built before there are packages
+		 (SETF (CAAR VAL) (PKG-FIND-PACKAGE (OR (CAAR VAL)
+							SI:PKG-SYSTEM-INTERNALS-PACKAGE)))
+		 ;; And before there are truenames
+		 (LET ((INFO (CADAR VAL)))
+		     (AND (STRINGP (CAR INFO))
+			(RPLACA INFO (MERGE-PATHNAME-DEFAULTS (CAR INFO)))))))
+
 	  (FUNCALL GENERIC-PATHNAME ':PUTPROP VAL PROP)))))
   ;; Replace all strings saved on symbols with pathnames
   (MAPATOMS-ALL #'(LAMBDA (SYMBOL &AUX NAME)
@@ -2614,4 +2612,4 @@ Type Resume to retry.~]"
   (ADD-LOGICAL-PATHNAME-HOST
     "SYS" (SI:GET-SITE-OPTION ':SYS-HOST)
     (SI:GET-SITE-OPTION ':SYS-DIRECTORY-TRANSLATIONS)))
-
+

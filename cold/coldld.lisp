@@ -79,7 +79,9 @@
     (let (this-file-definitions)
       (do () ((eq (qfasl-whack) 'eof)))
       (set-file-loaded-id qfasl-binary-file)
-      (record-definitions this-file-definitions))))
+      ;; restore this for sys99
+      ;;(record-definitions this-file-definitions)
+      )))
 
 ;Add the list of function specs defined in a file
 ;to that file's property list.  The argument is a list in this world.
