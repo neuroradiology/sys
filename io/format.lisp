@@ -1110,3 +1110,4 @@ the name of a command, and remaining elements are parameters."
 			 SEPARATOR-FORMAT-STRING)))
     (PROG1 (FORMAT DESTINATION FSTRING LIST)
 	   (RETURN-ARRAY FSTRING))))
+

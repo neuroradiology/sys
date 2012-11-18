@@ -450,3 +450,4 @@ C-R read label from disk, C-W write label to disk, C-I initialize the label
 C-E edit selected item
 C-O add partition, C-K delete partition, C-S sort partitions
 <END> exit"))
+
