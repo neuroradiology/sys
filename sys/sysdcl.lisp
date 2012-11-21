@@ -22,13 +22,13 @@
 		      TIME		;must be before TV
 		      TV
 		      PEEK
-		      SUPDUP
+;		      SUPDUP
 		      ZWEI
-		      FED
-		      COLOR
+;		      FED
+;		      COLOR
 		      EH
 		      CADR
-		      PRESS
+;		      PRESS
 		      MICRO-ASSEMBLER
 		      MATH
 		      HACKS
@@ -55,6 +55,7 @@
 		 "SYS: SYS; QEV"
 		 "SYS: SYS; QFASL"
 		 "SYS: IO; MINI"
+;		 "SYS: NETWORK; TFTP-MINI"
 		 "SYS: IO; QIO"
 		 "SYS: SYS; QRAND"
 		 "SYS: IO; READ"
@@ -92,7 +93,8 @@
 		 "SYS: SYS; SYSDCL"
 		 "SYS: SYS2; UNFASL"
 		 "SYS: IO; UNIBUS"
-		 "SYS: IO1; XGP"))
+;		 "SYS: IO1; XGP"
+		))
   (:MODULE RDTBL "SYS: IO; RDTBL")
   (:COMPILE-LOAD DEFS)
   (:COMPILE-LOAD MAIN (:FASLOAD DEFS))
@@ -113,8 +115,8 @@
   (:PACKAGE CHAOS)
   (:MODULE NCP ("SYS: IO; CHSNCP" "SYS: IO; CHSAUX"))
   (:MODULE TEST "SYS: IO1; CHATST")
-  (:MODULE EFTP "SYS: IO1; EFTP")
-  (:COMPILE-LOAD (NCP TEST EFTP))
+; (:MODULE EFTP "SYS: IO1; EFTP")
+  (:COMPILE-LOAD (NCP TEST)) ; was EFTP
   (:COMPILE-LOAD (:GENERATE-HOST-TABLE (("SYS: CHAOS; HOSTS" "SYS: SITE; HSTTBL")))))
 
 #+XEROX
@@ -386,7 +388,8 @@
 	    "SYS: SYS; QEV QFASL >"
 	    "SYS: SYS; LTOP QFASL >"
 	    "SYS: SYS; QFASL QFASL >"
-	    "SYS: IO; MINI QFASL >"
+	    "SYS: IO; MINI QFASL >"     
+;	    "SYS: NETWORK; TFTP-MINI QFASL >"
 	    "SYS: SYS; QFCTNS QFASL >"
 	    "SYS: SYS2; STRING QFASL >"
 	    ))
