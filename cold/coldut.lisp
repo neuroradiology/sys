@@ -1271,8 +1271,8 @@ A-flavor-of ~S being-created, atom-name ~S, path ~S, package-name ~S"
       (make-q-list 'sym:init-list-area
 		   (loop for (file pack) in (symeval sym)
 			 as pathname = (fs:merge-pathname-defaults file)
-			 collect (list (funcall (funcall pathname ':translated-pathname)
-					     ':string-for-mini)
+			 collect (list (string-downcase (funcall (funcall pathname ':translated-pathname)
+					     ':string-for-mini))
 				       pack
 				       (equal (funcall pathname ':type) "QFASL"))))))
 #|  ;MACRO, SETQ, etc. are in QFCTNS, which is now in the cold load.
