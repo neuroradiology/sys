@@ -21,7 +21,7 @@
   '(("CC" "//tree//cc//")
     ("COLD" "//tree//cold//")
     ("CHAOS" "//tree//chaos//")
-    ("DEMO" "//tree//lmdemo//")
+    ("DEMO" "//tree//demo//")
     ("DISTRIBUTION" "//tree//distribution//")
     ("FONTS" "//tree//fonts//")
     ("IO" "//tree//io//")
