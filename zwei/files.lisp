@@ -1,4 +1,4 @@
-;;; -*- Mode:LISP; Package:ZWEI -*-
+
 ;;; ** (c) Copyright 1980 Massachusetts Institute of Technology **
 ;;; This file contains utility functions for manipulating files, and various
 ;;; commands to do I/O to intervals.  It does not know about buffers and such,
@@ -311,15 +311,15 @@ With an argument, accepts the name of a file to list." ()
 	     (IF CREATION-DATE
 		 (MULTIPLE-VALUE-BIND (SECONDS MINUTES HOURS DAY MONTH YEAR)
 		     (TIME:DECODE-UNIVERSAL-TIME CREATION-DATE)
-		   (FORMAT STREAM "~2,'0D//~2,'0D//~2,'0D ~2,'0D:~2,'0D:~2,'0D"
-			   MONTH DAY (\ YEAR 100.) HOURS MINUTES SECONDS))
+		   (FORMAT STREAM "~2,'0D//~2,'0D//~4,'0D ~2,'0D:~2,'0D:~2,'0D"
+			   MONTH DAY (+ YEAR 1900.) HOURS MINUTES SECONDS))
 		 (FORMAT STREAM "~17X")))
 	   (LET ((REFERENCE-DATE (GET FILE ':REFERENCE-DATE)))
 	     (AND REFERENCE-DATE
 		  (MULTIPLE-VALUE-BIND (NIL NIL NIL DAY MONTH YEAR)
 		      (TIME:DECODE-UNIVERSAL-TIME REFERENCE-DATE)
-		    (FORMAT STREAM " (~2,'0D//~2,'0D//~2,'0D)"
-			    MONTH DAY (\ YEAR 100.)))))
+		    (FORMAT STREAM " (~2,'0D//~2,'0D//~4,'0D)"
+			    MONTH DAY (+ YEAR 1900.)))))
 	   (LET ((AUTHOR (GET FILE ':AUTHOR)))
 	     (AND AUTHOR (NOT (EQUAL AUTHOR (FUNCALL PATHNAME ':DIRECTORY)))
 		  (FORMAT STREAM "~72T~A" AUTHOR)))
