@@ -370,9 +370,8 @@ L1	(COND ((NULL TAIL) (SETQ BUCKET (1+ BUCKET))
 	     (%P-STORE-CONTENTS-OFFSET DISPLACED-TO ARRAY IDX)
 	     (%P-STORE-CONTENTS-OFFSET INDEX-LENGTH ARRAY (1+ IDX))
 	     (COND (DISPLACED-INDEX-OFFSET
-		    ;; Index offset feature is in use.  Set the magic bit to say so,
-		    ;; and store the index offset in the next Q.
-		    (%P-DPB-OFFSET 1 %%Q-FLAG-BIT ARRAY IDX)
+		    ;; Index offset feature is in use.
+		    ;; Store the index offset in the next Q.
 		    (%P-STORE-CONTENTS-OFFSET DISPLACED-INDEX-OFFSET ARRAY (+ IDX 2)))))))
     ;; The leader's initial values were specified.
     (DO ((I 0 (1+ I))

@@ -109,7 +109,7 @@
   %ARG-DESC-FEF-QUOTE-HAIR %ARG-DESC-FEF-BIND-HAIR
   %ARG-DESC-QUOTED-REST %ARG-DESC-EVALED-REST 
   LAP-OUTPUT-BLOCK LAP-OUTPUT-BLOCK-LENGTH LAP-STORE-POINTER LAP-MACRO-FLAG
-  %Q-FLAG-BIT %HEADER-TYPE-FEF %%HEADER-TYPE-FIELD ALLVARS FREEVARS
+  %HEADER-TYPE-FEF %%HEADER-TYPE-FIELD ALLVARS FREEVARS
   %FEF-NAME-PRESENT %%FEFHI-MS-DEBUG-INFO-PRESENT QLP-DEBUG-INFO-PRESENT QCMP-OUTPUT)) 
 
 (DECLARE (SPECIAL DTP-FEF-POINTER DTP-FIX DTP-SYMBOL DTP-LOCATIVE 
@@ -239,13 +239,12 @@
 
 ;On pass 2, output a Q, specified by components.
 ;S-EXP is the contents of the Q.
-;FLAG is %Q-FLAG-BIT, to turn on that bit, if desired.
 ;INVZ-P is non-NIL to modify the data type of the Q:
 ;  QZEVCP for an external value cell pointer, or
 ;  QZLOC for a locative.
 ;OFFSET is added to the Q.  It is useful for making pointers to
 ;  value cells or function cells of symbols.
-(DEFUN LAP-Q-OUT (FLAG INVZ-P OFFSET S-EXP)
+(DEFUN LAP-Q-OUT (IGNORE INVZ-P OFFSET S-EXP)
   (COND (LAP-LASTQ-MODIFIER (LAP-MODIFY-LASTQ LAP-LASTQ-MODIFIER)))
   (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
 	 ;Don't call FASD with the temporary area in effect
@@ -263,12 +262,12 @@
 	 (SETQ LAP-STORE-POINTER (1+ LAP-STORE-POINTER))))
   (SETQ LAP-LASTQ-MODIFIER 
 	(+ 300					;NXTCDR
-	   (+ (COND (FLAG 40) (T 0))
+;	    (COND (FLAG 40) (T 0))
 	      (+ (COND ((NULL INVZ-P) 0)
 		       ((EQ INVZ-P 'QZEVCP) 20)
 		       ((EQ INVZ-P 'QZLOC) 400)
 		       (T (BARF INVZ-P 'LAP-Q-OUT 'BARF)))
-		 (COND (OFFSET OFFSET) (T 0)) )))))
+		 (COND (OFFSET OFFSET) (T 0)) ))))
 
 (DEFUN LAP-MODIFY-LASTQ (CODE)
   (COND ((OR (EQ LAP-MODE 'QFASL) (EQ LAP-MODE 'QFASL-NO-FDEFINE))
@@ -277,7 +276,6 @@
 	 (LET ((OFFSET (LOGAND CODE 17))
 	       (IDX (1- LAP-STORE-POINTER)))
 	   (%P-DPB-OFFSET (LSH CODE -6) %%Q-CDR-CODE LAP-OUTPUT-BLOCK IDX)
-	   (%P-DPB-OFFSET (LSH CODE -5) %%Q-FLAG-BIT LAP-OUTPUT-BLOCK IDX)
 	   (COND ((NOT (ZEROP OFFSET))
 		  (%P-STORE-CONTENTS-OFFSET
 		    (%MAKE-POINTER-OFFSET
@@ -650,7 +648,7 @@ Local-variables block exceeds maximum length by| 'DATA))
        ((NULL SVS)
 	(LAP-STORE-NXTNIL-CDR-CODE)
 	ADR)
-      (LAP-Q-OUT (AND (<= NUMARGS 0) '%Q-FLAG-BIT)
+      (LAP-Q-OUT NIL
 		 'QZEVCP
 		 1
 		 (CAR SVS))))

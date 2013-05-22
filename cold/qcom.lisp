@@ -180,7 +180,8 @@
 
 ; Byte pointers at the parts of a Q or other thing, and their values.
 ; Q-FIELD-VALUES does NOT itself go into the cold load.
-(SETQ Q-FIELD-VALUES '(%%Q-CDR-CODE 3602 %%Q-FLAG-BIT 3501 
+(SETQ Q-FIELD-VALUES '(%%Q-CDR-CODE 3602
+      ;%%Q-FLAG-BIT 3501 
       %%Q-DATA-TYPE 3005 %%Q-POINTER 0030  %%Q-POINTER-WITHIN-PAGE 0007 
       %%Q-TYPED-POINTER 0035 %%Q-ALL-BUT-TYPED-POINTER 3503 
       %%Q-ALL-BUT-POINTER 3010 %%Q-ALL-BUT-CDR-CODE 0036
@@ -195,7 +196,7 @@
 (ASSIGN-ALTERNATE Q-FIELD-VALUES)
 (SETQ Q-FIELDS (GET-ALTERNATE Q-FIELD-VALUES))
 
-(SETQ %Q-FLAG-BIT (DPB -1 %%Q-FLAG-BIT 0))  ;USED BY QLF IN COLD MODE
+;(SETQ %Q-FLAG-BIT (DPB -1 %%Q-FLAG-BIT 0))  ;USED BY QLF IN COLD MODE
 
 ;;; Stuff in the REGION-BITS array, some of these bits also appear in the
 ;;; map in the same orientation.  
@@ -365,10 +366,19 @@
 	ADI-ST-MAKE-LIST ADI-ST-INDIRECT))
 
 (SETQ ADI-FIELD-VALUES '(%%ADI-TYPE 2403 %%ADI-RET-STORING-OPTION 2103 
+      %%ADI-PREVIOUS-ADI-FLAG 3601	;Overlaps cdr-code
       %%ADI-RET-SWAP-SV 2001 %%ADI-RET-NUM-VALS-EXPECTING 0006 
       %%ADI-RPC-MICRO-STACK-LEVEL 0006))
 (ASSIGN-ALTERNATE ADI-FIELD-VALUES)
 (SETQ ADI-FIELDS (GET-ALTERNATE ADI-FIELD-VALUES))
+
+;;; These overlap the cdr-code field, which is not used in the special pdl.
+(SETQ SPECPDL-FIELD-VALUES '(
+  %%SPECPDL-BLOCK-START-FLAG 3601               ;Flag is set on first binding of each block of bindings
+  %%SPECPDL-CLOSURE-BINDING 3701                ;Flag is set on bindings made "before" entering function
+  ))
+(ASSIGN-ALTERNATE SPECPDL-FIELD-VALUES)
+(SETQ SPECPDL-FIELDS (GET-ALTERNATE SPECPDL-FIELD-VALUES))
 
 ; LINEAR-PDL-QS and LINEAR-PDL-FIELDS, and their elements, go in the real machine.
 (SETQ LINEAR-PDL-QS '(%LP-FEF %LP-ENTRY-STATE %LP-EXIT-STATE %LP-CALL-STATE))
@@ -578,7 +588,6 @@
       ; DEFINITIONS OF FIELDS IN PAGE HASH TABLE
 
       ;WORD 1 
-      %%PHT1-SCAVENGER-WS-FLAG %%Q-FLAG-BIT  ;IF SET, PAGE IN SCAVENGER WORKING SET.
       %%PHT1-VIRTUAL-PAGE-NUMBER 1020	;ALIGNED SAME AS VMA
 	%PHT-DUMMY-VIRTUAL-ADDRESS 177777 ;ALL ONES MEANS THIS IS DUMMY ENTRY
 					;WHICH JUST REMEMBERS A FREE CORE PAGE
@@ -597,6 +606,7 @@
 					; OR NOMINALLY READ-WRITE-FIRST.
 
       %%PHT1-VALID-BIT 0601		;1 IF THIS HASH TABLE SLOT IS OCCUPIED.
+      %%PHT1-SCAVENGER-WS-FLAG 0701	;IF SET, PAGE IN SCAVENGER WORKING SET.
 
       ;PHT WORD 2.  THIS IS IDENTICAL TO THE LEVEL-2 MAP
       %%PHT2-META-BITS 1606				;SEE %%REGION-MAP-BITS
@@ -931,6 +941,32 @@
 	%UNIBUS-CHANNEL-OUTPUT-TURNOFF-BITS))	;Value to write into that address
 
 (ASSIGN-VALUES-INIT-DELTA UNIBUS-CHANNEL-QS 0 1 1)
+
+;;; Extra bits in the %UNIBUS-CHANNEL-CSR-BITS word.
+;;; Only the bottom 16 bits actually have to do with the device's CSR register
+;;; (which is only 16 bits long).
+(SETQ UNIBUS-CSR-BIT-VALUES '(
+  %%UNIBUS-CSR-OUTPUT 2001			;This is an output device.
+  %%UNIBUS-CSR-TIMESTAMPED 2101			;Store timestamp with each input char;
+						; for output, delay till timestamp is reached.
+  %%UNIBUS-CSR-TWO-DATA-REGISTERS 2201		;Device has two 16-bit data registers;
+						; assume lower unibus addr has low bits.
+  %%UNIBUS-CSR-SB-ENABLE 2301			;Enable sequence break (input only).
+  %%UNIBUS-CSR-SET-BITS-P 2401			;** %UNIBUS-CHANNEL-CSR-SET-BITS is
+						;  significant.
+  %%UNIBUS-CSR-CLEAR-BITS-P 2501		;** %UNIBUS-CHANNEL-CSR-CLEAR-BITS is
+						;  significant.
+  ))
+(ASSIGN-ALTERNATE UNIBUS-CSR-BIT-VALUES)
+
+(SETQ UNIBUS-CSR-BITS '(
+  %%UNIBUS-CSR-OUTPUT
+  %%UNIBUS-CSR-TIMESTAMPED
+  %%UNIBUS-CSR-TWO-DATA-REGISTERS
+  %%UNIBUS-CSR-SB-ENABLE
+  %%UNIBUS-CSR-SET-BITS-P
+  %%UNIBUS-CSR-CLEAR-BITS-P
+  ))
 
 ;;; Definitions for Chaos net hardware and microcode
 
