@@ -90,7 +90,8 @@
 ;DATA LOADED WITH THESE MUST COME FROM M BUS
 
 (DEF-DATA-FIELD Q-CDR-CODE 2 36)
-(DEF-DATA-FIELD Q-FLAG-BIT 1 35)
+;(DEF-DATA-FIELD Q-FLAG-BIT 1 35)
+(DEF-DATA-FIELD Q-CDR-CODE-LOW-BIT 1 36)
 (DEF-DATA-FIELD Q-DATA-TYPE 5 30)
 (DEF-DATA-FIELD Q-DATA-TYPE-PLUS-ONE-BIT 6 27)
 (DEF-DATA-FIELD Q-POINTER 30 0)
@@ -2740,30 +2741,11 @@ XSET2							;Entry from SET
 	(DISPATCH TRANSPORT-WRITE READ-MEMORY-DATA)	;FOLLOW ALL INVZ
 		;FOLLOWING INSTRUCTION MUSTN'T POPJ-AFTER-NEXT BECAUSE
 		;CANNOT START WRITE AND INSTRUCTION FETCH SIMULTANEOUSLY
-	(JUMP-IF-BIT-SET Q-FLAG-BIT MD QSTFE-MONITOR)
-QSTFE-M	((MD-START-WRITE) SELECTIVE-DEPOSIT
+	((MD-START-WRITE) SELECTIVE-DEPOSIT
 		MD Q-ALL-BUT-TYPED-POINTER A-T)
 	(CHECK-PAGE-WRITE)
 	(POPJ-AFTER-NEXT GC-WRITE-TEST)
-       (NO-OP)
-
-;Get here if FLAG-BIT set in a cell about to be written.  Find monitor function
-; following the cell, and call it with args  <old-value>, <new-value>.
-QSTFE-MONITOR
-	(CALL-XCT-NEXT QSTFE-M)		;Complete store
-       ((M-A) Q-TYPED-POINTER MD)	;Save copy of old value
-	(POPJ-EQUAL M-A A-T)		;Same thing, thats all.
-	((C-PDL-BUFFER-POINTER-PUSH) M-T)	;Save copy of new to return
-	(CALL P3ZERO)
-	((VMA-START-READ) M+1 VMA)
-	(CHECK-PAGE-READ)
-	((C-PDL-BUFFER-POINTER-PUSH) MD)
-	((C-PDL-BUFFER-POINTER-PUSH) M-A)	;OLD VALUE
-	((C-PDL-BUFFER-POINTER-PUSH) M-T)	;NEW VALUE
-	((ARG-JUMP MMCALL) (I-ARG 2))
-	(POPJ-AFTER-NEXT
-	  (M-T) C-PDL-BUFFER-POINTER-POP)
-       (NO-OP)
+	(NO-OP)
 
 ;STORE IN LOCAL BLOCK
 QSTLOC	(POPJ-AFTER-NEXT
@@ -4809,7 +4791,7 @@ QBND4	((M-1) ADD (M-CONSTANT 23.) A-QLBNDP)	;TEST P.C.E. (THIS M-CONST JUST HAPP
 	((M-1 WRITE-MEMORY-DATA) Q-TYPED-POINTER READ-MEMORY-DATA)
 	(JUMP-IF-BIT-SET-XCT-NEXT M-QBBFL QBND3)	 ;JUMP IF NOT FIRST IN BLOCK
        ((A-QLBNDP) ADD A-QLBNDP M-ZERO ALU-CARRY-IN-ONE) ;ADVANCE BINDING PDL PNTR
-	((WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) Q-FLAG-BIT A-1)
+	((WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) A-1)
 	((M-QBBFL) DPB (M-CONSTANT -1) A-FLAGS)
 QBND3	((VMA-START-WRITE) A-QLBNDP)		;STORE PREV CONTENTS
 	(CHECK-PAGE-WRITE)			;HAVE INCRD A-QLBNDP, NO SEQ BRK
@@ -4950,7 +4932,7 @@ INTP-ADI-DISPATCH
 (LOCALITY I-MEM)
 
 INTP7	((PDL-BUFFER-INDEX M-I) SUB M-I (A-CONSTANT 1))
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT C-PDL-BUFFER-INDEX INTP9)
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX INTP9)
 	(JUMP-XCT-NEXT INTP6)
        ((PDL-BUFFER-INDEX M-I) SUB M-I (A-CONSTANT 1))
 
@@ -5013,7 +4995,7 @@ BIND-SELF	;Bind SELF to M-A
 	((M-TEM WRITE-MEMORY-DATA) DPB M-ZERO Q-ALL-BUT-TYPED-POINTER A-SELF)
 	(JUMP-IF-BIT-SET-XCT-NEXT M-QBBFL BIND-SELF-1)
        ((A-QLBNDP) ADD M-ZERO A-QLBNDP ALU-CARRY-IN-ONE)
-	((WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) Q-FLAG-BIT A-TEM) ;START NEW BINDING BLOCK
+	((WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) A-TEM) ;START NEW BINDING BLOCK
 	((M-QBBFL) DPB (M-CONSTANT -1) A-FLAGS)
 BIND-SELF-1
 	((VMA-START-WRITE) A-QLBNDP)	;STORE PREVIOUS CONTENTS
@@ -5231,15 +5213,15 @@ MLLV	((M-TEM) MICRO-STACK-POINTER)
 	(CALL-IF-BIT-CLEAR BOXED-SIGN-BIT M-1 TRAP)
   (ERROR-TABLE PDL-OVERFLOW SPECIAL)		;M-1 should be negative as 24-bit quantity
 	((M-Q) DPB (M-CONSTANT -1)	;First Q in block has flag bit
-		Q-FLAG-BIT (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
+		(LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
 MLLV1	((WRITE-MEMORY-DATA) MICRO-STACK-DATA-POP A-Q)	;Note- this involves a LDB operation
 	((A-QLBNDP) ADD A-QLBNDP M-ZERO ALU-CARRY-IN-ONE) 
 	((VMA-START-WRITE) A-QLBNDP)
 	(CHECK-PAGE-WRITE)
 	((M-TEM) MICRO-STACK-POINTER)	;Loop if not done
 	(JUMP-NOT-EQUAL-XCT-NEXT M-TEM A-ZERO MLLV1)
-       ((M-Q) DPB (M-CONSTANT 0)	;Remaining Q's in block do not have flag bit
-		Q-FLAG-BIT (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
+	;Remaining Q's in block do not have flag bit
+       ((M-Q) (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
 	((PDL-BUFFER-INDEX) ADD M-AP (A-CONSTANT (EVAL %LP-EXIT-STATE)))
 	((C-PDL-BUFFER-INDEX) IOR C-PDL-BUFFER-INDEX
 		(A-CONSTANT (BYTE-MASK %%LP-EXS-MICRO-STACK-SAVED)))
@@ -5504,7 +5486,7 @@ QMMPO2	((VMA-START-READ) A-QLBNDP)		;No transport, known to be a fixnum
 	((MICRO-STACK-DATA-PUSH) READ-MEMORY-DATA)
 	((M-TEM) Q-DATA-TYPE READ-MEMORY-DATA)
 	(CALL-NOT-EQUAL M-TEM (A-CONSTANT (EVAL DTP-FIX)) ILLOP)
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT READ-MEMORY-DATA QMMPO2)	;Jump if not last
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) READ-MEMORY-DATA QMMPO2)	;Jump if not last
 	((OA-REG-LOW) DPB M-S OAL-JUMP A-ZERO)
 	(JUMP 0)
 
@@ -5536,7 +5518,7 @@ QRAD1	((MICRO-STACK-DATA-PUSH) (A-CONSTANT (I-MEM-LOC QRAD1R)))  ;DONT CARE IF T
        ((M-S) A-ZERO)
 QRAD1R	((PDL-BUFFER-INDEX M-K) SUB M-AP
 		(A-CONSTANT (PLUS 1 (EVAL %LP-CALL-BLOCK-LENGTH)))) ;FLUSH ADI FROM PDL
-QRAD2	(POPJ-IF-BIT-CLEAR-XCT-NEXT Q-FLAG-BIT C-PDL-BUFFER-INDEX)
+QRAD2	(POPJ-IF-BIT-CLEAR-XCT-NEXT (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX)
        ((PDL-BUFFER-POINTER) SUB M-K (A-CONSTANT 1))
 	(JUMP-XCT-NEXT QRAD2)
        ((PDL-BUFFER-INDEX M-K) SUB M-K (A-CONSTANT 2))
@@ -5694,10 +5676,10 @@ MVR0	(CALL MKCONT)				;MD gets ADI Q
 	(DISPATCH-XCT-NEXT (LISP-BYTE %%ADI-RET-STORING-OPTION) MD D-MVR)
        ((M-I) (LISP-BYTE %%ADI-RET-NUM-VALS-EXPECTING) MD)
 
-MVR1	(CALL-IF-BIT-CLEAR Q-FLAG-BIT MD ILLOP)	;Info out of phase
+MVR1	(CALL-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) MD ILLOP)	;Info out of phase
 	(CALL-XCT-NEXT MKCONT)
        ((M-K) SUB M-K (A-CONSTANT 1))
-	(JUMP-IF-BIT-SET-XCT-NEXT Q-FLAG-BIT MD MVR0) ;More
+	(JUMP-IF-BIT-SET-XCT-NEXT (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) MD MVR0) ;More
        ((M-K) SUB M-K (A-CONSTANT 1))
 	;; No ADI, this the last value
 XRNVX	((M-GARBAGE) MICRO-STACK-DATA-POP)	;Flush second return
@@ -6027,9 +6009,9 @@ XTHRW6D	((MICRO-STACK-DATA-PUSH) (A-CONSTANT (I-MEM-LOC QMEX1)))
 	(JUMP-XCT-NEXT QMEX1)			;FOURTH VALUE IS ACTION
        ((M-T) A-CATCH-ACTION)
 
-XTHRW8	(CALL-IF-BIT-CLEAR Q-FLAG-BIT C-PDL-BUFFER-INDEX ILLOP)
+XTHRW8	(CALL-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX ILLOP)
 	((PDL-BUFFER-INDEX M-D) SUB M-D (A-CONSTANT 1))
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT C-PDL-BUFFER-INDEX XTHRW9)
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX XTHRW9)
 	((PDL-BUFFER-INDEX M-D) SUB M-D (A-CONSTANT 1))
 	(JUMP-XCT-NEXT XTHRW3)
        ((M-D) (BYTE-FIELD 10. 0) M-D)	;ASSURE M-D POSITIVE SO CHECK AT XTHRW6 WINS.
@@ -6115,13 +6097,13 @@ XOCB  (MISC-INST-ENTRY %OPEN-CALL-BLOCK)  ;<FCTN><ADI-PAIRS><DEST>
 	((PDL-BUFFER-INDEX) PDL-BUFFER-POINTER)	;ADI, fix the flag bits
 	((M-A) ADD M-A A-A)			;2 QS per ADI pair
 XOCB1	((C-PDL-BUFFER-INDEX) IOR C-PDL-BUFFER-INDEX
-		(A-CONSTANT (BYTE-MASK Q-FLAG-BIT)))
+		(A-CONSTANT (BYTE-MASK %%ADI-PREVIOUS-ADI-FLAG)))
 	((PDL-BUFFER-INDEX) SUB PDL-BUFFER-INDEX (A-CONSTANT 1))
 	(JUMP-NOT-EQUAL-XCT-NEXT M-A (A-CONSTANT 2) XOCB1)
        ((M-A) SUB M-A (A-CONSTANT 1))
 	(CALL-XCT-NEXT CBM0)		;Push call block but take dest from M-C
        ((C-PDL-BUFFER-INDEX)		;Clear flag bit in last wd of ADI
-		ANDCA C-PDL-BUFFER-INDEX (A-CONSTANT (BYTE-MASK Q-FLAG-BIT)))
+		ANDCA C-PDL-BUFFER-INDEX (A-CONSTANT (BYTE-MASK %%ADI-PREVIOUS-ADI-FLAG)))
 	(POPJ-AFTER-NEXT		;Fix the ADI-present flag
 	 (PDL-BUFFER-INDEX) ADD PDL-BUFFER-POINTER (A-CONSTANT (EVAL %LP-CALL-STATE)))
        ((C-PDL-BUFFER-INDEX) IOR C-PDL-BUFFER-INDEX
@@ -6278,12 +6260,12 @@ XCTO (MISC-INST-ENTRY %CATCH-OPEN)
 	(CALL-XCT-NEXT SBPL-ADI)	;PUSH ADI-BIND-STACK-LEVEL BLOCK
        ((M-S) Q-TYPED-POINTER C-PDL-BUFFER-POINTER-POP)	;GET RESTART PC OFF STACK
 	((C-PDL-BUFFER-POINTER-PUSH)
-		DPB (M-CONSTANT -1) Q-FLAG-BIT A-S)	;PUSH RESTART PC
+		DPB (M-CONSTANT -1) (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) A-S)	;PUSH RESTART PC
 	((M-R) MICRO-STACK-POINTER)
 	(JUMP-XCT-NEXT XCTO1)
        ((C-PDL-BUFFER-POINTER-PUSH) DPB M-R (LISP-BYTE %%ADI-RPC-MICRO-STACK-LEVEL)
 	     (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-			       (BYTE-VALUE Q-FLAG-BIT 1)
+			       (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 			       (BYTE-VALUE %%ADI-TYPE ADI-RESTART-PC))))
 	
 SBPL-ADI((M-1) A-QLBNDP)		;STORE ADI-BIND-STACK-LEVEL ADI BLOCK
@@ -6293,7 +6275,7 @@ SBPL-ADI((M-1) A-QLBNDP)		;STORE ADI-BIND-STACK-LEVEL ADI BLOCK
 		(A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
        ((C-PDL-BUFFER-POINTER-PUSH) 
 		(A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-				  (BYTE-VALUE Q-FLAG-BIT 1)
+				  (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 				  (BYTE-VALUE %%ADI-TYPE ADI-BIND-STACK-LEVEL))))
 
 XCTOM (MISC-INST-ENTRY %CATCH-OPEN-MV)
@@ -6304,24 +6286,24 @@ XCTOM (MISC-INST-ENTRY %CATCH-OPEN-MV)
 	(CALL-XCT-NEXT LMVRB)				;LEAVE RM ON PDL TO RECEIVE VALS
        ((M-S) Q-TYPED-POINTER C-PDL-BUFFER-POINTER-POP)	;RESTART PC
 	(CALL SBPL-ADI)		;PUSH ADI-BIND-STACK-LEVEL BLOCK
-	((C-PDL-BUFFER-POINTER-PUSH) DPB (M-CONSTANT -1) Q-FLAG-BIT A-S)
+	((C-PDL-BUFFER-POINTER-PUSH) DPB (M-CONSTANT -1) (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) A-S)
 	((M-R) MICRO-STACK-POINTER)
         ((C-PDL-BUFFER-POINTER-PUSH) DPB M-R (LISP-BYTE %%ADI-RPC-MICRO-STACK-LEVEL)
 	     (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-			       (BYTE-VALUE Q-FLAG-BIT 1)
+			       (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 			       (BYTE-VALUE %%ADI-TYPE ADI-RESTART-PC))))
 	(JUMP-XCT-NEXT XCTOM1)
-       ((M-K) DPB (M-CONSTANT -1) Q-FLAG-BIT A-K) ;THIS ISN'T LAST ADI
+       ((M-K) DPB (M-CONSTANT -1) (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) A-K) ;THIS ISN'T LAST ADI
 
 XLEC (MISC-INST-ENTRY %LEXPR-CALL)
 	(JUMP-XCT-NEXT XLEC1)
        ((M-S) (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-				(BYTE-VALUE Q-FLAG-BIT 1)
+				(BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 				(BYTE-VALUE %%ADI-TYPE ADI-LEXPR-CALL))))
 
 XFEC (MISC-INST-ENTRY %FEXPR-CALL)
 	((M-S) (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-				 (BYTE-VALUE Q-FLAG-BIT 1)
+				 (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 				 (BYTE-VALUE %%ADI-TYPE ADI-FEXPR-CALL))))
 XLEC1	(CALL-XCT-NEXT FLUSH-DESTINATION-RETURN-PC)
        ((M-T) C-PDL-BUFFER-POINTER-POP)	;FUNCTION TO CALL
@@ -6332,12 +6314,12 @@ XLEC1	(CALL-XCT-NEXT FLUSH-DESTINATION-RETURN-PC)
 XLECM (MISC-INST-ENTRY %LEXPR-CALL-MV)
 	(JUMP-XCT-NEXT XLECM1)
        ((M-S) (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-				(BYTE-VALUE Q-FLAG-BIT 1)
+				(BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 				(BYTE-VALUE %%ADI-TYPE ADI-LEXPR-CALL))))
 
 XFECM (MISC-INST-ENTRY %FEXPR-CALL-MV)
 	((M-S) (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-				 (BYTE-VALUE Q-FLAG-BIT 1)
+				 (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 				 (BYTE-VALUE %%ADI-TYPE ADI-FEXPR-CALL))))
 XLECM1	(CALL-XCT-NEXT FLUSH-DESTINATION-RETURN-PC)
        ((M-D) C-PDL-BUFFER-POINTER-POP)		;NUMBER OF VALUES DESIRED
@@ -6346,7 +6328,7 @@ XLECM1	(CALL-XCT-NEXT FLUSH-DESTINATION-RETURN-PC)
 	((C-PDL-BUFFER-POINTER-PUSH) (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
 	((C-PDL-BUFFER-POINTER-PUSH) M-S)	;STORE ADI
 	(JUMP-XCT-NEXT XCTOM1)
-       ((M-K) DPB (M-CONSTANT -1) Q-FLAG-BIT A-K) ;THIS ISN'T LAST ADI
+       ((M-K) DPB (M-CONSTANT -1) (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) A-K) ;THIS ISN'T LAST ADI
 
 XC0MVL (MISC-INST-ENTRY %CALL0-MULT-VALUE-LIST)
 	((M-TEM) MICRO-STACK-POINTER)		;Insert continuation to QMRCL in pdl
@@ -6364,7 +6346,7 @@ XCMVL (MISC-INST-ENTRY %CALL-MULT-VALUE-LIST)
 	(JUMP-XCT-NEXT XCTO1)
        ((C-PDL-BUFFER-POINTER-PUSH)		;ADI FOR RETURN VALUES INFO
 	     (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-			       (BYTE-VALUE Q-FLAG-BIT 1)
+			       (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 			       (BYTE-VALUE %%ADI-TYPE ADI-RETURN-INFO)
 			       (BYTE-VALUE %%ADI-RET-STORING-OPTION ADI-ST-MAKE-LIST))))
 
@@ -6383,7 +6365,7 @@ XCTOM1	((C-PDL-BUFFER-POINTER-PUSH) M-K)	;RETURN VALUES BLOCK POINTER
 	((C-PDL-BUFFER-POINTER-PUSH) DPB M-D	;ADI FOR RETURN VALUES INFO
 	  (LISP-BYTE %%ADI-RET-NUM-VALS-EXPECTING)
 	     (A-CONSTANT (PLUS (BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-			       (BYTE-VALUE Q-FLAG-BIT 1)
+			       (BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1)
 			       (BYTE-VALUE %%ADI-TYPE ADI-RETURN-INFO)
 			       (BYTE-VALUE %%ADI-RET-STORING-OPTION ADI-ST-BLOCK))))
 XCTO1	(CALL CBM)				;STORE CALL BLOCK
@@ -6392,6 +6374,7 @@ XCTO1	(CALL CBM)				;STORE CALL BLOCK
        ((C-PDL-BUFFER-INDEX) IOR C-PDL-BUFFER-INDEX
 		(A-CONSTANT (BYTE-MASK %%LP-CLS-ADI-PRESENT)))
 
+;;; XXX - This is different to sys99
 LMVRB	(DISPATCH (I-ARG DATA-TYPE-INVOKE-OP) Q-DATA-TYPE M-D TRAP-UNLESS-FIXNUM)
     (ERROR-TABLE DATA-TYPE-SCREWUP ADI)
 	((M-D) Q-POINTER M-D)
@@ -6458,7 +6441,7 @@ UAPLY6	((C-PDL-BUFFER-POINTER) DPB C-PDL-BUFFER-POINTER Q-ALL-BUT-CDR-CODE
 UAPFX	((C-PDL-BUFFER-POINTER-PUSH) (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))	;ADI
 	((C-PDL-BUFFER-POINTER-PUSH) (A-CONSTANT (PLUS (PLUS
 		(BYTE-VALUE Q-DATA-TYPE DTP-FIX)
-		(BYTE-VALUE Q-FLAG-BIT 1))
+		(BYTE-VALUE %%ADI-PREVIOUS-ADI-FLAG 1))
 		(BYTE-VALUE %%ADI-TYPE ADI-FEXPR-CALL))))
 	(CALL P3ADI)			;PUSH MICRO-TO-MACRO CALL BLOCK WITH ADI
 	((C-PDL-BUFFER-POINTER-PUSH) M-J)	;function
@@ -6837,9 +6820,9 @@ QLEAI3	(DISPATCH (I-ARG DATA-TYPE-INVOKE-OP)
 		;IF FEXPR OR LEXPR, REMEMBER WIERD CALL TYPE, JUMP TO QLEAI2, ELSE TO QLEAI4
        ((A-LCTYP) (LISP-BYTE %%ADI-TYPE) C-PDL-BUFFER-INDEX)
 
-QLEAI4	(CALL-IF-BIT-CLEAR Q-FLAG-BIT C-PDL-BUFFER-INDEX ILLOP)	;IGNORE OTHER ADI
+QLEAI4	(CALL-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX ILLOP)	;IGNORE OTHER ADI
 	((M-K PDL-BUFFER-INDEX) SUB M-K (A-CONSTANT 1))
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT C-PDL-BUFFER-INDEX QLEAI2);ALL ADI DONE
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%ADI-PREVIOUS-ADI-FLAG) C-PDL-BUFFER-INDEX QLEAI2);ALL ADI DONE
 	(JUMP-XCT-NEXT QLEAI3)
        ((M-K PDL-BUFFER-INDEX) SUB M-K (A-CONSTANT 1))
 
@@ -7096,7 +7079,7 @@ QBSPCL	((VMA-START-READ) M-T)			;GET SPECIAL VALUE CELL POINTER
 	((WRITE-MEMORY-DATA) M-K)
 	(JUMP-IF-BIT-SET-XCT-NEXT M-QBBFL QBSPCL1)	;JUMP IF NOT FIRST IN BLOCK
        ((M-T) ADD M-T A-ZERO ALU-CARRY-IN-ONE)	 ;ADVANCE TO NEXT S-V SLOT
-	((M-K WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) Q-FLAG-BIT A-K)
+	((M-K WRITE-MEMORY-DATA) DPB (M-CONSTANT -1) (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) A-K)
 	((M-QBBFL) DPB (M-CONSTANT -1) A-FLAGS)
 QBSPCL1 ((VMA-START-WRITE) A-QLBNDP)
 	(CHECK-PAGE-WRITE)
@@ -7177,7 +7160,7 @@ BBLKP1	((VMA-START-READ) A-QLBNDP)		;Get pntr to bound cell
 	((WRITE-MEMORY-DATA-START-WRITE) SELECTIVE-DEPOSIT
 		READ-MEMORY-DATA Q-ALL-BUT-TYPED-POINTER A-B)
 	(CHECK-PAGE-WRITE-BIND)
-BBLKP3	(JUMP-IF-BIT-SET Q-FLAG-BIT M-B BBLKP2)	;Jump if last binding in block
+BBLKP3	(JUMP-IF-BIT-SET (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) M-B BBLKP2)	;Jump if last binding in block
 	(JUMP-NOT-EQUAL M-ZR A-ZERO BBLKP1)	;Loop if BBLKP
 	(POPJ-IF-BIT-CLEAR-XCT-NEXT M-DEFERRED-SEQUENCE-BREAK-FLAG)	;Exit if QUNBND
        ((M-B) (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))  ;Dont leave a DTP-E-V-C-P in M-B
@@ -8011,7 +7994,7 @@ QDACMP	((C-PDL-BUFFER-POINTER-PUSH) M-A)
 		(LISP-BYTE %%ARRAY-TYPE-FIELD) M-B  ;THIS MUST BE IN 0@PP BELOW
 		(A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
 QDACM2	((M-A) READ-MEMORY-DATA)	;POINTED-TO ARRAY
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT READ-MEMORY-DATA QDACM5)  ;JUMP UNLESS INDEX OFFSET
+	(JUMP-IF-BIT-CLEAR (BYTE-FIELD 1 0) M-B QDACM5)  ;JUMP UNLESS INDEX OFFSET
 	((VMA-START-READ) ADD VMA (A-CONSTANT 2))
 	(CHECK-PAGE-READ)
 	(DISPATCH TRANSPORT READ-MEMORY-DATA)
@@ -9176,10 +9159,6 @@ XPDATP (MISC-INST-ENTRY %P-DATA-TYPE)
 XPCDRC (MISC-INST-ENTRY %P-CDR-CODE)
 	(JUMP-XCT-NEXT XPDAT1)
        ((M-K) (A-CONSTANT (OA-LOW-CONTEXT (BYTE-INST Q-CDR-CODE))))
-
-XPFLAG (MISC-INST-ENTRY %P-FLAG-BIT)
-	(JUMP-XCT-NEXT XPDAT1)
-       ((M-K) (A-CONSTANT (OA-LOW-CONTEXT (BYTE-INST Q-FLAG-BIT))))
 
 XSPDTP (MISC-INST-ENTRY %P-STORE-DATA-TYPE)
 	((M-K) (A-CONSTANT (OA-LOW-CONTEXT (DPB Q-DATA-TYPE))))
@@ -9199,10 +9178,6 @@ XSPDAT (MISC-INST-ENTRY %P-STORE-POINTER)
 XSPCDR (MISC-INST-ENTRY %P-STORE-CDR-CODE)
 	(JUMP-XCT-NEXT XSPDTP1)
        ((M-K) (A-CONSTANT (OA-LOW-CONTEXT (DPB Q-CDR-CODE))))
-
-XSPUSR (MISC-INST-ENTRY %P-STORE-FLAG-BIT)
-	(JUMP-XCT-NEXT XSPDTP1)
-       ((M-K) (A-CONSTANT (OA-LOW-CONTEXT (DPB Q-FLAG-BIT))))
 
 ;Provides a way to pick up the pointer-field of an external-value-cell
 ;pointer or a dtp-null pointer, or any invisible pointer,
@@ -18198,9 +18173,7 @@ INTR	(CALL-IF-BIT-SET M-INTERRUPT-FLAG ILLOP);Recursive interrupt!
 	(JUMP-IF-BIT-CLEAR (BYTE-FIELD 1 15.) MD INTRX0) ;If not Unibus, go check for XBUS
 	((M-B) SELECTIVE-DEPOSIT MD (BYTE-FIELD 8 2) A-ZERO)	;Interrupt vector address
 	(JUMP-EQUAL M-B (A-CONSTANT 270) CHAOS-INTR)	;Chaos net has special handler
-	(JUMP-EQUAL M-B (A-CONSTANT 400) ETHER-XMIT-DONE)	;Ether Xmit completed
-	(JUMP-EQUAL M-B (A-CONSTANT 404) ETHER-RCV-DONE)	;Ether Receive done
-	(JUMP-EQUAL M-B (A-CONSTANT 410) ETHER-COLLISION)	;Collision.
+	;Deleted PUP ethernet handlers
 	;No specially provided device handler, maybe this is a general buffered device
 	;E.g. the keyboard is one.
 	((M-A) (A-CONSTANT (EVAL (+ 400 %SYS-COM-UNIBUS-INTERRUPT-LIST
@@ -18236,7 +18209,7 @@ INNUBI		;Merge here in pdp11 arbitrating unibus case.
 	(CHECK-PAGE-READ-NO-INTERRUPT)
 	((M-TEM) A-INTR-TEM1)			;Output device?
 	(JUMP-IF-BIT-SET (BYTE-FIELD 1 16.) M-TEM INTR-OUTDEV)
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT READ-MEMORY-DATA INTR-1)	;Jump if one-word device
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%UNIBUS-CSR-TWO-DATA-REGISTERS) READ-MEMORY-DATA INTR-1)	;Jump if one-word device
 	((VMA-START-READ) ADD MD (A-CONSTANT 1))	;Two-word device (kbd) needs to
 	(CHECK-PAGE-READ-NO-INTERRUPT)			; read the high-order word first.
 	((A-INTR-TEM1) DPB READ-MEMORY-DATA (BYTE-FIELD 20 20) A-ZERO)
@@ -18253,7 +18226,7 @@ INTR-2	((VMA-START-WRITE) M-B)			;Write into buffer
 						       %UNIBUS-CHANNEL-VECTOR-ADDRESS))))
 	(CHECK-PAGE-READ-NO-INTERRUPT)
 	((M-B) ADD M-B (A-CONSTANT 1))		;Advance storing pointer
-	(JUMP-IF-BIT-CLEAR Q-FLAG-BIT READ-MEMORY-DATA INTR-NO-SB);This bit enables seq breaks.
+	(JUMP-IF-BIT-CLEAR (LISP-BYTE %%UNIBUS-CSR-SB-ENABLE) READ-MEMORY-DATA INTR-NO-SB);This bit enables seq breaks.
 	(JUMP-IF-BIT-CLEAR-XCT-NEXT M-SBS-UNIBUS INTR-NO-SB)     ;This bit does so too.
        ((MD) Q-POINTER READ-MEMORY-DATA)	;Flush the flag bit.
 	((INTERRUPT-CONTROL) IOR LOCATION-COUNTER (A-CONSTANT 1_26.))
@@ -18604,504 +18577,6 @@ CHAOS-LIST-PUT
 
 
 
-;;; Ethernet microcode
-
-;;; Additions to DEFMIC
-;  (defmic %ether-wakeup 711 (reset-p) t)
-;  (defmic %checksum-pup 712 (art-16b-pup start length) t)
-;  (defmic %decode-pup 713 (art-byte-pup start length state super-image-p) t)
-	
-
-(ASSIGN ETHER-MAX-RETRANSMITS 16.)		;Max times the u-code tries to retransmit
-(ASSIGN ETHER-OUTPUT-CSR-ENABLES 101)		;These are not changeable
-(ASSIGN UNIBUS-MAP-VIRTUAL-BASE-ADDRESS 77773060)	;Base of the unibus map
-(DEF-DATA-FIELD UNIBUS-MAP-BLOCK 4. 10.)	;Map block address in unibus address
-
-(LOCALITY A-MEM)
-A-CURRENT-ETHER-RCV-PACKET			;Current packet being received (no data-type)
-	((BYTE-VALUE Q-DATA-TYPE DTP-SYMBOL) 0)	;ie NIL
-A-ETHER-REGISTER-BASE		(77772100)	;Virtual address of ether net base
-A-ETHER-INPUT-CSR-ENABLES	(101)		;Input csr enables initially non-promiscuous
-(LOCALITY I-MEM)
-
-;;; Ether net driver
-;;; Note that we use M-SBS-CHAOS to enable Ether sequence breaks
-;;; Questions: What about lack of room in SYS-COM area?  What about transmission completion?
-
-ETHER-RCV-DONE
-	((M-B) A-ETHER-REGISTER-BASE)
-	((M-A) A-CURRENT-ETHER-RCV-PACKET)
-	((VMA-START-READ) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-CSR-OFFSET)))
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	;; Save CSR into packet
-	((WRITE-MEMORY-DATA) Q-POINTER READ-MEMORY-DATA
-			(A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
-	((VMA-START-WRITE) SUB M-A (A-CONSTANT (EVAL (+ 2 %ETHER-LEADER-CSR))))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	(JUMP-IF-BIT-SET (BYTE-FIELD 1 15.) READ-MEMORY-DATA
-		ETHER-RCV-RET)		;Error on the receive, just return packet
-	;; Save active length
-	((VMA-START-READ) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-WORD-COUNT-OFFSET)))
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	((MD) SUB READ-MEMORY-DATA
-		(A-CONSTANT (EVAL (LOGAND 1777 (- ETHER-MAXIMUM-PACKET-LENGTH)))))
-	((WRITE-MEMORY-DATA) Q-POINTER MD (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
-	((VMA-START-WRITE) SUB M-A (A-CONSTANT (EVAL (+ 2 %ETHER-LEADER-ACTIVE-LENGTH))))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	;; Install on Receive list
-ETHER-RCV-RET
-	(CALL-XCT-NEXT ETHER-LIST-PUT)
-       ((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-RECEIVE-LIST))))
-	(JUMP-IF-BIT-CLEAR-XCT-NEXT M-SBS-CHAOS ETHER-RCV-NEW-PACKET)	;SB enabled?
-       ((MICRO-STACK-DATA-PUSH) (A-CONSTANT (I-MEM-LOC UB-INTR-RET)))
-	((INTERRUPT-CONTROL) IOR LOCATION-COUNTER (A-CONSTANT 1_26.))	;request SB
-	;; Drops through to reenable the interface
-
-ETHER-RCV-NEW-PACKET
-	(CALL-XCT-NEXT ETHER-LIST-GET)
-       ((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-FREE-LIST))))
-	((A-CURRENT-ETHER-RCV-PACKET) M-A)
-	(JUMP-EQUAL M-A A-V-NIL ETHER-NO-FREE-PACKETS)
-	((M-A) ADD M-A (A-CONSTANT 1))
-	(CALL-XCT-NEXT ETHER-MAP-PACKET)	;Map in this packet
-       ((M-B) (A-CONSTANT (EVAL ETHER-UNIBUS-BLOCK)))
-	((VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-BUFFER-POINTER-OFFSET)))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	((WRITE-MEMORY-DATA) (A-CONSTANT (EVAL (- ETHER-MAXIMUM-PACKET-LENGTH))))
-	((VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-WORD-COUNT-OFFSET)))	
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	((WRITE-MEMORY-DATA) A-ETHER-INPUT-CSR-ENABLES)
-	(POPJ-AFTER-NEXT
-		(VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-CSR-OFFSET)))
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-ETHER-NO-FREE-PACKETS
-	((WRITE-MEMORY-DATA) SETZ)
-	((M-B) A-ETHER-REGISTER-BASE)
-	(POPJ-AFTER-NEXT
-		(VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-INPUT-CSR-OFFSET)))
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-;;; Currently transmitting packet got a collision
-ETHER-COLLISION
-	((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-TRANSMIT-LIST))))
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	((M-A) READ-MEMORY-DATA)		;Current packet
-	((VMA-START-READ) SUB M-A (A-CONSTANT (EVAL (+ 2 %ETHER-LEADER-TRANSMIT-COUNT))))
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;Get the number of retransmit times
-	(JUMP-GREATER-THAN READ-MEMORY-DATA (A-CONSTANT ETHER-MAX-RETRANSMITS)
-			ETHER-XMIT-DONE)	;Punt
-	((MICRO-STACK-DATA-PUSH) (A-CONSTANT (I-MEM-LOC UB-INTR-RET)))
-	((M-B) READ-MEMORY-DATA)
-	((WRITE-MEMORY-DATA-START-WRITE) ADD READ-MEMORY-DATA (A-CONSTANT 1))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	;; here number of retries is in M-B
-	((VMA-START-READ) (A-CONSTANT 77772050))	;Pick up u-sec clock
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	((OA-REG-LOW) DPB M-B OAL-BYTL-1 A-ZERO)	;Pick up n bottom bits of it
-	((WRITE-MEMORY-DATA) BYTE-INST READ-MEMORY-DATA A-ZERO)
-	((VMA) A-ETHER-REGISTER-BASE)
-	((VMA-START-WRITE) ADD VMA (A-CONSTANT (EVAL %ETHER-OUTPUT-DELAY-OFFSET)))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)		;Set the delay to that
-	((M-A) ADD M-A (A-CONSTANT 1))
-	((M-B) (A-CONSTANT (EVAL ETHER-UNIBUS-BLOCK)))	;Use receive map
-	(JUMP-XCT-NEXT ETHER-XMIT-PACKET)	;Retransmit packet
-       (CALL ETHER-ADDRESS-PACKET)		;But first calculate the address
-
-ETHER-XMIT-DONE
-	((MICRO-STACK-DATA-PUSH) (A-CONSTANT (I-MEM-LOC UB-INTR-RET)))
-	(CALL-XCT-NEXT ETHER-LIST-GET)		;Read output packet
-       ((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-TRANSMIT-LIST))))
-	((M-B) Q-TYPED-POINTER M-A)
-	(JUMP-EQUAL M-B A-V-NIL ETHER-NO-XMIT)
-	(CALL-XCT-NEXT ETHER-LIST-PUT)
-       ((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-FREE-LIST))))	;Free packet
-	(JUMP-IF-BIT-CLEAR M-SBS-CHAOS ETHER-XMIT-NEW-PACKET)		;SB enabled?
-	((INTERRUPT-CONTROL) IOR LOCATION-COUNTER (A-CONSTANT 1_26.))	;request SB
-
-;;; Sets up the next packet transfer
-ETHER-XMIT-NEW-PACKET
-	((VMA-START-READ) (A-CONSTANT (EVAL (+ 400 %SYS-COM-ETHER-TRANSMIT-LIST))))
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;Read output packet
-	((M-A) Q-TYPED-POINTER READ-MEMORY-DATA)
-	(JUMP-EQUAL M-A A-V-NIL ETHER-NO-XMIT)	;No packet available
-	((M-A) ADD M-A (A-CONSTANT 1))		;Get pointer to data word
-	(CALL-XCT-NEXT ETHER-MAP-PACKET)
-       ((M-B) (A-CONSTANT (EVAL (+ ETHER-UNIBUS-BLOCK 2))))	;Transmit is next blocks
-;;; Here packet is setup and addressed by map. MD is the unibus address of it
-ETHER-XMIT-PACKET
-	((VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-OUTPUT-BUFFER-POINTER-OFFSET)))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	((VMA-START-READ) SUB M-A (A-CONSTANT (EVAL (+ 3 %ETHER-LEADER-ACTIVE-LENGTH))))
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	((M-A) Q-POINTER READ-MEMORY-DATA A-ZERO)
-	((WRITE-MEMORY-DATA) SUB M-ZERO A-A)
-	((VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-OUTPUT-WORD-COUNT-OFFSET)))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	((WRITE-MEMORY-DATA) (A-CONSTANT ETHER-OUTPUT-CSR-ENABLES))
-	(POPJ-AFTER-NEXT
-		(VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-OUTPUT-CSR-OFFSET)))
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-ETHER-NO-XMIT
-	((WRITE-MEMORY-DATA) SETZ)
-	((M-B) A-ETHER-REGISTER-BASE)
-	(POPJ-AFTER-NEXT
-		(VMA-START-WRITE) ADD M-B (A-CONSTANT (EVAL %ETHER-OUTPUT-CSR-OFFSET)))
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-;;; M-A is the page to address, M-B is the unibus block to use
-;;; Returns with MD full with the appropriate unibus address to
-;;; address the buffer, and M-B points to the ether register base
-ETHER-MAP-PACKET
-	((VMA-START-READ) M-A)				;Look up physical address
-	(CHECK-PAGE-READ-NO-INTERRUPT)
-	((MD) VMA)
-	((WRITE-MEMORY-DATA) MAP-PHYSICAL-PAGE-NUMBER	;UNIBUS map enable word
-		MEMORY-MAP-DATA (A-CONSTANT 140000))
-	((VMA-START-WRITE) ADD M-B (A-CONSTANT UNIBUS-MAP-VIRTUAL-BASE-ADDRESS))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	;((WRITE-MEMORY-DATA) ADD MD (A-CONSTANT 1))	;--- this has to be wrong ---
-	((WRITE-MEMORY-DATA) A-ZERO)			;disable next map, see what happens
-	((VMA-START-WRITE) ADD VMA (A-CONSTANT 1))	;Next page
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-ETHER-ADDRESS-PACKET
-	((M-B) DPB M-B UNIBUS-MAP-BLOCK (A-CONSTANT 140000))	;Set the page number
-	(POPJ-AFTER-NEXT			;Fill in page offset
-		(WRITE-MEMORY-DATA) DPB M-A (BYTE-FIELD 8. 2) A-B)
-       ((M-B) A-ETHER-REGISTER-BASE)	;Restore this for fun
-
-ETHER-WAKEUP (MISC-INST-ENTRY %ETHER-WAKEUP)
-;This version that takes an argument works due to the following convoluted reasons:
-;Usual (easy) case: arg=NIL, so first call doesn't happen, second call is comparing
-;to M-A=NIL (instead of A-V-NIL) so it works as before.  Reset-P case: arg is non-NIL
-;so first call happens.  Usually this finds a packet, sets A-CURRENT-ETHER-RCV-PACKET
-;and increments M-A.  Thus they are not equal and the second call does not happen.
-;If it doesn't find a packet both are NIL.  This causes the second call to happen,
-;but since the first call didn't do much it is unlikely to have any effect anyway.
-	((M-A) Q-TYPED-POINTER C-PDL-BUFFER-POINTER-POP)	;get reset-p arg
-	(CALL-NOT-EQUAL M-A A-V-NIL ETHER-RCV-NEW-PACKET)	;enable reception if resetting
-	(CALL-EQUAL M-A A-CURRENT-ETHER-RCV-PACKET ETHER-RCV-NEW-PACKET) ;or need packet
-	((M-B) A-ETHER-REGISTER-BASE)		; Now enable output side
-	((VMA-START-READ) ADD M-B (A-CONSTANT (EVAL %ETHER-OUTPUT-CSR-OFFSET)))
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;Cant allow interrupts
-	(CALL-IF-BIT-CLEAR (BYTE-FIELD 1 6) READ-MEMORY-DATA
-		ETHER-XMIT-NEW-PACKET)		;Interrupts off, so try to send new packet
-	(JUMP XFALSE)
-
-;;; Take packet off list which has been VMA-START-READ, return it in M-A
-;;; M-A can return with NIL in it.  Uses A-INTR-TEM1
-ETHER-LIST-GET
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;MD gets first buffer on list
-	((A-INTR-TEM1) VMA)			;Save address of list header
-	((M-A) Q-TYPED-POINTER READ-MEMORY-DATA)
-	(POPJ-EQUAL M-A A-V-NIL)		;Return if list empty
-	((VMA-START-READ) SUB M-A (A-CONSTANT (EVAL (+ 2 %ETHER-LEADER-THREAD))))
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;MD gets next buffer on list
-	((WRITE-MEMORY-DATA) Q-TYPED-POINTER READ-MEMORY-DATA)
-	(POPJ-AFTER-NEXT (VMA-START-WRITE) A-INTR-TEM1)
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-;;; Put packet in M-A onto list which has been VMA-START-READ
-;;; Uses A-INTR-TEM1
-ETHER-LIST-PUT
-	(CHECK-PAGE-READ-NO-INTERRUPT)		;MD gets present first buffer on list
-	((A-INTR-TEM1) VMA)			;Save address of list header
-	((WRITE-MEMORY-DATA) Q-TYPED-POINTER READ-MEMORY-DATA)	;Thread onto new first buffer
-	((VMA-START-WRITE) SUB M-A (A-CONSTANT (EVAL (+ 2 %ETHER-LEADER-THREAD))))
-	(CHECK-PAGE-WRITE-NO-INTERRUPT)
-	((WRITE-MEMORY-DATA) Q-TYPED-POINTER M-A)	;Change list header
-	(POPJ-AFTER-NEXT (VMA-START-WRITE) A-INTR-TEM1)
-       (CHECK-PAGE-WRITE-NO-INTERRUPT)
-
-
-;UCODE-AR-1-SETUP prepares an array for microcode access.  The first argument gives the
-;array, the second the starting element and the third argument the number of elements.
-;This calls the system microcode, which may have side-effects.  The following are returned:
-; M-A the array, M-E base address, VMA word address, M-Q first index, M-K last index,
-; M-D first dimension, M-S product of dimensions, M-B array header, M-T first element of array
-; Preserves: M-C, M-I, M-R, M-ZR (if the system microcode does!).
-;
-UCODE-AR-1-SETUP
-	(DISPATCH Q-DATA-TYPE C-PDL-BUFFER-POINTER TRAP-UNLESS-FIXNUM)
-   (ERROR-TABLE ARGTYP FIXNUM PP NIL NIL UCODE-AR-1-SETUP)	;bless number of elements
-	((M-TEM) SUB C-PDL-BUFFER-POINTER-POP (A-CONSTANT 1))	;M-TEM: first-last offset
-	(DISPATCH Q-DATA-TYPE C-PDL-BUFFER-POINTER TRAP-UNLESS-FIXNUM)
-   (ERROR-TABLE ARGTYP FIXNUM PP NIL NIL UCODE-AR-1-SETUP)	;bless first element
-        ((M-K) ADD C-PDL-BUFFER-POINTER A-TEM)			;add first to get last
-	((C-PDL-BUFFER-POINTER)					;Store last index
-		Q-POINTER M-K (A-CONSTANT (BYTE-VALUE Q-DATA-TYPE DTP-FIX)))
-	(CALL-XCT-NEXT XAR1)
-       ((M-K) SUB M-K A-TEM)					;Reconstruct first index
-   (ERROR-TABLE CALLS-SUB UCODE-AR-1-SETUP)
-	((C-PDL-BUFFER-POINTER-PUSH) M-A)			;repush array
-	((C-PDL-BUFFER-POINTER-PUSH) M-K)			;push saved first
-	(JUMP-XCT-NEXT XAR1)					;"call" AR-1 for first index
-       ((M-K) M-Q)						;save index to last word
-
-;ETH-CHECKSUM-PUP checksums a segment of an ART-16B.  The first argument gives the array,
-;the second the starting element and the third argument gives the number of elements.
-;Example:  (defun fast-checksum-pup (epkt &aux (n (lsh (1- (pup-length epkt)) -1)))
-;	     (values (%checksum-pup epkt 2 n) (+ 2 n)))
-;
-;This is the original Lisp (attributed to MOON).
-;Note ucode takes args to specify position in ART-16B.
-; (DEFUN CHECKSUM-PUP (EPKT)
-;      (DO ((I 2. (1+ I))
-;	   (CK 0)
-;	   (N (LSH (1- (PUP-LENGTH EPKT)) -1) (1- N)))
-;	  ((ZEROP N)
-;	   (AND (= CK 177777) (SETQ CK 0))	;Gronk minus zero
-;	   (RETURN CK I))			;Return checksum and index in PUP of cksm
-;	(SETQ CK (+ CK (AREF EPKT I)))		;1's complement add
-;	(AND (BIT-TEST 200000 CK) (SETQ CK (LDB 0020 (1+ CK))))
-;	(SETQ CK (DPB CK 0117 (LDB 1701 CK)))))	;16-bit left rotate
-;
-ETH-CHECKSUM-PUP	(MISC-INST-ENTRY %CHECKSUM-PUP)
-   (ERROR-TABLE RESTART ETH-CHECKSUM-PUP)
-	(CALL UCODE-AR-1-SETUP)					;set up for array access
-   (ERROR-TABLE CALLS-SUB ETH-CHECKSUM-PUP)
-	((M-TEM) (LISP-BYTE %%ARRAY-TYPE-FIELD) M-B)		;trap if not 16B
-	(CALL-NOT-EQUAL M-TEM (A-CONSTANT (EVAL (LSH ART-16B ARRAY-TYPE-SHIFT))) TRAP)
-   (ERROR-TABLE ARGTYP ART-16B M-A 0 ETH-CHECKSUM-PUP %CHECKSUM-PUP)
-	((M-1) DPB M-T (BYTE-FIELD 20 20) A-ZERO)		;init M-1 as tho for odd index
-	(JUMP-IF-BIT-CLEAR-XCT-NEXT
-	  M-Q (BYTE-FIELD 1 0) ETH-CHECKSUM-PUP-EVEN)		;jump if starting even index
-       ((M-T) SETZ) 					        ;zero running checksum
-;We now ping-pong between the even and odd indices.
-;M-1 = 32B memory data, M-T = running checksum
-;M-Q = current array index, M-K = final array index
-;M-Q is right shifted one place when used to index off of M-E, the array base memory address.
-ETH-CHECKSUM-PUP-ODD		;data has been read from the array, use hi order 16 bits
-	(JUMP-GREATER-THAN-XCT-NEXT M-Q A-K ETH-CHECKSUM-PUP-EXIT)	;end test
-       ((A-TEM1) (BYTE-FIELD 20 20) M-1)    			;checksum left half  
-	((M-T) ADD M-T A-TEM1)					;16B two's complement sum
-	((A-TEM1) (BYTE-FIELD 1 20) M-T)			;A-TEM1 gets 16B "overflow"
-	((M-T) OUTPUT-SELECTOR-LEFTSHIFT-1 ADD M-T A-TEM1)	;end-around carry, M-T gets
-								;1's comp sum left shifted
-								;lsb gets "don't care" from Q
-	((A-TEM1) (BYTE-FIELD 1 20) M-T)			;A-TEM1 gets msb of 1's comp
-        ((M-T) SELECTIVE-DEPOSIT M-T (BYTE-FIELD 17 1) A-TEM1)	;M-T gets rotated 16B 1's comp
-	((M-Q) ADD M-Q (A-CONSTANT 1))				;increment index
-ETH-CHECKSUM-PUP-EVEN		;read data from array, use lo order 16 bits
-	(JUMP-GREATER-THAN-XCT-NEXT M-Q A-K ETH-CHECKSUM-PUP-EXIT)	;end test
-       ((A-TEM1) (BYTE-FIELD 27 1) M-Q)				;A-TEM1 gets word-wise index
-	((VMA-START-READ) ADD M-E A-TEM1)			;M-1 gets entire data word
-	(CHECK-PAGE-READ)
-	((M-1) READ-MEMORY-DATA)
-        ((A-TEM1) (BYTE-FIELD 20 0) M-1)  			;checksum right half
-	((M-T) ADD M-T A-TEM1)					;16B two's complement sum
-	((A-TEM1) (BYTE-FIELD 1 20) M-T)			;A-TEM1 gets 16B "overflow"
-	((M-T) OUTPUT-SELECTOR-LEFTSHIFT-1 ADD M-T A-TEM1)	;end-around carry, M-T gets
-								;1's comp sum left shifted
-								;lsb gets "don't care" from Q
-	((A-TEM1) (BYTE-FIELD 1 20) M-T)			;A-TEM1 gets msb of 1's comp
-        ((M-T) SELECTIVE-DEPOSIT M-T (BYTE-FIELD 17 1) A-TEM1)	;M-T gets rotated 16B 1's comp
-	(JUMP-XCT-NEXT ETH-CHECKSUM-PUP-ODD)			;loop
-       ((M-Q) ADD M-Q (A-CONSTANT 1))				;increment index
-ETH-CHECKSUM-PUP-EXIT						;return  M-T = PUP checksum
-	(POPJ-NOT-EQUAL-XCT-NEXT M-T (A-CONSTANT 177777))	;test for 16B minus zero
-       ((M-T) DPB M-T Q-POINTER					;return fixnum
-		(A-CONSTANT (BYTE-VALUE %%Q-DATA-TYPE DTP-FIX)))
-	(POPJ-AFTER-NEXT (M-T) DPB M-ZERO Q-POINTER		;return plus zero crock
-		(A-CONSTANT (BYTE-VALUE %%Q-DATA-TYPE DTP-FIX)))
-       (NO-OP)
-
-;ETH-DECODE-PUP decodes a segment of an array of bytes.  The first argument gives the
-;array, the second the starting byte and the third argument gives the number of bytes.
-;The fourth argument is an initial state and the fifth if non-nil indicates super-image
-;style decoding.  The routine returns a fixnum: the lowest two bits give the final state
-;and the remaining bits give the number of decoded bytes.  This is never greater than
-;the third argument.  The bytes are decoded in-place, munging the original pup.  The
-;initial state should be 0 on the first call, and subsequently should be the final state
-;returned from the previous call.  The possible states are:
-;	0 - normal decoding
-;	1 - return seen (gobbles subsequent line feeds)
-;	2 - rubout prefix seen (controls 200 bit of subsequent character)
-;[It is expected that this misc instruction will be nicely packaged in macrocode to do
-;such things as make a displaced ART-8B into the actual PUP (which is 16B), set its
-;length to the number of decoded bytes and return only the final state.  Also sanitize
-;input (eg ignore null strings) before this routine sees it.]  Example:
-;(defun decode-pup-string (pup-string &optional (state 0) super-image-p)
-;  (if (< (string-length pup-string) 1) state	;null strings are no-ops
-;      (setq state
-;	     (%decode-pup pup-string 0 (array-active-length pup-string) state super-image-p))
-;      (store-array-leader (%logldb 0226 state) pup-string 0)	;set new length
-;      (%logldb 0002 state)))					;return new state
-
-;The ordering of bytes in a PUP has different "sex" than in a string.  Hence:
-(DEF-DATA-FIELD PUP-BYTE-0 10 10)		;first byte in incoming word
-(DEF-DATA-FIELD PUP-BYTE-1 10 0)		;second byte in incoming word
-(DEF-DATA-FIELD PUP-BYTE-2 10 30)		;third byte in incoming word
-(DEF-DATA-FIELD PUP-BYTE-3 10 20)		;last byte in incoming word
-;Don't you think these are decorative?
-(DEF-DATA-FIELD STRING-BYTE-0 10 0)		;first byte in outgoing word
-(DEF-DATA-FIELD STRING-BYTE-1 10 10)		;second byte in outgoing word
-(DEF-DATA-FIELD STRING-BYTE-2 10 20)		;third byte in outgoing word
-(DEF-DATA-FIELD STRING-BYTE-3 10 30)		;last byte in outgoing word
-
-(DEF-DATA-FIELD 200BIT 1 7)			;msb of byte, & object of unseemly fascination
-
-;Dispatch tables
-(LOCALITY D-MEM)	
-
-(START-DISPATCH 2 P-BIT)			;CALL-XCT-NEXT
-D-ETH-DECODE-PUP-WRITE				;write appropriate byte in output
-	(ETH-DECODE-PUP-WRITE-BYTE-0)
-	(ETH-DECODE-PUP-WRITE-BYTE-1)
-	(ETH-DECODE-PUP-WRITE-BYTE-2)
-	(ETH-DECODE-PUP-WRITE-BYTE-3)
-(END-DISPATCH)	
-
-(START-DISPATCH 3)				;JUMP-XCT-NEXT
-D-ETH-DECODE-PUP-BYTE				;handle characters 10 to 17
-	(ETH-DECODE-PUP-TOGGLE)			;10
-	(ETH-DECODE-PUP-TOGGLE)			;11
-	(ETH-DECODE-PUP-12 INHIBIT-XCT-NEXT-BIT);12 - inhibits clearing gobble bit
-	(P-BIT R-BIT)				;13 - vanilla fall-through
-	(ETH-DECODE-PUP-TOGGLE)			;14
-	(ETH-DECODE-PUP-15)			;15
-	(P-BIT R-BIT)				;16 - vanilla fall-through
-	(P-BIT R-BIT)				;17 - vanilla fall-through
-(END-DISPATCH)
-
-(LOCALITY I-MEM)
-	
-;Register usage:
-;	M-R	super-image-p argument
-;	M-C	internal state: 0=normal, 1=gobble, 200=prefix seen
-;		(the 200 bit is frobbed internally while handling the byte)
-;	M-I	initial byte index (for length calculation)
-;	M-Q	input byte index
-;	M-T	output byte index
-;	M-1	input word data
-;	M-2	output word data
-;	M-3	current byte
-;M-4, A-TEM1 are temps, other registers are as UCODE-AR-1-SETUP deigns
-;
-ETH-DECODE-PUP	(MISC-INST-ENTRY %DECODE-PUP)
-   (ERROR-TABLE RESTART ETH-DECODE-PUP)
-	((M-R) Q-TYPED-POINTER C-PDL-BUFFER-POINTER-POP)	;get super-image-p arg
- 	(DISPATCH Q-DATA-TYPE C-PDL-BUFFER-POINTER TRAP-UNLESS-FIXNUM)
-   (ERROR-TABLE ARGTYP FIXNUM PP 3 ETH-DECODE-PUP %DECODE-PUP)	;bless initial state
-        ((M-C) Q-POINTER C-PDL-BUFFER-POINTER-POP)	;get external format initial state
-	(CALL-GREATER-THAN M-C (A-CONSTANT 2) TRAP)	;impossible state
-	(JUMP-IF-BIT-CLEAR (BYTE-FIELD 1 1) M-C ETH-DECODE-PUP-SETUP)
-	((M-C) (A-CONSTANT 200))		;create internal format for prefix case
-ETH-DECODE-PUP-SETUP
-	(CALL UCODE-AR-1-SETUP)
-   (ERROR-TABLE CALLS-SUB ETH-DECODE-PUP)
-	((M-T) M-Q)				;initialize output index at input index
-	((M-I) M-Q)				;M-I gets inital index
-	((A-TEM1) (BYTE-FIELD 26 2) M-I)	;read in initial word
-	((VMA-START-READ) ADD M-E A-TEM1)
-	(CHECK-PAGE-READ)
-	;punt if there isn't anything to do -- we CALL because exit code pops microstack
-	(CALL-GREATER-THAN-XCT-NEXT M-Q A-K ETH-DECODE-PUP-EXIT)
-       ((M-2) READ-MEMORY-DATA)			;if M-Q mod 4  0 must restore initial word
-	((M-4) (BYTE-FIELD 2 0) M-Q)		;M-4 gets initial read phase to "dispatch" on
-	(JUMP-EQUAL-XCT-NEXT M-4 (A-CONSTANT 0) ETH-DECODE-PUP-INITIAL-BYTE-0)	;phase=0
-       ((M-1) M-2)				;also setup input register with initial word
-	(JUMP-EQUAL M-4 (A-CONSTANT 2) ETH-DECODE-PUP-READ-BYTE-2)	;phase=2 (most likely)
-	(JUMP-EQUAL M-4 (A-CONSTANT 1) ETH-DECODE-PUP-READ-BYTE-1)	;phase=1
-	(JUMP-EQUAL M-4 (A-CONSTANT 3) ETH-DECODE-PUP-READ-BYTE-3)	;phase=3
-;here we're all ready to go -- we loop, sucessively decoding each of the 4 bytes in the word
-ETH-DECODE-PUP-READ-BYTE-0
-	((A-TEM1) (BYTE-FIELD 26 2) M-Q)	;read in word
-	((VMA-START-READ) ADD M-E A-TEM1)
-	(CHECK-PAGE-READ)
-	((M-1) READ-MEMORY-DATA)
-ETH-DECODE-PUP-INITIAL-BYTE-0			;label for first-word-already-read-in bum
-	(CALL-XCT-NEXT ETH-DECODE-PUP-BYTE)
-       ((M-3) PUP-BYTE-0 M-1)
-ETH-DECODE-PUP-READ-BYTE-1
-	(CALL-XCT-NEXT ETH-DECODE-PUP-BYTE)
-       ((M-3) PUP-BYTE-1 M-1)
-ETH-DECODE-PUP-READ-BYTE-2
-	(CALL-XCT-NEXT ETH-DECODE-PUP-BYTE)
-       ((M-3) PUP-BYTE-2 M-1)
-ETH-DECODE-PUP-READ-BYTE-3
-	((MICRO-STACK-DATA-PUSH)
-		(A-CONSTANT (I-MEM-LOC ETH-DECODE-PUP-READ-BYTE-0)))	;hack return address
-	((M-3) PUP-BYTE-3 M-1)						;and just fall thru...
-;This gets called to handle each byte and then increment the read pointer M-Q.  If we're
-;done, instead of returning, we enter the exit sequence (hence we must pop ustack then).
-ETH-DECODE-PUP-BYTE
-	(JUMP-EQUAL M-3 (A-CONSTANT 177) ETH-DECODE-PUP-177)		;prefix char
-	(JUMP-GREATER-THAN M-3 (A-CONSTANT 17) ETH-DECODE-PUP-VANILLA)	;vanilla char
-	(JUMP-LESS-THAN M-3 (A-CONSTANT 10) ETH-DECODE-PUP-VANILLA)	;french vanilla char
-	(DISPATCH-XCT-NEXT (BYTE-FIELD 3 0) M-3 D-ETH-DECODE-PUP-BYTE)
-;this is the main sequence for most chars, special cases join in at various points	
-ETH-DECODE-PUP-VANILLA				;usual thing to do
-       ((M-C) DPB M-ZERO (BYTE-FIELD 1 0) A-C)	;clear gobble bit (on LFs this get inhibited)
-ETH-DECODE-PUP-BUILD-CHAR			;the Charles Atlas way
-	((M-3) SELECTIVE-DEPOSIT M-C 200BIT A-3)	;deposit 200 bit into char
-ETH-DECODE-PUP-WRITE-CHAR			;output the thing
-	(DISPATCH-CALL-XCT-NEXT (BYTE-FIELD 2 0) M-T D-ETH-DECODE-PUP-WRITE)
-       ((M-C) DPB M-ZERO 200BIT A-C)		;clear the 200 bit in state
-;paths for all characters rejoin main sequence here	
-ETH-DECODE-PUP-BYTE-TAIL			;*ouch*
-	(POPJ-NOT-EQUAL-XCT-NEXT M-Q A-K)	;return to main loop if haven't read last byte
-       ((M-Q) ADD M-Q (A-CONSTANT 1))		;increment input index
-ETH-DECODE-PUP-EXIT				;all done...
-	((M-4) (BYTE-FIELD 2 0) M-T)		;set M-4 to phase of write
-	(JUMP-EQUAL-XCT-NEXT M-4 (A-CONSTANT 0) ETH-DECODE-PUP-RETURN-COUNT)	;phase=0: noop
-       ((M-GARBAGE) MICRO-STACK-POINTER-POP)	;also clean up pending call on ustack
-;this is to flush out bytes in M-2 that haven't been written into memory yet -- we try
-;to minimally trash the word (up to 16B boundry anyway, odd bytes CAN'T work correctly)
-	(JUMP-EQUAL-XCT-NEXT M-4 (A-CONSTANT 3)
-		ETH-DECODE-PUP-WRITE-LAST-WORD)	;if phase=3 we just dump M-2
-       ((A-TEM1) (BYTE-FIELD 26 2) M-T)		;for phase=1 or 2: read word at current index
-	((VMA-START-READ) ADD M-E A-TEM1)
-	(CHECK-PAGE-READ)
-	((M-2) SELECTIVE-DEPOSIT READ-MEMORY-DATA (BYTE-FIELD 20 20) A-2)	;fix left half
-ETH-DECODE-PUP-WRITE-LAST-WORD
-	((WRITE-MEMORY-DATA) M-2)		;write out last few bytes in M-2
-	((A-TEM1) (BYTE-FIELD 26 2) M-T)
-	((VMA-START-WRITE) ADD M-E A-TEM1)
-	(CHECK-PAGE-WRITE)
-ETH-DECODE-PUP-RETURN-COUNT
-;return number of bytes lsh 2, with state (in external format) in least significant bits
-	((M-T) SUB M-T A-I)			;length (M-T= final, M-I= initial index)
-	((M-T) DPB M-T (BYTE-FIELD 26 2)	;lsh 2, and make fixnum
-		(A-CONSTANT (BYTE-VALUE %%Q-DATA-TYPE DTP-FIX)))
-	(POPJ-IF-BIT-CLEAR-XCT-NEXT M-C 200BIT)	;non-prefix cases exit
-       ((M-T) DPB M-C (BYTE-FIELD 2 0) A-T)	;set state field for normal/gobble cases
-	(POPJ-AFTER-NEXT (M-T) DPB M-MINUS-ONE (BYTE-FIELD 1 1) A-T)	;prefix case
-       (NO-OP)
-;this is the code dispatched into for the really special-case characters
-ETH-DECODE-PUP-12				;line feed (falls thru to TOGGLE usually)
-	(JUMP-IF-BIT-SET M-C (BYTE-FIELD 1 0) ETH-DECODE-PUP-BYTE-TAIL)	;ignore if gobbling
-ETH-DECODE-PUP-TOGGLE				;toggle 200 bit first
-	(JUMP-XCT-NEXT ETH-DECODE-PUP-BUILD-CHAR)
-       ((M-C) XOR M-C (A-CONSTANT 200))		;toggle 200 bit
-ETH-DECODE-PUP-15				;carriage return
-	(JUMP-XCT-NEXT ETH-DECODE-PUP-TOGGLE)
-       ((M-C) DPB M-MINUS-ONE (BYTE-FIELD 1 0) A-C)	;set gobble bit
-ETH-DECODE-PUP-177				;prefix
-	(JUMP-IF-BIT-SET-XCT-NEXT M-C 200BIT ETH-DECODE-PUP-WRITE-CHAR)	;prefixxed prefix
-       ((M-C) DPB M-ZERO (BYTE-FIELD 1 0) A-C)	;clear gobble bit
-	(JUMP-NOT-EQUAL M-R A-V-NIL ETH-DECODE-PUP-WRITE-CHAR)	;super-image mode
-	(JUMP-XCT-NEXT ETH-DECODE-PUP-BYTE-TAIL)
-       ((M-C) DPB M-MINUS-ONE 200BIT A-C)		;set 200 bit
-;dispatch here to handle the various output phases
-ETH-DECODE-PUP-WRITE-BYTE-0
-	(POPJ-AFTER-NEXT (M-2) DPB M-3 STRING-BYTE-0 A-2)
-       ((M-T) ADD M-T (A-CONSTANT 1))
-ETH-DECODE-PUP-WRITE-BYTE-1
-	(POPJ-AFTER-NEXT (M-2) DPB M-3 STRING-BYTE-1 A-2)
-       ((M-T) ADD M-T (A-CONSTANT 1))
-ETH-DECODE-PUP-WRITE-BYTE-2
-	(POPJ-AFTER-NEXT (M-2) DPB M-3 STRING-BYTE-2 A-2)
-       ((M-T) ADD M-T (A-CONSTANT 1))
-ETH-DECODE-PUP-WRITE-BYTE-3			;this is the last byte, so write the word
-	((WRITE-MEMORY-DATA) DPB M-3 STRING-BYTE-3 A-2)
-	((A-TEM1) (BYTE-FIELD 26 2) M-T)
-	((VMA-START-WRITE) ADD M-E A-TEM1)
-	(CHECK-PAGE-WRITE)
-	(POPJ-AFTER-NEXT (M-T) ADD M-T (A-CONSTANT 1))
-       (NO-OP)
-
 ;PDL-BUFFER LOADING CONVENTIONS:
 ;   1. THE CURRENT RUNNING FRAME IS ALWAYS COMPLETELY CONTAINED WITHIN THE PDL-BUFFER.
 ;   2. SO IS ITS CALLING ADI (LOCATED IMMEDIATELY BEFORE IT ON PDL).
@@ -19312,7 +18787,7 @@ SGLV		;STORE EVERYTHING IN PDL-BUFFER IN REVERSE ORDER ITS TO BE WRITTEN TO MEMO
 		;M-TEM HAS DESIRED NEW STATE FOR CURRENT STACK GROUP.  SWAP L-B-P OF
 		;CURRENT STACK GROUP UNLESS 1.7 OF M-TEM IS 1.
 	((M-3) M-METER-STACK-GROUP-ENABLE)
-	((A-LAST-STACK-GROUP) DPB M-3 Q-FLAG-BIT A-QCSTKG)
+	((A-LAST-STACK-GROUP) DPB M-3 Q-CDR-CODE A-QCSTKG)
 	((M-STACK-GROUP-SWITCH-FLAG) DPB (M-CONSTANT -1) A-FLAGS) ;SHUT OFF TRAPS, ETC.
 	((M-3) A-QCSTKG)
 	((M-3) Q-DATA-TYPE M-3)
@@ -19370,7 +18845,8 @@ SGLV3	(JUMP-LESS-OR-EQUAL M-J A-QLBNDO SGLV4)	;Jump if through
 	(JUMP-XCT-NEXT SGLV3)		;In this direction, no need to check flag bits
        ((M-J) SUB M-J (A-CONSTANT 1))	;Since things must remain paired as long as in bindings
 
-SGVSP	(JUMP-IF-BIT-SET-XCT-NEXT Q-FLAG-BIT READ-MEMORY-DATA SGLV3)
+SGVSP	(JUMP-IF-BIT-SET-XCT-NEXT (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG)
+				 READ-MEMORY-DATA SGLV3)
        ((M-J) SUB M-J (A-CONSTANT 1))		;Space past, down to Q with flag bit
 	(JUMP-LESS-OR-EQUAL M-J A-QLBNDO SGLV4)
 	((VMA-START-READ) M-J)
@@ -19570,7 +19046,7 @@ SGENT1	(CALL PDL-BUFFER-REFILL)		;REFILL PDL-BUFFER WITH GOOD STUFF
 SGENT3	((VMA-START-READ M-A) ADD M-A (A-CONSTANT 1))	;IS 2ND WD OF BLOCK PNTR TO VALUE
 	(CHECK-PAGE-READ)				; CELL?
 	(JUMP-GREATER-THAN M-A A-QLBNDP SGENT4)		;XFER ON THRU
-	(JUMP-IF-BIT-SET Q-FLAG-BIT READ-MEMORY-DATA SGENT3)  ;MUST NOT BE 1ST WD OF BLOCK
+	(JUMP-IF-BIT-SET (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) READ-MEMORY-DATA SGENT3)  ;MUST NOT BE 1ST WD OF BLOCK
 							;IF IT IS, LOOP BACK FOR THAT BLOCK
 	((M-ZR) Q-DATA-TYPE READ-MEMORY-DATA)
 	(JUMP-NOT-EQUAL M-ZR (A-CONSTANT (EVAL DTP-LOCATIVE)) SGENT6)
@@ -19596,7 +19072,7 @@ SGENT5	(DISPATCH TRANSPORT-NO-EVCP READ-MEMORY-DATA)
 
 SGENT6	((VMA-START-READ M-A) ADD M-A (A-CONSTANT 1))  ;THIS NOT A BINDING BLOCK, SPACE OVER
 	(CHECK-PAGE-READ)			       ; IT.
-	(JUMP-IF-BIT-SET Q-FLAG-BIT READ-MEMORY-DATA SGENT3)  ;FOUND FIRST Q OF NEXT BLOCK
+	(JUMP-IF-BIT-SET (LISP-BYTE %%SPECPDL-BLOCK-START-FLAG) READ-MEMORY-DATA SGENT3)  ;FOUND FIRST Q OF NEXT BLOCK
 	(JUMP-GREATER-OR-EQUAL M-A A-QLBNDP SGENT4)
 	(JUMP SGENT6)					;KEEP LOOKING
 
@@ -19636,7 +19112,7 @@ METER-SG-ENTER
 	((A-METER-EVENT) (A-CONSTANT (EVAL %METER-STACK-GROUP-SWITCH-EVENT)))
 	((M-1) A-LAST-STACK-GROUP)
 	((C-PDL-BUFFER-POINTER-PUSH) DPB M-ZERO Q-ALL-BUT-TYPED-POINTER A-1)
-	(JUMP-IF-BIT-SET-XCT-NEXT Q-FLAG-BIT M-1 METER-MICRO-WRITE-HEADER-NO-SG-TEST)
+	(JUMP-IF-BIT-SET-XCT-NEXT Q-CDR-CODE-LOW-BIT M-1 METER-MICRO-WRITE-HEADER-NO-SG-TEST)
        ((A-METER-LENGTH) (A-CONSTANT 1))
 	(JUMP METER-MICRO-WRITE-HEADER)
 
