@@ -845,6 +845,7 @@
 ;;; This is the real top level for the compiler.  It takes a source file
 ;;; and writes out the QFASL for it.
 (DEFUN RTC-FILE (FILENAME)
+  (SETQ FILENAME (FS:MERGE-PATHNAME-DEFAULTS FILENAME FS:LOAD-PATHNAME-DEFAULTS "LISP"))
   (WITH-OPEN-FILE (FROM FILENAME ':DIRECTION ':INPUT)
     (DO ((X (READ FROM '*EOF*) (READ FROM '*EOF*))
 	 (LIST)
