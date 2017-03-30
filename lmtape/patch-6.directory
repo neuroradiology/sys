@@ -1,0 +1,14 @@
+;;; -*- Mode: Lisp; Package: User; Base: 10.; Patch-File: T -*-
+;;; Patch directory for Tape version 6
+;;; Written 12/24/81 11:23:43 by BSG,
+;;; while running on Beagle from band 3
+;;; with System 78.32, ZMail 38.5, Symbolics 8.7, Tape 6.4, LMFS 21.18, Canon 9.5, microcode 840.
+
+(RELEASED
+ ((0 "Tape Loaded" "BSG")
+  (1 "Offline ops weren't clearing out stream mixins' buffers." "BSG")
+  (2 "Fix io-tape-to-array to return disk request blocks" "File Server")
+  (3 "Embedded-length streams for Distribution stuff." "BSG")
+  (4 "More 6.3" "BSG")
+  (5 "Yet more 6.3." "BSG")
+  ))
