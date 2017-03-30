@@ -13,6 +13,8 @@
 (DEFMACRO GETF (PLACE PROPERTY &OPTIONAL (DEFAULT NIL))
   `(OR (GET (LOCF ,PLACE) ,PROPERTY) ,DEFAULT))
 
+(GLOBALIZE 'GETF)
+
 )
 
 ; From file lmmac.lisp >sys2 UNKNOWN:
@@ -20,6 +22,9 @@
 
 (DEFMACRO SEND (OBJECT OPERATION &REST ARGUMENTS)
   `(FUNCALL ,OBJECT ,OPERATION . ,ARGUMENTS))
+
+;;;---!!! Can't do GLOBALIZE on SEND due to:
+;;;---!!!    >>ERROR: Multiple function definitions for SI:SEND, in SYSTEM-INTERNALS and LMFS
 
 )
 
@@ -30,6 +35,8 @@
 (DEFMACRO WHEN (PRED &BODY BODY)
   `(AND ,PRED (PROGN ,@BODY)))
 
+(GLOBALIZE 'WHEN)
+
 )
 
 ; From file lmmac.lisp >sys2 UNKNOWN:
@@ -38,6 +45,8 @@
 ;;; (UNLESS pred {form}*)
 (DEFMACRO UNLESS (PRED &BODY BODY)
   `(IF ,PRED () ,@BODY))
+
+(GLOBALIZE 'UNLESS)
 
 )
 
@@ -49,5 +58,6 @@
        (())
      . ,BODY))
 
-)
+(GLOBALIZE 'DO-FOREVER)
 
+)
