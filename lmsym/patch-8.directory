@@ -1,0 +1,22 @@
+;;; -*- Mode: Lisp; Package: User; Base: 10.; Patch-File: T -*-
+;;; Patch directory for Symbolics version 8
+;;; Written 1/11/82 16:50:32 by File Server,
+;;; while running on Pointer from band 3
+;;; with System 78.47, ZMail 38.5, Symbolics 8.12, Tape 6.5, LMFS 21.33, Canon 9.11, microcode 841.
+
+(RELEASED
+ ((0 "Symbolics Loaded" BSG)
+  (1 "Patch #'ZWEI:COPY-MSG" "BEE")
+  (2 "Another halfword clobbered (in ZWEI:FIND-COMBINED-METHODS)" "MMcM")
+  (3 "Add experimental :WHY command to CC" "Moon")
+  (4 "PARSE-DIRECTORY-DATE-PROPERTY patched in Symbolics temporarily" "BEE")
+  (5 "Distribution changes for 78.20" "MMcM")
+  (6 "Peek process//FS features (in MIT source)." "BSG")
+  (7 "Convert the SYS host to File computer" "BEE")
+  (8 "New distribution-tape system." "BSG")
+  (9 "System-deleting bugs in GET-DISTRIBUTION-OPTIONS." "BSG")
+  (10 "Distribution dumper second-guess hair not hairy enough." "BSG")
+  (11 "Bogus output buffer forcing in embedded-length-stream." "BSG")
+  (12 "(distribution:map-distribution-tape) to construct map from tape." "BSG")
+  (13 "distribution: double-indirect and 16-bit and clear-eof bugs." "File Server")
+  ))
