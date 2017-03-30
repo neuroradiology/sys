@@ -18,4 +18,6 @@
 	(SETQ X (CDDR X))
 	(GO L)))
 
+(GLOBALIZE 'ASSIGN-ALTERNATE)
+
 )
