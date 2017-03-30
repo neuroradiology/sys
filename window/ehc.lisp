@@ -499,7 +499,7 @@
 (DEFUN SHOW-ADI (RP IDX)
   (FORMAT T "~2%Additional information supplied with call:")
   (DO ((TYPE (LDB SI:%%ADI-TYPE (AR-1 RP IDX)))
-       (MORE-P (%P-LDB %%ADI-PREVIOUS-ADI-FLAG (AP-1 RP (1- IDX)))))
+       (MORE-P (%P-LDB %%Q-FLAG-BIT (AP-1 RP (1- IDX)))))
       (())
     (SELECT TYPE
       (SI:ADI-RETURN-INFO
