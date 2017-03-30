@@ -37,6 +37,8 @@
     ("WINDOW" "//tree//window//")
     ("ZMAIL" "//tree//zmail//")
     ("ZWEI" "//tree//zwei//")
+    ("LMTAPE" "//tree//lmtape//")
+    ("LMSYM" "//tree//lmsym//")
     ))
 
 ;;; Here is the DEFSITE special form.
