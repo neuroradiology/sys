@@ -1004,7 +1004,47 @@
 	 (RETURN NIL))
     (PROCESS-WAIT "Finger"
 		  #'(LAMBDA (OLD-TIME CONNS)
-		      (OR (>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                MAIL-SERVER (&AUX CONN STREAM RCPT)
+		      (OR (> (TIME-DIFFERENCE (TIME) OLD-TIME) 240.)
+			  (DO ((CONNS CONNS (CDR CONNS)))
+			      ((NULL CONNS) NIL)
+			    (OR (EQ (STATE (CADAR CONNS)) 'RFC-SENT-STATE)
+				(RETURN T)))))
+		  OLD-TIME CONNS))
+  ;; Flush all outstanding connections
+  (DOLIST (CONN CONNS)
+    (REMOVE-CONN (SECOND CONN)))
+  HOST-LIST)
+
+;;; TIME server!!
+
+(DEFUN TIME-SERVER ()
+  (LET ((CONN (LISTEN "TIME")))
+    (COND ((NOT (NULL TIME:*LAST-TIME-UPDATE-TIME*))
+	   (TIME-SERVER-SEND-32-BIT-NUMBER CONN (TIME:GET-UNIVERSAL-TIME)))
+	  (T (REJECT CONN "I don't know what time it is.")))))
+
+(DEFUN UPTIME-SERVER ()
+  (LET ((CONN (LISTEN "UPTIME")))
+    (COND ((NOT (NULL TIME:*LAST-TIME-UPDATE-TIME*))
+	   (TIME-SERVER-SEND-32-BIT-NUMBER
+	     CONN (* 60. (- (TIME:GET-UNIVERSAL-TIME) (SECOND (CAR SI:COLD-BOOT-HISTORY))))))
+	  (T (REJECT CONN "I don't know the current time.")))))
+
+
+(DEFUN TIME-SERVER-SEND-32-BIT-NUMBER (CONN VAL)
+  (LET ((PKT (GET-PKT)))
+    (SETF (PKT-NBYTES PKT) 4)
+    (ASET (LDB 0020 VAL) PKT FIRST-DATA-WORD-IN-PKT)
+    (ASET (LDB 2020 VAL) PKT (1+ FIRST-DATA-WORD-IN-PKT))
+    (ANSWER CONN PKT)))
+
+(ADD-INITIALIZATION "TIME" '(TIME-SERVER) NIL 'SERVER-ALIST)
+
+(ADD-INITIALIZATION "UPTIME" '(UPTIME-SERVER) NIL 'SERVER-ALIST)
+
+
+;;; Dummy mail server, rejects all incoming mail
+(DEFUN DUMMY-MAIL-SERVER (&AUX CONN STREAM RCPT)
   (SETQ CONN (LISTEN "MAIL"))
   (ACCEPT CONN)
   (SETQ STREAM (STREAM CONN))
