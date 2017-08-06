@@ -1,0 +1,47 @@
+;;;-*- Mode: LISP; Package: SYSTEM-INTERNALS; Base: 8 -*-
+;;; Site file for MIT CADR running under usim.
+
+(DEFCONST SYS-HOST-DIRECTORY-TRANSLATIONS
+  '(
+    ("CC" "//tree//lmcons//")
+    ("CHAOS" "//tree//chaos//")
+    ("DEMO" "//tree//lmdemo//")
+    ("DISTRIBUTION" "//tree//distribution//")
+    ("FONTS" "//tree//lmfonts//")
+    ("IO" "//tree//lmio//")
+    ("IO1" "//tree//lmio1//")
+    ("LMFS" "//tree//lmfs//")
+    ("LMSYM" "//tree//lmsym//")
+    ("LMTAPE" "//tree//lmtape//")
+    ("PATCH" "//tree//lmpat//")
+    ("SITE" "//tree//lmsite//")
+    ("SYS" "//tree//lispm//")
+    ("SYS2" "//tree//lispm2//")
+    ("UBIN" "//tree//lispm1//")
+    ("UCADR" "//tree//lcadr//")
+    ("WINDOW" "//tree//lmwin//")
+    ("ZMAIL" "//tree//zmail//")
+    ("ZWEI" "//tree//zwei//")
+    ))
+
+(DEFSITE :DISTRIBUTION
+  (:CHAOS-FILE-SERVER-HOSTS '("server"))
+  (:CHAOS-HOST-TABLE-SERVER-HOSTS '("server"))
+  (:CHAOS-MAIL-SERVER-HOSTS '("server"))
+  (:CHAOS-TAPE-SERVER-HOSTS '("server"))
+  (:CHAOS-TIME-SERVER-HOSTS '("server"))
+  (:CHAOS T)
+  (:DEFAULT-MAIL-MODE ':CHAOS)
+  (:ESC-F-ARG-ALIST '(
+		      (NIL . :LOGIN)
+		      (1 . :LOCAL-LISP-MACHINES)
+		      (2 . ("server"))
+		      (0 . :READ)))
+  (:HOST-FOR-BUG-REPORTS "server")
+  (:LISPM-FILE-SERVERS T)
+  (:LOCAL-MAIL-HOSTS '("server"))
+  (:SITE-PRETTY-NAME "MIT CADR (usim)")
+  (:SYS-HOST "server") 
+  (:SYS-DIRECTORY-TRANSLATIONS SYS-HOST-DIRECTORY-TRANSLATIONS)
+  (:TIMEZONE 6)
+  )
