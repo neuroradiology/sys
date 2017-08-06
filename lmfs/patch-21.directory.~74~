@@ -1,0 +1,42 @@
+;;; -*- Mode: Lisp; Package: User; Base: 10.; Patch-File: T -*-
+;;; Patch directory for LMFS version 21
+;;; Written 1/11/82 13:30:45 by BSG,
+;;; while running on Beagle from band 4
+;;; with System 78.45, ZMail 38.5, Tape 6.5, LMFS 21.33, Symbolics 8.12, microcode 841, Distribution copy.
+
+(RELEASED
+ ((0 "LMFS Loaded" "LISPM")
+  (1 "Fsedit lossages -BSG." "BEE")
+  (2 "Backup: goes to end of extant tape when appropriate." "BSG")
+  (3 "/"Link transparencies/" in FSEdit was busted." "BSG")
+  (4 "Assume current userid, no password, when chaosfiling to Lispm host." "BSG")
+  (5 "Print-disk-label-any in FSMaint." "BSG")
+  (6 "FSEdit menus will remember last selection." "BSG")
+  (7 "Server FILEPOS didn't work." "BSG")
+  (8 "(lmfs:find-backup-copies ..<paths>..)" "BSG")
+  (9 "WRONG-TYPE-ARG in server data connection closeout." "BSG")
+  (10 "(lmfs:print-server-lossages) to get at error log nicely." "BSG")
+  (11 "The strings /"newest/" and /"oldest/" accepted as file versions." "BSG")
+  (12 "21.11 blowage" "BSG")
+  (13 ":NEWEST//OLDEST suppressed in :STRING-FOR-EDITOR." "BSG")
+  (14 "Server: Chaos closings in control connection not to be considered errors." "BSG")
+  (15 "Suppress NEWEST in wholine." "BSG")
+  (16 "NEWEST out of string-for-printing, hosts put in string-for-wholine." "BSG")
+  (17 "Bad scoping in server-dataproc-hack-directory." "BSG")
+  (18 "Better server unwind protect; server PEEK features." "BSG")
+  (20 "NIL user name problem." "BSG")
+  (21 "Backup: CHVV to assume /"append to tape/" if can, less useless info in maps." "BSG")
+  (22 "Bumb priority of control connection process a little" "HIC")
+  (23 "Backup operation improvements. /"^@^@^@^@^@/" bug /"therein/" trounced." "BSG")
+  (24 "Do disk I//O properly.  Also don't swap in read buffers." "Moon")
+  (25 "Use :reset instead of :kill on server data processes." "BSG")
+  (26 "Fix interaction of completion with file types" "Moon")
+  (27 "NIL length for output openings (fixes garbage in wholine)." "BSG")
+  (28 "Dump map format and NIL-reporting problems." "BSG")
+  (29 "UNDATA bugs, server sync errors, better :DELETE-to-opening handling." "BSG")
+  (30 "Server trace facility; Byte size  8 on chars opening now /"usage error/"." "BSG")
+  (31 "Backup: don't /"RE/"-set dates, close map earlier, dumper openings in peek work." "BSG")
+  (32 "Gross sync lossage (/"FileFinish/" multifile problem) in server CLOSE." "BSG")
+  (33 "Backup: Write EOFs after EOT (interim kludge)." "BSG")
+  (34 "(lmfs:local-lmfs-pathname :get-extended-property//plist), optional efficiency bums." "BSG")
+  ))

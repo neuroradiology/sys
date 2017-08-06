@@ -1,0 +1,201 @@
+; -*- Package: System-Internals; Mode: Lisp -*-
+;	** (c) Copyright 1980 Massachusetts Institute of Technology **
+
+; Trace package
+
+;	"There is always a place for debugging.  No matter how
+;	 hard you try to think of everything in advance, you
+;	 will always find that there is something else that you
+;	 hadn't thought of."
+;			- My Life as a Mathematician
+;			  by Hfpsh Dboups
+
+;MISSING:
+;	 - HAIRY DISPLAY FEATURES?
+;	 - "TRACE-EDSUB"
+
+;Non-nil to cause the traced definitions to be compiled.
+;That way, PROG, COND, etc. can be traced.
+(defvar trace-compile-flag nil)
+
+
+
+;List of all traced functions.
+(defvar traced-functions nil)
+
+;This is T if we are doing trace processing
+;and therefore tracing should be turned off.
+(defvar inside-trace nil)
+
+;This is the total depth within all traced functions.
+;It controls the indentation of the printout.
+(defvar trace-level 0)
+
+;This is the stream to use for trace output.
+(defvar trace-output)
+
+
+(deff trace-apply #'apply)
+
+(deff trace-step-apply 'step-apply)
+
+(DEFUN TRACE (&QUOTE &REST SPECS)
+  (COND ((NULL SPECS)
+	 TRACED-FUNCTIONS)
+	((MAPCAN (FUNCTION TRACE-1) SPECS))))
+
+(DEFUN UNTRACE (&QUOTE &REST FNS)
+   (MAPCAR (FUNCTION UNTRACE-1) (OR FNS (TRACE))))
+
+(DEFUN (TRACE ENCAPSULATION-GRIND-FUNCTION) (FUNCTION DEF WIDTH REAL-IO UNTYO-P)
+  FUNCTION DEF WIDTH REAL-IO UNTYO-P
+  (PRINC "
+;Traced
+"))
+
+;;; A list in the args to UNTRACE is taken as a non-atomic function-name
+;;; rather than a wherein-spec, as Maclisp would do, since UNTRACE WHEREIN
+;;; is not implemented anyway, and since WHEREIN doesn't work that way in
+;;; this TRACE anyway (that is, it still modifies the function cell.)
+(DEFUN UNTRACE-1 (SPEC &AUX SPEC1 SPEC2)
+  (SETQ SPEC1 (UNENCAPSULATE-FUNCTION-SPEC SPEC 'TRACE))
+  (COND ((NEQ SPEC1 (SETQ SPEC2 (UNENCAPSULATE-FUNCTION-SPEC SPEC1 '(TRACE))))
+	 (FDEFINE SPEC1 (FDEFINITION SPEC2) NIL T)
+	 (SETQ TRACED-FUNCTIONS (DELETE SPEC TRACED-FUNCTIONS))))
+  SPEC)
+
+(DEFUN TRACE-1 (SPEC)
+  (PROG (BREAK EXITBREAK ENTRYCOND EXITCOND WHEREIN ARGPDL ENTRY EXIT (ARG T) (VALUE T) 
+	     STEP (BARFP T) (FDEFINE-FILE-PATHNAME NIL)
+	     ENTRYVALS EXITVALS MUMBLE FCN SPEC1 TRFCN ERROR
+	     (DEFAULT-CONS-AREA BACKGROUND-CONS-AREA))
+    (COND ((ATOM SPEC)
+	   (SETQ FCN SPEC))
+	  (T
+	   (COND ((EQ (CAR SPEC) ':FUNCTION)
+		  (SETQ FCN (CADR SPEC) SPEC (CDR SPEC)))
+		 ((ATOM (CAR SPEC))
+		  (SETQ FCN (CAR SPEC)))
+		 (T (RETURN (LOOP FOR FCN IN (CAR SPEC)
+				  NCONC (TRACE-1 `(:FUNCTION ,FCN . ,(CDR SPEC)))))))
+	   (DO SPECS (CDR SPEC) (CDR SPECS) (NULL SPECS)
+	     (SELECTQ (CAR SPECS)
+		(:BREAK (SETQ BARFP SPECS SPECS (CDR SPECS) BREAK (CAR SPECS)))
+		(:EXITBREAK (SETQ BARFP SPECS SPECS (CDR SPECS) EXITBREAK (CAR SPECS)))
+		(:STEP (SETQ STEP T))
+		(:ERROR (SETQ ERROR T))
+		(:COND (SETQ BARFP SPECS SPECS (CDR SPECS))
+		       (SETQ EXITCOND (SETQ ENTRYCOND (CAR SPECS))))
+		(:ENTRYCOND (SETQ BARFP SPECS SPECS (CDR SPECS) ENTRYCOND (CAR SPECS)))
+		(:EXITCOND (SETQ BARFP SPECS SPECS (CDR SPECS) EXITCOND (CAR SPECS)))
+		(:WHEREIN (SETQ BARFP SPECS SPECS (CDR SPECS) WHEREIN (CAR SPECS)))
+		(:ARGPDL (SETQ BARFP SPECS SPECS (CDR SPECS) ARGPDL (CAR SPECS)))
+		(:ENTRY (SETQ BARFP SPECS SPECS (CDR SPECS) ENTRY (CAR SPECS)))
+		(:EXIT (SETQ BARFP SPECS SPECS (CDR SPECS) EXIT (CAR SPECS)))
+		(:PRINT (SETQ BARFP SPECS
+			      SPECS (CDR SPECS)
+			      ENTRY (CONS (CAR SPECS) ENTRY)
+			      EXIT (CONS (CAR SPECS) EXIT)))
+		(:ENTRYPRINT (SETQ BARFP SPECS SPECS (CDR SPECS)
+				   ENTRY (CONS (CAR SPECS) ENTRY)))
+		(:EXITPRINT (SETQ BARFP SPECS SPECS (CDR SPECS) EXIT (CONS (CAR SPECS) EXIT)))
+		((:ARG :VALUE :BOTH NIL)
+		 (AND (EQ (CAR SPECS) ':ARG) (SETQ VALUE NIL))
+		 (AND (EQ (CAR SPECS) ':VALUE) (SETQ ARG NIL))
+		 (AND (EQ (CAR SPECS) NIL) (SETQ ARG NIL VALUE NIL))
+		 (AND ARG (SETQ ENTRYVALS (CDR SPECS)))
+		 (AND VALUE (SETQ EXITVALS (CDR SPECS)))
+		 (RETURN NIL))
+		(OTHERWISE
+		 (SETQ MUMBLE (CAR SPECS))
+		 (RETURN NIL)))
+	     (AND (NULL BARFP) (FERROR NIL "Parameter missing")) )))
+    (UNTRACE-1 FCN)
+    (AND MUMBLE (RETURN (FERROR NIL "Meaningless TRACE keyword: ~S" MUMBLE)))
+    (CHECK-ARG ARGPDL SYMBOLP "a symbol")
+    (SETQ SPEC1 (UNENCAPSULATE-FUNCTION-SPEC FCN 'TRACE))
+
+    (SETQ TRFCN (ENCAPSULATE SPEC1 FCN 'TRACE
+      `(PROG* (,@(AND ARGPDL `((,ARGPDL (CONS (LIST (1+ ,COPY) ',FCN ARGLIST)
+					      ,ARGPDL))))
+	       VALUES
+	       (,COPY (1+ ,COPY))
+	       (TRACE-LEVEL (1+ TRACE-LEVEL)))
+	      ;; End of PROG var list.
+		 
+		 ,(IF ERROR `(PROGN (CERROR T NIL ':TRACE-ERROR-BREAK "~S entered" ',FCN)
+				    (RETURN-LIST (MULTIPLE-VALUE-LIST (APPLY ,ENCAPSULATED-FUNCTION ARGLIST))))
+		      `(COND ((OR INSIDE-TRACE
+				  . ,(AND WHEREIN `((NOT (FUNCTION-ACTIVE-P ',WHEREIN)))))
+			      (RETURN-LIST (MULTIPLE-VALUE-LIST (APPLY ,ENCAPSULATED-FUNCTION ARGLIST))))
+			     (T (LET ((INSIDE-TRACE T))
+				  ,(TRACE-MAYBE-CONDITIONALIZE ENTRYCOND
+				     `(TRACE-PRINT ,COPY 'ENTER ',FCN ',ARG
+						   ',ENTRY ',ENTRYVALS))
+				  ,@(AND BREAK `((AND ,BREAK (LET (INSIDE-TRACE)
+							       (BREAK ,FCN T)))))
+				  (SETQ VALUES
+					(LET ((INSIDE-TRACE NIL))
+					  (MULTIPLE-VALUE-LIST
+					    (,(COND ((NOT STEP) 'TRACE-APPLY)
+						    (T 'TRACE-STEP-APPLY))
+					     ,ENCAPSULATED-FUNCTION
+					     ARGLIST))))
+				  ,(TRACE-MAYBE-CONDITIONALIZE EXITCOND
+				     `(TRACE-PRINT ,COPY 'EXIT ',FCN ',VALUE
+						   ',EXIT ',EXITVALS))
+				  ,@(AND EXITBREAK `((AND ,EXITBREAK (LET (INSIDE-TRACE)
+								       (BREAK ,FCN T)))))
+				  (RETURN-LIST VALUES))))))))
+    (SET TRFCN 0)
+    (PUSH FCN TRACED-FUNCTIONS)
+    (IF TRACE-COMPILE-FLAG (LET ((LOCAL-DECLARATIONS
+				   (CONS `(SPECIAL ,TRFCN VALUES ARGLIST)
+					 LOCAL-DECLARATIONS)))
+			     (COMPILE SPEC1
+				      (PROG1
+					(FDEFINITION SPEC1)
+					(FMAKUNBOUND SPEC1)))))
+    (RETURN (NCONS FCN))))
+
+(DEFUN TRACE-MAYBE-CONDITIONALIZE (CONDITION ACTION)
+  (COND (CONDITION `(AND ,CONDITION ,ACTION))
+	(T ACTION)))
+
+(DEFUN TRACE-PRINT (DEPTH DIRECTION FUNCTION PRINT-ARGS-FLAG EXTRAS-1 EXTRAS-2)
+ (LOCAL-DECLARE ((SPECIAL ARGLIST VALUES))
+  (TERPRI TRACE-OUTPUT)
+  (DO N (* 2 TRACE-LEVEL) (1- N) (NOT (> N 2))
+    (TYO #\SP TRACE-OUTPUT))
+  (FORMAT TRACE-OUTPUT "(~D ~A ~S" DEPTH DIRECTION FUNCTION)
+  (COND (PRINT-ARGS-FLAG
+	 (PRINC "  " TRACE-OUTPUT)
+	 (COND ((EQ DIRECTION 'ENTER)
+		(PRIN1 ARGLIST TRACE-OUTPUT))
+	       ((CDR VALUES)
+		(FORMAT TRACE-OUTPUT "VALUES: ~S" VALUES))
+	       (T (PRIN1 (CAR VALUES) TRACE-OUTPUT)))))
+  (COND (EXTRAS-1
+	 (PRINC "  \\" TRACE-OUTPUT)
+	 (DOLIST (E EXTRAS-1)
+	     (PRINC " " TRACE-OUTPUT)
+	     (PRIN1 (EVAL E) TRACE-OUTPUT))))
+  (COND (EXTRAS-2
+	 (PRINC "  ////" TRACE-OUTPUT)
+	 (DOLIST (E EXTRAS-2)
+	     (PRINC " " TRACE-OUTPUT)
+	     (PRIN1 (EVAL E) TRACE-OUTPUT))))
+  (PRINC ")" TRACE-OUTPUT)))
+
+; SEE IF A FUNCTION IS CURRENTLY ACTIVE
+(DEFUN FUNCTION-ACTIVE-P (FN &AUX SG RP)
+       (SETQ SG %CURRENT-STACK-GROUP)
+       (SETQ RP (SG-REGULAR-PDL SG))
+       (DO ((FNVAL (FDEFINITION FN))
+	    (INIFN (SG-INITIAL-FUNCTION-INDEX SG))
+	    (AP (%POINTER-DIFFERENCE (%STACK-FRAME-POINTER) RP)
+                (- AP (RP-DELTA-TO-ACTIVE-BLOCK RP AP))))
+	   (NIL)
+	 (COND ((EQ FNVAL (RP-FUNCTION-WORD RP AP))
+		(RETURN AP))
+	       (( AP INIFN) (RETURN NIL)))))

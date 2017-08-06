@@ -1,0 +1,276 @@
+title dtape
+.decsav
+
+ifndef 10x,[
+   ife .osmidas-sixbit/tenex/,10x==1
+   .else 10x==0
+];ifndef 10x
+
+ifndef fnx,fnx==10x
+
+ifn fnx,mtop=726000,,0
+
+ifn 10x,.insrt <chaos>chasym
+.else .insrt unv:chasym
+
+;;;Record size in bytes
+recsiz==1024.*4
+
+a=1
+b=2
+c=3
+d=4
+e=5
+t=10
+tt=11
+ch=12
+q=13
+n=15
+o=16
+p=17
+
+bufsiz==<recsiz+3>/4		;size in words
+buffer:	block bufsiz
+chapkt:	block chpmxw
+npdl==17
+pdl:	block npdl
+
+go:	reset
+	movei a,.fhslf
+	setob b,c
+	epcap
+	move p,[-npdl,,pdl-1]
+
+getmod:	hrroi a,[asciz /Read or write? (R or W) /]
+	psout
+	pbin
+	trz a,"a-"A
+	cain a,"R
+	 jrst [	setom read'
+		jrst opntap]
+	cain a,"W
+	 jrst [	setzm read
+		jrst opntap]
+	hrroi a,[asciz /?
+/]
+	psout
+	jrst getmod
+
+opntap:	hrroi a,[asciz /
+Write to/]
+	skipe read
+	 hrroi a,[asciz /
+Read from/]
+	psout
+	hrroi a,[asciz / tape: (MTAn:) /]
+	psout
+	movsi a,(gj%sht\gj%fns)
+	move b,[.priin,,.priou]
+	gtjfn
+	 jrst [	hrroi a,[asciz /Cannot get tape/]
+		pushj p,jsyer1
+		jrst opntap]
+	movsi b,7400		;Dump mode
+	skipe read
+	 troa b,of%rd		;Read
+	 tro b,of%wr
+	openf
+	 jrst [	hrroi a,[asciz /Cannot open tape/]
+		jrst jsyerr]
+	movem a,tapjfn'
+
+ifn fnx,[
+	usrio
+	jrst [	hrroi a,[asciz \Cannot enter user i/o mode\]
+		jrst jsyerr]
+	mtop 50			;Into industry compatible mode
+	jrst 2,@[.+1]
+];ifn fnx
+.else [
+	movei b,.mosdm
+	movei c,.sjdm8
+	mtopr
+];else
+
+opncha:	movsi a,(gj%sht)
+	hrroi b,[asciz /CHA:.DIST-TAPE/]
+	gtjfn
+	 jrst [	hrroi a,[asciz /Cannot get connection/]
+		jrst jsyerr]
+	move b,[080000,,of%rd+of%wr]
+	openf
+	 jrst [	hrroi a,[asciz /Cannot open connection/]
+		jrst jsyerr]
+	movem a,chajfn'
+	movei b,.mopkr
+	movei c,chapkt
+	mtopr			;Read RFC packet
+	move b,[440800,,chapkt+chpkdt]
+	ldb c,[chapkt+$cpknb]
+	pushj p,chatom
+	pushj p,chatom
+	camn a,[ascii /READ/]
+	 jrst [	skipe read
+		 jrst opened
+		hrroi a,[asciz /Direction mismatch, wanted write, got read/]
+		jrst error]
+	camn a,[asciz /WRITE/]
+	 jrst [	skipn read
+		 jrst opened
+		hrroi a,[asciz /Direction mismatch, wanted read, got write/]
+		jrst error]
+	hrroi a,[asciz /Badly formatted RFC/]
+	jrst error
+
+chatom:	setz a,
+	move d,[440700,,a]
+	movei e,5
+	sojl c,cpopj
+chatm1:	ildb t,b
+	cain t,40
+cpopj:	 popj p,
+	sojl e,chatm1
+	idpb t,d
+	jrst chatm1
+
+opened:	move a,chajfn
+	movei b,.moopn
+	mtopr
+	skipn read
+	 jrst wrtlup
+redlup:	setz n,
+redlp1:	setzm buffer		;In case of badly sized record
+	move a,tapjfn
+	movei b,[-bufsiz,,buffer-1 ? 0]
+	dumpi
+	 jrst redbfe
+	pushj p,redlen
+	caile a,recsiz
+	 jrst [	hrroi a,[asciz /Record length given is more than physical record length/]
+		jrst error]
+	subi a,4
+	jumpl a,[hrroi a,[asciz /Record length given is negative/]
+		 jrst error]
+	movn c,a
+	move a,chajfn
+	move b,[440800,,buffer+1]
+	sout			;Output this record
+	aoja n,redlp1
+
+redlen:	setz a,
+	move b,[440800,,buffer]
+	movei c,4
+redln1:	ildb d,b
+	cail d,"0
+	 caile d,"9
+	 jrst [	hrroi a,[asciz /Non digit in record length given/]
+		jrst error]
+	imuli a,10.
+	addi a,-"0(d)
+	sojg c,redln1
+	popj p,
+
+redbfe:	move a,tapjfn
+	gtsts
+	tlne b,(gs%eof)
+	 jrst redeof
+	hrroi a,[asciz /Tape read error/]
+	jrst jsyerr
+
+redeof:	move a,chajfn
+	movei b,.moeof
+	mtopr
+	move a,tapjfn
+	movei b,.mocle
+	mtopr
+	jumpn n,redlup		;Continue if this came after some data
+chacls:	move a,chajfn
+	tlo a,(co%wcl)
+	closf
+	 jfcl
+	jrst done
+
+
+wrtlup:	setzm wrtcnt'
+	pushj p,wrtfl1
+wrtlp2:	move a,chajfn
+	movei b,.mopkr
+	movei c,chapkt
+	mtopr
+	ldb t,[$cpkop chapkt]
+	cain t,.cocls
+	 jrst chacls
+	cain t,.coeof
+	 jrst wrteof
+	caie t,.codat
+	 jrst [	hrroi a,[asciz /Unknown opcode from network/]
+		jrst error/]
+	ldb t,[$cpknb chapkt]
+	addm t,wrtcnt		;Total bytes read
+	move tt,[440800,,chapkt+chpkdt]
+wrtlp4:	sojl t,wrtlp2
+	jumpg n,wrtlp3
+	pushj p,wrtfls
+wrtlp3:	ildb a,tt
+	idpb a,o
+	soja n,wrtlp4
+
+wrtfls:	move a,[.byte 8 ? "4 ? "0 ? "9 ? "6]	;Ordinary case of full record
+wrtflp:	movem a,buffer
+	move a,tapjfn		;Write this record
+	movei b,[-bufsiz,,buffer-1 ? 0]
+	dumpo
+	 jrst [	hrroi a,[asciz /Tape write error/]
+		jrst jsyerr]
+wrtfl1:	movei n,recsiz-4
+	move o,[440800,,buffer+1]
+	popj p,
+
+wrteof:	cain n,recsiz-4
+	 jrst wrteo1		;No partial record to write
+	movei b,recsiz
+	subi b,(n)
+	move a,[440800,,q]
+	move c,[no%lfl+no%zro+<4,,0>+10.]
+	nout
+	 jrst [	hrroi a,[asciz /Nout error/]
+		jrst jsyerr]
+	move a,q
+	pushj p,wrtflp
+
+wrteo1:	move a,tapjfn
+	movei b,.moeof
+	mtopr
+	skipn wrtcnt		;Any bytes written?
+	 jrst chacls		;No, end then
+	jrst wrtlup
+
+jsyerr:	pushj p,jsyer1
+
+done:	move a,tapjfn
+	closf
+	 jfcl
+ifn fnx,[
+	usrio
+	 skipa
+	mtop 51			;Back into core-dump mode
+	jrst 2,@[.+1]
+];ifn fnx
+	haltf
+	jrst .-1
+
+jsyer1:	esout
+	hrroi a,[asciz / - /]
+	psout
+	movei a,.priou
+	hrloi b,.fhslf
+	setz c,
+	erstr
+	 jfcl
+	 jfcl
+	popj p,
+
+error:	esout
+	jrst done
+
+end go

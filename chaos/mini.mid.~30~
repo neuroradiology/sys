@@ -1,0 +1,269 @@
+title mini	;-*-midas-*-
+
+.decsav
+
+ifndef 10x,ife .osmid-<sixbit /TENEX/>,10x==1
+20x==1-10x
+
+;Server for Lisp machine miniature Chaosnet
+; ** (C) Copyright 1981 Symbolics, Inc.
+;
+;Contact name is MINI<sp>USER<sp>PASSWORD
+;
+;Protocol:  (all you can do is read files)
+;  User to server:
+;    200 ascii open, contents is file name
+;    201 binary open, contents is file name
+;  Server to user:
+;    202 win, contents is file-id (cdate nl truename)
+;    203 lose, contents is error message
+;    200 ascii data
+;    300 binary data
+;    eof end of file, user can then ask for another
+
+a=1
+b=2
+c=3
+d=4
+e=5
+t=10
+tt=11
+ttt=12
+p=17
+
+.insrt <chaos>chasym
+
+npdl==177
+pdl:	block npdl
+chajfn:	0			;chaosnet connection
+dskjfn:	0			;file jfn
+debug:	-1
+pkt:	block chpmxw+chpkdt
+ifn 10x,strbuf:	block 20
+
+go:	reset
+	move a,[sixbit /MINI/]
+	setnm
+	move p,[-npdl,,pdl-1]
+	movsi a,(gj%sht)
+	hrroi b,[asciz /CHA:.MINI/]
+	gtjfn
+	 jrst jsyerr
+	move b,[080000,,of%rd+of%wr]
+	openf
+	 jrst jsyerr
+	movem a,chajfn
+	movei b,.mopkr
+	movei c,pkt
+	mtopr
+	move a,[440800,,pkt+chpkdt]
+	ldb b,[$cpknb pkt]
+	pushj p,getwrd		;MINI
+	push p,a
+	pushj p,getwrd		;USER
+	exch a,(p)
+	push p,a
+	pushj p,getwrd		;PASSWORD
+	pop p,b
+	movsi a,(rc%emo)
+	rcusr
+	tlne a,(rc%nom)
+	 jrst error
+	move a,c
+	pop p,b
+ifn 20x,setz c,
+ifn 10x,[
+	push p,a		;crock, get default account for this user
+	push p,b
+	movei a,strbuf
+	move b,c
+	jsys 331		;gdacc
+	 setz a,
+	move c,a
+	pop p,b
+	pop p,a
+]
+	skipe debug
+	 jrst nolog
+	login
+	 jrst jsyerr
+nolog:	move a,chajfn
+	movei b,.moopn		;accept connection
+	mtopr
+
+top:	move a,chajfn
+	movei b,.mopkr
+	movei c,pkt
+	mtopr
+	ldb t,[$cpkop pkt]
+	cain t,200
+	 jrst ascopn
+	cain t,201
+	 jrst binopn
+	jrst error
+
+getwrd:	sojl b,[popj p,]
+	ildb c,a
+	caie c,40
+	 jrst getwrd
+	setz c,
+	dpb c,a
+	popj p,
+
+ascopn:	pushj p,getjfn
+	 jrst jslose
+	move b,[070000,,of%rd]
+	openf
+	 jrst jslose
+	pushj p,opnwin
+
+asclup:	move a,dskjfn
+	bin
+	jumpe b,eofchk
+ascout:	xct as2lm(b)
+	move a,chajfn
+	bout
+	jrst asclup
+
+;ASCII to lisp-machine code-conversion xct table
+as2lm:	repeat 10,jfcl		;0-7
+	tro b,200		;bs
+	tro b,200		;tab
+	jrst asclup		;flush lf's
+	jfcl			;13
+	tro b,200		;form
+	tro b,200		;cr
+	repeat 177-16,jfcl	;16-176
+	jrst error		;177 i don't know how to handle escapes
+ifn .-as2lm-200, .err as2lm table wrong size
+
+eofchk:	gtsts
+	tlnn b,(gs%eof)
+	 jrst [	setz b,
+		jrst ascout]
+	move a,dskjfn
+	closf
+	 jfcl
+	move a,chajfn
+	movei b,.moeof
+	mtopr
+	jrst top
+
+binopn:	pushj p,getjfn
+	 jrst jslose
+	move b,[440000,,of%rd]
+	openf
+	 jrst jslose
+	pushj p,opnwin
+
+binlup:	move a,dskjfn
+	move b,[444400,,pkt+chpkdt]
+	movni c,chpmxw
+	sin
+	addi c,chpmxw
+	jumpe c,bineof
+	lsh c,2			;number of bytes
+	dpb c,[$cpknb pkt]
+	movei t,300
+	dpb t,[$cpkop pkt]
+	move a,chajfn
+	movei b,.mopks
+	movei c,pkt
+	mtopr
+	jrst binlup
+
+bineof:	move a,dskjfn
+	closf
+	 jfcl
+	movsi t,(<.byte 8 ? .coeof ? 0>)
+	movem t,pkt
+	move a,chajfn
+	movei b,.mopks
+	movei c,pkt
+	mtopr
+	jrst top
+
+getjfn:	ldb t,[$cpknb pkt]
+	adjbp t,[440800,,pkt+chpkdt]
+	setz tt,
+	idpb tt,t
+	movsi a,(gj%old\gj%sht)
+	move b,[440800,,pkt+chpkdt]
+	gtjfn
+	 skipa
+	 aos (p)
+	popj p,
+
+opnwin:	movem a,dskjfn
+	move a,[440800,,pkt+chpkdt]
+	move b,dskjfn
+	move c,[js%dev+js%dir+js%nam+js%typ+js%gen+js%paf]
+	jfns
+	movei b,215
+	idpb b,a
+	push p,a
+	move a,dskjfn
+	movei b,b		;return values starting in a
+	movei c,1		;want one values (last write date)
+	rftad
+	pop p,a
+	pushj p,dateou          ;output date/time from b
+	setz b,
+	idpb b,a
+	movei b,202
+;	jrst sndstr
+
+sndstr:	dpb b,[$cpkop pkt]
+	setz c,
+	idpb c,a
+	move a,[440800,,pkt+chpkdt]
+	ildb b,a
+	jumpe b,.+2
+	aoja c,.-2
+	dpb c,[$cpknb pkt]
+	move a,chajfn
+	movei b,.mopks
+	movei c,pkt
+	mtopr
+	popj p,
+
+dateou:	move t,a		;save current pointer
+	movsi c,(ot%nmn\ot%dam\ot%sla)
+	odtim
+	ildb tt,t		;get first character
+	movei ttt,"0
+	cain tt,40
+	 dpb ttt,t		;and replace leading space with 0
+	popj p,
+
+jslose:	move a,[440800,,pkt+chpkdt]
+	hrloi b,.fhslf
+	setz c,
+	erstr
+	 jfcl
+	 jfcl
+	movei b,203
+	pushj p,sndstr
+	jrst top
+
+jsyerr:	skipn debug
+	 jrst die
+	movei a,.priou
+	hrloi b,.fhslf
+	setz c,
+	erstr
+	 jfcl
+	 jfcl
+	haltf
+
+error:	skipn debug
+	 jrst die
+	hrroi a,[asciz /Error/]
+	esout
+	haltf
+
+die:	seto a,
+	lgout
+	 haltf
+
+	end go

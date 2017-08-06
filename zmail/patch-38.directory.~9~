@@ -1,0 +1,14 @@
+;;; -*- Mode: Lisp; Package: User; Base: 10.; Patch-File: T -*-
+;;; Patch directory for ZMail version 38
+;;; Written 12/23/81 14:44:52 by Matson,
+;;; while running on Retriever from band 5
+;;; with System 78.28, ZMail 38.4, Symbolics 8.7, Tape 6.3, LMFS 21.18, Canon 9.4, microcode 841.
+
+(RELEASED
+ ((0 "ZMail Loaded" "rg")
+  (1 "Profile bugs from compilation in wrong environment" "MMcM")
+  (2 "Fix (MOUSE-SENSITIVE-MODE-LINE-WINDOW :MOUSE-MOVES) for 78.13" "MMcM")
+  (3 "Fix some toplevel comtabs" "MMcM")
+  (4 "More of 38.1" "MMcM")
+  (5 "Bug in change to SETUP-ZMAIL-PROFILE" "MMcM")
+  ))
