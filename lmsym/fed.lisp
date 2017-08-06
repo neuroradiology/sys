@@ -2891,8 +2891,48 @@ Uses its grid for displaying the character being edited."))
 	   (OR (Y-OR-N-P "/
 Character height and baseline are incompatible with font.
 If actually stored, the character will be aligned by the top of its box.
-;;;---!!! Corrupt file. (06-Aug-2017 AMS)
-(LIST YWIDTH XWIDTH))
+Proceed to store anyway?")
+	       (RETURN-FROM FONT-STORE-CD NIL))))
+    ;; What are the regions of the fed data plane which actually are stored?
+    (SETQ PLANE-X1 (FIRST (PLANE-ORIGIN PLANE)))
+    (SETQ PLANE-Y1 (SECOND (PLANE-ORIGIN PLANE)))
+    (SETQ PLANE-WIDTH (FIRST (ARRAY-DIMENSIONS PLANE)))
+    (SETQ PLANE-HEIGHT (SECOND (ARRAY-DIMENSIONS PLANE)))
+    ;; Figure out what portion of the plane holding the fed data is really nonzero.
+    ;; XSTART and YSTART get the indices in PLANE (as an array, not as a plane!)
+    ;; of what is going to go into the upper left corner of the CD.
+    ;; XWIDTH and YWIDTH get the dimensions which the CD will need to hold all nonzero data.
+    ;; XSTART is determined by the leftmost nonzero data, and its distance from
+    ;; CHAR-BOX-X1 determines the left kern.  YSTART has to correspond to CHAR-BOX-Y1
+    ;; because that is not a per-character parameter.
+    (SETQ YSTART (MAX 0 (- CHAR-BOX-Y1 PLANE-Y1)) YWIDTH 0)
+    (DO J YSTART (1+ J) (= J PLANE-HEIGHT)
+       (DO I 0 (1+ I) (= I PLANE-WIDTH)
+          (OR (ZEROP (AR-2 PLANE I J))
+              (SETQ YWIDTH (1+ (- J YSTART))))))
+    (SETQ XSTART NIL XWIDTH 0)
+    (DO I 0 (1+ I) (= I PLANE-WIDTH)
+       (DO J YSTART (1+ J) (= J PLANE-HEIGHT)
+          (COND ((NOT (ZEROP (AR-2 PLANE I J)))
+                 (OR XSTART (SETQ XSTART I))
+                 (SETQ XWIDTH (1+ (- I XSTART)))))))
+    ;; Make sure XSTART isn't NIL, and neither width is zero.
+    (COND ((NULL XSTART)
+           (SETQ XSTART 0 XWIDTH 1)))
+    (AND (ZEROP YWIDTH) (SETQ YWIDTH 1))
+    ;; Warn about dots to be lost above YSTART.
+    (PROG FOO ()
+      (DO I 0 (1+ I) (= I PLANE-WIDTH)
+         (DO J 0 (1+ J) (= J YSTART)
+	    (OR (ZEROP (AR-2 PLANE I J))
+		(COND ((Y-OR-N-P "/
+Dots above character top will be lost.  Store anyway? ")
+		       (RETURN-FROM FOO NIL))
+		      (T (RETURN-FROM FONT-STORE-CD NIL)))))))
+    (SETQ KERN (- CHAR-BOX-X1 (+ XSTART PLANE-X1)))
+    ;; Copy the data in the FED buffer into a CD
+    (SETQ CD (MAKE-CHAR-DESCRIPTOR
+                      :MAKE-ARRAY (:TYPE 'ART-4B :DIMENSIONS (LIST YWIDTH XWIDTH))
                       CD-CHAR-WIDTH (- CHAR-BOX-X2 CHAR-BOX-X1)
                       CD-CHAR-LEFT-KERN KERN))
     (DO I 0 (1+ I) (= I XWIDTH)
