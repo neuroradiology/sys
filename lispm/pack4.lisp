@@ -953,7 +953,28 @@
 					 (%make-pointer-offset dtp-locative global i)))))
     (mapc (function globalize-1) (circular-list global) (pkg-subpackages package)))
 
-;Find all symbols with a given pn                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  RETURN-LIST)
+;Find all symbols with a given pname, which packages they are in, and
+;which packages they are accessible from.
+(LOCAL-DECLARE ((SPECIAL RETURN-LIST))
+(DEFUN WHERE-IS (PNAME &OPTIONAL (UNDER-PKG PKG-GLOBAL-PACKAGE)
+		 &AUX FOUND-IN-PKG FROM-PKGS RETURN-LIST)
+  ;; Given a string, it should probably be uppercased.  But given a symbol copy it exactly.
+  (SETQ PNAME (IF (STRINGP PNAME) (STRING-UPCASE PNAME) (STRING PNAME)))
+  (FORMAT T "~&")
+  ;; Each entry in TABLE is (from-pkg found-in-pkg).  Highest package first.
+  (LET ((TABLE (NREVERSE (WHERE-IS-INTERNAL PNAME UNDER-PKG NIL))))
+    (IF (NULL TABLE) (FORMAT T "No symbols named ~S exist.~%" PNAME)
+	(DO () ((NULL TABLE))
+	  (SETQ FOUND-IN-PKG (CADAR TABLE)
+		FROM-PKGS (SORT (MAPCAN #'(LAMBDA (X)
+					    (COND ((EQ (CADR X) FOUND-IN-PKG)
+						   (SETQ TABLE (DELQ X TABLE 1))
+						   (NCONS (PKG-NAME (CAR X))))))
+					TABLE)
+				#'STRING-LESSP))
+	  (FORMAT T "~A:~A is accessible from package~P ~{~<~%~10X~2:;~A~>~^, ~}~%"
+		      (PKG-NAME FOUND-IN-PKG) PNAME (LENGTH FROM-PKGS) FROM-PKGS))))
+  RETURN-LIST)
 
 (DEFUN WHERE-IS-INTERNAL (PNAME PKG TABLE)
   (MULTIPLE-VALUE-BIND (SYM FOUND FOUND-IN-PKG) (INTERN-SOFT PNAME PKG)
