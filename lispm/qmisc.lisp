@@ -1543,7 +1543,7 @@ error handler, or P to proceed and not ask in the future (for this pair of files
 (DEFUN ASSIGN-ALTERNATE (X)
    (PROG NIL 
     L	(COND ((NULL X)(RETURN NIL)))
-	(SET (CAR X) (CADR X))
+	(SET (INTERN-LOCAL (GET-PNAME (CAR X)) PACKAGE) (CADR X))
 	(SETQ X (CDDR X))
 	(GO L)))
 
