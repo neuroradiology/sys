@@ -1,4 +1,4 @@
-; -*- Mode:Lisp; Lowercase:T; Base:8 -*-
+; -*- Mode:Lisp; Lowercase:T; Base:8; Package: COLD -*-
 ;	** (c) Copyright 1980 Massachusetts Institute of Technology **
 
 ;This package is the program
@@ -22,10 +22,6 @@
    (borrow cold defmic))
 
 (fset 'cold-symbols:logdpb #'dpb)
-
-(setf (pkg-super-package (pkg-find-package "cold-symbols")) nil)
-(setf (si:pkg-subpackages pkg-global-package) (delq (pkg-find-package "cold-symbols")
-						    (si:pkg-subpackages pkg-global-package)))
 
 ;Before we can compile anything in the cold-load package, we need to load the parameters
 (si:define-simple-transformation cold:load-cold-parameters cold:load-parameters
