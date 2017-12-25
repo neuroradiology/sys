@@ -1059,8 +1059,8 @@
       (make-q-list 'sym:init-list-area
 		   (loop for (file pack) in (symeval sym)
 			 as pathname = (fs:merge-pathname-defaults file)
-			 collect (list (funcall (funcall pathname ':translated-pathname)
-						':string-for-mini)
+			 collect (list (string-downcase (funcall (funcall pathname ':translated-pathname)
+						':string-for-mini))
 				       pack
 				       (equal (funcall pathname ':type) "QFASL"))))))
   ;;THIS KLUDGE FIXES UP MACROS, SINCE THE FUNCTION MACRO IS NOT DEFINED YET
