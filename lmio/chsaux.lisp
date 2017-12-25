@@ -1092,7 +1092,8 @@
 	(AND (ZEROP (STRING-LENGTH RCPT))	;Blank line = start text
 	     (RETURN))
 	(FUNCALL STREAM ':LINE-OUT
-		 "-Lisp Machines do not accept mail, maybe you want the :LMSEND command."))))
+		 "-Lisp Machines do not accept mail, maybe you want the :LMSEND command.")
+	(FUNCALL STREAM ':FORCE-OUTPUT))))
   (CLOSE CONN "all rcpts read"))
 
 (ADD-INITIALIZATION "MAIL" '(PROCESS-RUN-TEMPORARY-FUNCTION "MAIL Server" 'DUMMY-MAIL-SERVER)
