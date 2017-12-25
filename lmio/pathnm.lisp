@@ -2419,6 +2419,9 @@ Type Resume to retry.~]"
 	WHEN (GET FILE ':DIRECTORY)
 	COLLECT (NCONS (FUNCALL (CAR FILE) ':PATHNAME-AS-DIRECTORY))))
 
+(DEFMETHOD (MEANINGFUL-ROOT-MIXIN :PARSE-STRUCTURED-DIRECTORY-SPEC)
+	   PATHNAME-PASS-THROUGH-SPEC)
+
 ;;; Attempt to complete a pathname string STRING.  DEFAULTS, TYPE and VERSION are as
 ;;; for MERGE-PATHNAME-DEFAULTS.  Currently recognized options are:
 ;;; :DELETED - recognize deleted files.
