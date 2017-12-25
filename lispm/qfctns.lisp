@@ -1951,7 +1951,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 			 (OR (AND (NOT REAL-FLAG)
 				  ;Take this check out someday after everything recompiled
 				  (LET ((AL (CDR (ASSQ 'ARGLIST DEBUG-INFO))))
-				    (IF (ATOM (CAR AL)) AL	;New format
+				    (IF (OR (ATOM AL) (ATOM (CAR AL))) AL	;New format
 					(CAR AL))))		;Old format
 			     (LDIFF (CADDR FUNCTION) (MEMQ '&AUX (CADDR FUNCTION))))
 			 ;Take this check out someday after everything recompiled
@@ -1967,8 +1967,8 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 				  ;Take this check out someday after everything recompiled
 				  (LET ((AL (CDR (ASSQ 'ARGLIST (FUNCTION-DEBUGGING-INFO
 								   (CDR FUNCTION))))))
-				    (IF (ATOM (CAR AL)) AL	;New format
-					(CAR AL))))		;Old format
+				    (COND ((OR (ATOM AL) (ATOM (CAR AL))) AL)	;New format
+					  (T (CAR AL)))))	;Old format
 			    'MACRO)
 			NIL
 			'MACRO))
@@ -1993,7 +1993,7 @@ B   (COND ((OR (= 0 /#TIMES) (ATOM LL))
 	   (COND ((AND (NOT REAL-FLAG)
 		       ;Take this check out someday after everything recompiled
 		       (LET ((AL (CDR (ASSQ 'ARGLIST DEBUG-INFO))))
-			 (IF (ATOM (CAR AL)) AL		;New format
+			 (IF (OR (ATOM AL) (ATOM (CAR AL))) AL		;New format
 			     (CAR AL)))))		;Old format
 		 ((SETQ TEM (GET-MACRO-ARG-DESC-POINTER FUNCTION))
 		  (DO ((ADL TEM (CDR ADL))
