@@ -1023,6 +1023,9 @@ N to do nothing special and enter the normal error handler.
 	       ((NLISTP (CAR H)) (EQ (CAR H) CONDITION))
 	       (T (MEMQ CONDITION (CAR H))))
 	 (RETURN T))))
+
+(DEFUN ERRORP (THING)
+  (STRINGP THING))
 
 (DEFVAR ALLOW-PDL-GROW-MESSAGE T)
 
