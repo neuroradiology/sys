@@ -1188,7 +1188,9 @@
       (DO ()
 	  ((%CHANGE-PAGE-STATUS ADDRESS %PHT-SWAP-STATUS-WIRED NIL)
 	   (IF SET-MODIFIED			;Set modified bit without changing anything
-	       (%P-STORE-DATA-TYPE ADDRESS (%P-DATA-TYPE ADDRESS))))
+	       (IF DONT-BOTHER-PAGING-IN	;and without touching uninitialized memory
+		   (%P-STORE-TAG-AND-POINTER ADDRESS DTP-TRAP ADDRESS)
+		   (%P-STORE-DATA-TYPE ADDRESS (%P-DATA-TYPE ADDRESS)))))
 	(COND ((NOT DONT-BOTHER-PAGING-IN)
 	       (%P-LDB 1 (%POINTER ADDRESS)))	;Haul it in
 	      ((NULL (%PAGE-STATUS ADDRESS))
