@@ -668,7 +668,9 @@
   (GRIND-REST-OF-DO (CDR EXP) (LOCF (CDR EXP))))
 
 (DEFUN GRIND-CHECK-DO (EXP)
-  (AND (< (LENGTH EXP) 3)
+  (AND (< (LENGTH EXP)
+	  ;; Don't get faked into losing by the old format.
+	  (IF (OR (LISTP (CADR EXP)) (NULL (CADR EXP))) 3 4))
        (*THROW 'GRIND-MACRO-FAILED 'NOT-A-FORM)))
 
 (DEFUN GRIND-REST-OF-DO (EXP LOC)
