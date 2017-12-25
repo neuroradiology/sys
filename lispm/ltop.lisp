@@ -13,6 +13,8 @@
 (DEFVAR INITIAL-READTABLE)	;The original one with no changes in it
 (DEFVAR STANDARD-READTABLE)	;The one we reset to when booted, a copy of initial-readtable
 
+(DEFVAR COLD-BOOT-HISTORY NIL)
+
 ;Come here when machine starts.  Provides a base frame.
 (DEFUN LISP-TOP-LEVEL ()
   (LISP-REINITIALIZE NIL)			;(Re)Initialize critical variables and things
@@ -197,6 +199,11 @@
       (FUNCALL STANDARD-OUTPUT ':CLEAR-EOL)
       (PRINC "Lisp Machine cold load environment, beware!"))
 
+  (AND (BOUNDP 'TIME:*LAST-TIME-UPDATE-TIME*)
+       (NULL (CAR COLD-BOOT-HISTORY))
+       (SETF (CAR COLD-BOOT-HISTORY) (CATCH-ERROR (LIST SI:LOCAL-HOST
+							(TIME:GET-UNIVERSAL-TIME)))))
+
   ;; This process no longer needs to be able to run except for the usual reasons.
   ;; The delayed-restart processes may now be allowed to run
   (COND (CURRENT-PROCESS
@@ -206,14 +213,11 @@
 		    (SETF (PROCESS-RUN-REASONS P) RR)
 		    (PROCESS-CONSIDER-RUNNABILITY P)))
 	 (SETQ DELAYED-RESTART-PROCESSES NIL)
-	 (COND ((NULL WARM-BOOTED-PROCESS)
-		;; Remember when we were cold booted, just in case anyone is interested.
-		(SETQ TIME-BOOTED (ERRSET (TIME:GET-UNIVERSAL-TIME))))
-	       (T
-		(FORMAT T "Warm boot while running ~S.~@
+	 (AND WARM-BOOTED-PROCESS
+	      (FORMAT T "Warm boot while running ~S.~@
                            Its variable bindings remain in effect; ~
 		                its unwind-protects have been lost.~%"
-			(PROG1 WARM-BOOTED-PROCESS (SETQ WARM-BOOTED-PROCESS NIL)))))))
+		      (PROG1 WARM-BOOTED-PROCESS (SETQ WARM-BOOTED-PROCESS NIL))))))
 
   ;; The global value of TERMINAL-IO is a stream which goes to an auto-exposing
   ;; window.  Some processes, such as Lisp listeners, rebind it to something else.
@@ -487,6 +491,10 @@
 (DEFUN CERROR-COLD-LOAD (&REST ARGS)
   (PRINT ARGS)
   (BREAK CERROR))
+
+(ADD-INITIALIZATION "Reset cold boot history"
+		    '(PUSH 'NIL COLD-BOOT-HISTORY)
+		    '(:COLD))
 
 ;;; Stuff which has to go somewhere, to be around in the cold-load,
 ;;; and doesn't have any logical place where it belongs (this used to
