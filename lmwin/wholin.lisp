@@ -231,7 +231,7 @@
 	  CONTACT-NAME CONTACT-NAME
 	  PROCESS PROCESS
 	  FUNCTION FUNCTION
-	  ARGS ARGS)
+	  ARGS (COPYLIST ARGS))
 	SERVERS-LIST))
 
 ;This isn't usually called; Normally servers are deleted automatically when
