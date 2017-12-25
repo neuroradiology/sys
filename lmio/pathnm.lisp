@@ -1384,9 +1384,9 @@ as an ordinary directory."))
 
 (DEFUN VMS-DEVNAME-CHECK (DEV)
   (IF (STRING-SEARCH-NOT-SET VMS-DEVNAME-CHARSET DEV)
-      (FERROR () "/"~A/" -- illegal character in VMS device name" DEV))
-  (IF (> (STRING-LENGTH DEV) 63)
-      (FERROR () "/"~A/" -- VMS device name too long" DEV)))
+      (FERROR ':PATHNAME-PARSE-ERROR "/"~A/" -- illegal character in VMS device name" DEV))
+  (IF (> (STRING-LENGTH DEV) 63.)
+      (FERROR ':PATHNAME-PARSE-ERROR "/"~A/" -- VMS device name too long" DEV)))
 
 (DEFUN VMS-FILENAME-COMPONENT-CHECK (NAM &OPTIONAL (SIZE 9))
   (IF (STRING-SEARCH-NOT-SET VMS-FILENAME-CHARSET NAM)
