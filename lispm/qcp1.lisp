@@ -1557,4 +1557,3 @@
 
 ;ARGDESC properties for functions with hairy eval/quote argument patterns
 (DEFPROP ARRAY ((2 (FEF-ARG-REQ FEF-QT-QT)) (20 (FEF-ARG-OPT FEF-QT-EVAL))) ARGDESC)
-   

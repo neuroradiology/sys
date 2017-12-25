@@ -849,4 +849,3 @@ that the variable is the right type." ()
 	    (STRING (MAKE-ARRAY NIL 'ART-STRING 10. NIL '(0))))
 	   ((NULL VAL) STRING)
 	 (ARRAY-PUSH-EXTEND STRING (CAR VAL)))))))
- 

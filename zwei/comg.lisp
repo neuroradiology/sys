@@ -433,4 +433,3 @@ Keyboard macros are read to move to the various part of the region to be sorted.
 (TV:ADD-TYPEOUT-ITEM-TYPE *TYPEOUT-COMMAND-ALIST* FLAVOR-NAME "Describe"
 			  DESCRIBE-FLAVOR-INTERNAL NIL
 			  "Describe this flavor.")
-  

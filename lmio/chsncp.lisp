@@ -1874,5 +1874,3 @@ CONN ~S, (PKT-SOURCE-CONN PKT) ~S" PKT CONN (PKT-SOURCE-CONN PKT))))
 (ADD-INITIALIZATION "CHAOS-NCP"
                     '(INITIALIZE-NCP-SYSTEM)
                     '(SYSTEM NORMAL))   ;NORMAL keyword to override FIRST default
-
-

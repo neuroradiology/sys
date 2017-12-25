@@ -31,4 +31,3 @@
 	 (SETQ CURRENT-ITEM NIL))))
 
 )
-

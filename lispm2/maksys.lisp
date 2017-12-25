@@ -1568,4 +1568,3 @@
 	      (LEXPR-FUNCALL #'FORMAT T
 			     " by ~A on ~A at ~\TIME\~%~10Xwith system ~D.~D~%"
 			     CDATA)))))
-  

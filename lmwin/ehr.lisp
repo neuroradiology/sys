@@ -1087,5 +1087,3 @@ N to do nothing special and enter the normal error handler.
 					       TEM))))
 	   (STRUCTURE-FORWARD PDL NEW-PDL)
 	   NEW-PDL)))
-
-

@@ -991,4 +991,3 @@
 ;;; These functions are defined in ENCAPS, but loaded here
 (compiler:add-optimizer encapsulation-let encapsulation-let-fix)
 (compiler:add-optimizer encapsulation-list* encapsulation-list*-fix)
-   

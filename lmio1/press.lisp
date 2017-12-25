@@ -1221,4 +1221,3 @@ And why the sea is boiling hot,
     (:TEXT (LEXPR-FUNCALL #'PRINT-FILE PATHNAME DIRED-PRINT-OPTIONS))
     (:PRESS (LEXPR-FUNCALL #'PRINT-PRESS-FILE PATHNAME DIRED-PRINT-OPTIONS))
     (OTHERWISE (FORMAT NIL "I don't know how to print files of type ~A" TYPE))))
-
