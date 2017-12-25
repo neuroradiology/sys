@@ -496,12 +496,12 @@ will return it."))
 	CHAMB (MAKE-ARRAY NIL 'ART-1B NCHUNKS))
   (AND (ARRAYP ALIST)
        (MULTIPLE-VALUE (ALIST TAIL)
-	 (COMPLETE-STRING-BOUNDS ALIST NCHUNKS CHUNKS CHUNK-DELIMS)))
+	 (COMPLETE-STRING-BOUNDS ALIST DELIMS NCHUNKS CHUNKS CHUNK-DELIMS)))
   (DO ((L ALIST (CDR L))
        (ALL-AMBIG))
       ((EQ L TAIL))
     (COND ((NLISTP L))				;Indirect through multiple alists
-	  ((NULL (COMPLETE-CHUNK-COMPARE (CAAR L) NCHUNKS CHUNKS CHUNK-DELIMS TEMS
+	  ((NULL (COMPLETE-CHUNK-COMPARE (CAAR L) DELIMS NCHUNKS CHUNKS CHUNK-DELIMS TEMS
 					 (AND (NULL RETS) RCHUNKS)))
 	   (OR RETS (SETQ CHUNKS RCHUNKS))	;First winner determines case of result
 	   (PUSH (CAR L) RETS)		;add to list of partial matches
@@ -563,8 +563,8 @@ will return it."))
 ;;;else LESS or GREATER according as it is less or greater than the CHUNKS.
 ;;;T is returned for the indeterminate case, for the sake of the binary search in the
 ;;;array case.  The actual completer only checks NULL.
-(DEFUN COMPLETE-CHUNK-COMPARE (STR NCHUNKS CHUNKS CHUNK-DELIMS &OPTIONAL TEMS RCHUNKS
-				   &AUX LEN2)
+(DEFUN COMPLETE-CHUNK-COMPARE (STR DELIMS NCHUNKS CHUNKS CHUNK-DELIMS &OPTIONAL TEMS RCHUNKS
+			       &AUX LEN2)
   (SETQ LEN2 (STRING-LENGTH STR))
   (DO ((I 0 (1+ I))
        (J 0)
@@ -594,7 +594,8 @@ will return it."))
     (AND RCHUNKS (ASET (NSUBSTRING STR J K) RCHUNKS I))
     (COND ((MINUSP (SETQ DELIM (AREF CHUNK-DELIMS I)))
 	   (SETQ J NIL))		;For the last chunk, use rest of string
-	  ((SETQ J (%STRING-SEARCH-CHAR DELIM STR K LEN2))
+	  ((AND (SETQ J (STRING-SEARCH-SET DELIMS STR K LEN2))
+		(= DELIM (AREF STR J)))
 	   (OR FLAG (= J K) (SETQ FLAG T)))
 	  ((OR FLAG ( (1+ I) NCHUNKS)) (RETURN T))	;If more could follow or ambig
 	  ((= K LEN2) (RETURN 'LESS))
@@ -604,7 +605,7 @@ will return it."))
 ;;;Given an ART-Q-LIST array and the chunks to match, compute the subset of that array
 ;;;that could possibly be a completion of the string, and return an NTHCDR of the G-L-P
 ;;;and the appropriate tail to stop with.
-(DEFUN COMPLETE-STRING-BOUNDS (ALIST NCHUNKS CHUNKS CHUNK-DELIMS &AUX LO HI HIHI)
+(DEFUN COMPLETE-STRING-BOUNDS (ALIST DELIMS NCHUNKS CHUNKS CHUNK-DELIMS &AUX LO HI HIHI)
   (SETQ LO 0 HI 0
 	HIHI (ARRAY-ACTIVE-LENGTH ALIST))
   (DO ((HILO HIHI)
@@ -614,7 +615,7 @@ will return it."))
     (AND (ZEROP (SETQ IDX (// (- HILO LO) 2)))	;binary search
 	 (RETURN NIL))
     (SETQ IDX (+ LO IDX))
-    (SETQ VAL (COMPLETE-CHUNK-COMPARE (CAR (AREF ALIST IDX))
+    (SETQ VAL (COMPLETE-CHUNK-COMPARE (CAR (AREF ALIST IDX)) DELIMS
 				      NCHUNKS CHUNKS CHUNK-DELIMS))
     (COND ((EQ VAL 'LESS)
 	   (SETQ LO IDX)
@@ -630,7 +631,7 @@ will return it."))
     (AND (ZEROP (SETQ IDX (// (- HIHI HI) 2)))
 	 (RETURN NIL))
     (SETQ IDX (+ HI IDX))
-    (SETQ VAL (COMPLETE-CHUNK-COMPARE (CAR (AREF ALIST IDX))
+    (SETQ VAL (COMPLETE-CHUNK-COMPARE (CAR (AREF ALIST IDX)) DELIMS
 				      NCHUNKS CHUNKS CHUNK-DELIMS))
     (COND ((NEQ VAL 'GREATER)
 	   (SETQ HI IDX))
