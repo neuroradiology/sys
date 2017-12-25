@@ -959,7 +959,7 @@ is chosen or the mouse moves even further, out of its control."))
       (AND MOUSE-RECONSIDER (EQ SELF (WINDOW-OWNING-MOUSE)))
       ;; This is called in the mouse process.  We don't want to take the chance that
       ;; we might go blocked, so run in another process.
-      (PROCESS-RUN-FUNCTION "Menu Deactivate" SELF ':DEACTIVATE)))
+      (PROCESS-RUN-FUNCTION '(:NAME "Menu Deactivate" :PRIORITY 20.) SELF ':DEACTIVATE)))
 
 ;;; Make MOUSE-DEFAULT-HANDLER return so menu gets deactivated.
 (DEFMETHOD (BASIC-MOMENTARY-MENU :AFTER :MOUSE-BUTTONS) (IGNORE IGNORE IGNORE)

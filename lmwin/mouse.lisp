@@ -51,7 +51,13 @@
 ;;; are not necessarily equal to the change in MOUSE-X and MOUSE-Y.
 (DEFUN MOUSE-INPUT (&OPTIONAL (WAIT-FLAG T))
   ;; Await a change in hardware status from what it was last time
-  (AND WAIT-FLAG (PROCESS-WAIT "MOUSE" #'(LAMBDA () (OR MOUSE-WAKEUP MOUSE-RECONSIDER))))
+  (COND (WAIT-FLAG
+	 ;; This sleep makes it reasonable for the mouse process to be high priority.
+	 ;; It insures that moving the mouse does not lock out lower priority
+	 ;; processes for a long time.  This constant may want to be tweaked.  A
+	 ;; value of 1 (1/60 of a second) does not noticably affect mouse response.
+	 (PROCESS-SLEEP 1.)
+	 (PROCESS-WAIT "MOUSE" #'(LAMBDA () (OR MOUSE-WAKEUP MOUSE-RECONSIDER)))))
   ;; Clear wakeup flag unless there are buffered mouse button transitions, since we
   ;; might not read all of them before calling MOUSE-INPUT again.
   (SETQ MOUSE-WAKEUP ( MOUSE-BUTTONS-BUFFER-IN-INDEX MOUSE-BUTTONS-BUFFER-OUT-INDEX))
@@ -326,7 +332,7 @@
 			   (- MOUSE-Y Y-OFF (SHEET-INSIDE-TOP MOUSE-SHEET)))))
 
 (DEFUN MOUSE-CALL-SYSTEM-MENU (&OPTIONAL (SUP MOUSE-SHEET))
-  (PROCESS-RUN-FUNCTION "System Menu"
+  (PROCESS-RUN-FUNCTION '(:NAME "System Menu" :PRIORITY 10.)
 			#'(LAMBDA (SUP)
 			    (USING-RESOURCE (MENU SYSTEM-MENU SUP)
 			      (FUNCALL MENU ':CHOOSE)))
@@ -708,7 +714,7 @@
 
 (DEFUN MOUSE-SELECT (WINDOW)
   (IF (EQ CURRENT-PROCESS MOUSE-PROCESS)
-      (PROCESS-RUN-FUNCTION "Mouse select" #'MOUSE-SELECT WINDOW)
+      (PROCESS-RUN-FUNCTION '(:NAME "Mouse select" :PRIORITY 20.) #'MOUSE-SELECT WINDOW)
       (FUNCALL WINDOW ':MOUSE-SELECT NIL)))
 
 (DEFMETHOD (ESSENTIAL-MOUSE :SCROLL-BAR-P) () NIL)
