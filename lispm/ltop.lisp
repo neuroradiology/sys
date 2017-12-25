@@ -206,10 +206,14 @@
 		    (SETF (PROCESS-RUN-REASONS P) RR)
 		    (PROCESS-CONSIDER-RUNNABILITY P)))
 	 (SETQ DELAYED-RESTART-PROCESSES NIL)
-	 (IF WARM-BOOTED-PROCESS
-	     (FORMAT T "Warm boot while running ~S.~%Its variable bindings remain in effect; ~
-		        its unwind-protects have been lost.~%"
-		     (PROG1 WARM-BOOTED-PROCESS (SETQ WARM-BOOTED-PROCESS NIL))))))
+	 (COND ((NULL WARM-BOOTED-PROCESS)
+		;; Remember when we were cold booted, just in case anyone is interested.
+		(SETQ TIME-BOOTED (ERRSET (TIME:GET-UNIVERSAL-TIME))))
+	       (T
+		(FORMAT T "Warm boot while running ~S.~@
+                           Its variable bindings remain in effect; ~
+		                its unwind-protects have been lost.~%"
+			(PROG1 WARM-BOOTED-PROCESS (SETQ WARM-BOOTED-PROCESS NIL)))))))
 
   ;; The global value of TERMINAL-IO is a stream which goes to an auto-exposing
   ;; window.  Some processes, such as Lisp listeners, rebind it to something else.
