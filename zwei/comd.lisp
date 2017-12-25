@@ -232,8 +232,8 @@ An argument of 0 lists which ones are remembered." ()
        (MULTIPLE-VALUE (CONTENTS NIL NIL NIL CHAR-POS)
 	 (COMPLETE-STRING "" *COMPLETING-ALIST* *COMPLETING-DELIMS* T 0)))
   (EDIT-IN-MINI-BUFFER *COMPLETING-READER-COMTAB* CONTENTS CHAR-POS
-		       (IF PROMPT `(,PROMPT (:RIGHT-FLUSH " COMPLETION"))
-			 '(:RIGHT-FLUSH " COMPLETION"))))
+		       (IF PROMPT `(,PROMPT (:RIGHT-FLUSH " (Completion)"))
+			 '(:RIGHT-FLUSH " (Completion)"))))
 
 ;; Note that WINDOW is a window system type window, not a ZWEI-WINDOW
 (DEFUN COMPLETING-READ (WINDOW *COMPLETING-ALIST*

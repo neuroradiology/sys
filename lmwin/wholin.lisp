@@ -360,13 +360,20 @@
 	   (COND ((OR (NOT (NUMBERP OLD-IDLE)) ( OLD-IDLE IDLE))
 		  (SHEET-CLEAR SELF)
 		  (WITHOUT-INTERRUPTS
-		    (LET ((STRING (FORMAT NIL "Console idle ~D minute~P" IDLE IDLE)))
+		    (LET ((STRING (MAKE-IDLE-MESSAGE IDLE)))
 		      (SHEET-STRING-OUT SELF STRING)
 		      (RETURN-ARRAY STRING)))
 		  (SETQ WHO-LINE-ITEM-STATE IDLE)))))
 	((NEQ WHO-LINE-ITEM-STATE 'NULL)
 	 (SHEET-CLEAR SELF)
 	 (SETQ WHO-LINE-ITEM-STATE 'NULL))))
+
+(DEFUN MAKE-IDLE-MESSAGE (MINUTES)
+  (COND ((< MINUTES 60.)
+	 (FORMAT NIL "Console idle ~D minute~:P" MINUTES))
+	(T
+	 (LET ((HOURS (// MINUTES 60.)))
+	   (FORMAT NIL "Console idle ~D hr ~D min~:P" HOURS (- MINUTES (* 60. HOURS)))))))
 
 ;;; Date and time in the who-line, continuously updating.
 

@@ -585,10 +585,10 @@ the name of a command, and remaining elements are parameters."
 	       (FUNCALL STANDARD-OUTPUT
 			':STRING-OUT
 			(NTH BITS
-			     '("" "C-" "M-" "C-M-"
-			       "S-" "C-S-" "M-S-" "C-M-S-"
-			       "H-" "C-H-" "M-H-" "C-M-H-"
-			       "S-H-" "C-S-H-" "M-S-H-" "C-M-S-H-"))))
+			     '("" "c-" "m-" "c-m-"
+			       "s-" "c-s-" "m-s-" "c-m-s-"
+			       "h-" "c-h-" "m-h-" "c-m-h-"
+			       "s-h-" "c-s-h-" "m-s-h-" "c-m-s-h-"))))
 	   (COND ((AND ATSIGN-FLAG
 		       (SETQ CHNAME (FORMAT-GET-CHARACTER-NAME (LDB %%KBD-CHAR ARG))))
 		  (FUNCALL STANDARD-OUTPUT ':TYO #/\)

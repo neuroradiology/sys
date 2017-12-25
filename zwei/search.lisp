@@ -724,7 +724,8 @@
   (DECLARE (RETURN-LIST FUNCTION ARG))
   (LET ((*MINI-BUFFER-WINDOW* (GET-SEARCH-MINI-BUFFER-WINDOW)))
     (EDIT-IN-MINI-BUFFER *SEARCH-MINI-BUFFER-COMTAB* NIL NIL
-			 '(*SEARCH-MINI-BUFFER-NAME* (:RIGHT-FLUSH " EXTENDED SEARCH CHARACTERS"))))
+			 '(*SEARCH-MINI-BUFFER-NAME*
+			    (:RIGHT-FLUSH " (Extended search characters)"))))
   (SETQ STR (SEARCH-MINI-BUFFER-STRING-INTERVAL))
   (MULTIPLE-VALUE (STRINGS EXPR CR-P)
     (PARSE-EXTENDED-SEARCH-STRING STR))
@@ -823,7 +824,7 @@ String is read in a mini-buffer in which Control-H is a prefix for special chara
 			   (*EXTENDED-STRING-SEARCH-REVERSE-P* "Reverse ")
 			   (*EXTENDED-STRING-SEARCH-TOP-LINE-P* "Top line ")
 			   *SEARCH-MINI-BUFFER-NAME*
-			   (:RIGHT-FLUSH " EXTENDED SEARCH CHARACTERS"))))
+			   (:RIGHT-FLUSH " (Extended search characters)"))))
   (MULTIPLE-VALUE (STRINGS EXPR CR-P)
     (PARSE-EXTENDED-SEARCH-STRING))
   (IF (LISTP STRINGS)
@@ -1039,7 +1040,7 @@ String is read in a mini-buffer in which Control-H is a prefix for special chara
   (LET ((*MINI-BUFFER-WINDOW* (GET-SEARCH-MINI-BUFFER-WINDOW)))
     (EDIT-IN-MINI-BUFFER *SEARCH-MINI-BUFFER-COMTAB* NIL NIL
 			 '(*SEARCH-MINI-BUFFER-NAME*
-			   (:RIGHT-FLUSH " EXTENDED SEARCH CHARACTERS"))))
+			   (:RIGHT-FLUSH " (Extended search characters)"))))
   (SEARCH-MINI-BUFFER-STRING-INTERVAL))
 
 ;;; Parse something read back
