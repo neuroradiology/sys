@@ -457,16 +457,17 @@ function MUST be called with interrupts inhibited."
 ;;; they are run and the entry is deactivated.
 
 (DEFUN PROCESS-SCHEDULER (&AUX (INHIBIT-SCHEDULING-FLAG T));No seq breaks in the scheduler
-  (DO ((CURRENT-PRIORITY -1_20.)	;Priority of CURRENT-PROCESS
-       (REMAINING-QUANTUM 0 0)
+  (DO ((REMAINING-QUANTUM 0 0)
        (NEXT-PROCESS NIL NIL)
+       (OLD-CURRENT-PROCESS)
        (THIS-TIME (TIME) (TIME))
        (LAST-TIME (TIME) THIS-TIME)
        (DELTA-TIME)
        (NEXT-WHO-TIME 0))
       (())
 
-    (SETQ DELTA-TIME (TIME-DIFFERENCE THIS-TIME LAST-TIME))
+    (SETQ DELTA-TIME (TIME-DIFFERENCE THIS-TIME LAST-TIME)
+	  OLD-CURRENT-PROCESS CURRENT-PROCESS)
 
     (AND CURRENT-PROCESS
 	 (SETF (PROCESS-QUANTUM-REMAINING CURRENT-PROCESS)
@@ -482,34 +483,44 @@ function MUST be called with interrupts inhibited."
 		       (CATCH-ERROR (TV:WHO-LINE-UPDATE) NIL))
 		  (SETQ NEXT-WHO-TIME 60.)))))
 
-    (DO ((PROCS ACTIVE-PROCESSES (CDR PROCS))
-	 (APE))
-	(NIL)
-      ;; If no runnable process found, do idle stuff
-      (COND ((NULL (FIRST (SETQ APE (CAR PROCS))))
-	     (SETQ CURRENT-PRIORITY -1_20.)
-	     (OR INHIBIT-IDLE-SCAVENGING-FLAG
-		 (%GC-SCAVENGE GC-IDLE-SCAVENGE-QUANTUM))
+    (DO-NAMED FOUND-PROCESS
+	      ((PROCS ACTIVE-PROCESSES)
+	       (THIS-PROCESS-WANTS-TO-RUN-BUTS-ITS-QUANTUM-HAS-EXPIRED)
+	       (FIRST-OF-THIS-PRIORITY)
+	       (CURRENT-PRIORITY))
+	      ((NULL (FIRST (CAR PROCS))))
+      ;; Loop over all process of the current priority
+      (SETQ CURRENT-PRIORITY (FOURTH (CAR PROCS))
+	    FIRST-OF-THIS-PRIORITY PROCS)
+      (DO (APE PRI PROC) (())
+	(SETQ APE (CAR PROCS))
+	(AND (OR (NULL (SETQ PROC (FIRST APE))) ( (SETQ PRI (FOURTH APE)) CURRENT-PRIORITY))
+	     ;; Hit next priority level, or ran out of processes
 	     (RETURN))
-	    ;; Consider all processes of higher priority than current one.
-	    ((> (FOURTH APE) CURRENT-PRIORITY)
-	     (AND (LET ((CURRENT-PROCESS (FIRST APE)))
-		    (APPLY (SECOND APE) (THIRD APE)))
-		  (RETURN (SETQ NEXT-PROCESS (FIRST APE)))))
-	    ;; Skip all processes of same priority earlier in the list than
-	    ;; the current one, so that we have round-robin.
-	    ((EQ (FIRST APE) CURRENT-PROCESS)
-	     (AND (PLUSP REMAINING-QUANTUM)
-		  (APPLY (SECOND APE) (THIRD APE))
-		  (RETURN (SETQ NEXT-PROCESS CURRENT-PROCESS)))
-	     (SETF (PROCESS-QUANTUM-REMAINING CURRENT-PROCESS) -1)
-	     (SETQ CURRENT-PRIORITY -1_20.))))	;Any process acceptable now.
+	(AND (COND ((LET ((CURRENT-PROCESS PROC))
+		      (APPLY (SECOND APE) (THIRD APE)))
+		    (SETQ THIS-PROCESS-WANTS-TO-RUN-BUTS-ITS-QUANTUM-HAS-EXPIRED PROC)
+		    T))
+	     (PLUSP (PROCESS-QUANTUM-REMAINING PROC))
+	     ;; It is runnable, and it has time remaining
+	     (RETURN-FROM FOUND-PROCESS (SETQ NEXT-PROCESS PROC)))
+	(SETQ PROCS (CDR PROCS)))
+      ;; Ran out of all processes at current priority level.  Reset their quantums.
+      (DO ((PS FIRST-OF-THIS-PRIORITY (CDR PS)))
+	  ((EQ PS PROCS))
+	(SETF (PROCESS-QUANTUM-REMAINING (FIRST (CAR PS)))
+	      (PROCESS-QUANTUM (FIRST (CAR PS)))))
+      ;; If a process would have run at this priority level, but couldn't becase
+      (AND THIS-PROCESS-WANTS-TO-RUN-BUTS-ITS-QUANTUM-HAS-EXPIRED
+	   (RETURN-FROM FOUND-PROCESS
+	     (SETQ NEXT-PROCESS THIS-PROCESS-WANTS-TO-RUN-BUTS-ITS-QUANTUM-HAS-EXPIRED))))
+
+    (COND ((NULL NEXT-PROCESS)
+	   ;; No process to run, do idle time stuff
+	   (OR INHIBIT-IDLE-SCAVENGING-FLAG
+	       (%GC-SCAVENGE GC-IDLE-SCAVENGE-QUANTUM))))
 
     (COND (NEXT-PROCESS
-	   ;; If old quantum used up, give some more
-	   (OR (PLUSP (PROCESS-QUANTUM-REMAINING NEXT-PROCESS))
-	       (SETF (PROCESS-QUANTUM-REMAINING NEXT-PROCESS) (PROCESS-QUANTUM NEXT-PROCESS)))
-	   (SETQ CURRENT-PRIORITY (PROCESS-PRIORITY NEXT-PROCESS))
 	   (SETF (PROCESS-WHOSTATE NEXT-PROCESS) "RUN")
 	   (SET-PROCESS-WAIT NEXT-PROCESS #'TRUE NIL)
 	   (%XBUS-WRITE TV:WHO-LINE-RUN-LIGHT-LOC 37777777)
