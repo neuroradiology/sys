@@ -345,6 +345,8 @@
 		 ;; In case we abort before we are done, don't forget what's needed.
 		 (SETF (WINDOW-REDISPLAY-DEGREE WINDOW) DIS-TEXT)
 		 (SETF (WINDOW-LAST-BP-DISPLAYED-P WINDOW) NIL)
+		 (DO L (WINDOW-SPECIAL-BLINKER-LIST WINDOW) (CDR L) (NULL L)
+		   (TV:BLINKER-SET-VISIBILITY (CDAR L) NIL))
 		 ;; Abort now if input available
 		 (AND (NOT FORCE-TO-COMPLETION-P)
 		      (FUNCALL STANDARD-INPUT ':LISTEN)
