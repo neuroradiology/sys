@@ -178,6 +178,10 @@
 ;Counter for breakoff functions
 (DEFVAR BREAKOFF-COUNT)
 
+;Lock so compiler doesn't lose entering itself recursively.
+;This lock is set by COMPILER-WARNINGS-CONTEXT-BIND....
+(DEFVAR COMPILER-PROCESS-LOCK NIL)
+
 ;If non-null, this is the name of an editor buffer in which warnings are saved
 (DEFVAR COMPILER-WARNINGS-BUFFER "Compiler Warnings")
 ;Switch to enable saving of all warnings.  Default is to flush buffer
@@ -206,11 +210,16 @@
 		(FUNCTIONS-REFERENCED NIL)
 		(FUNCTIONS-DEFINED NIL)
 		(BARF-SPECIAL-LIST NIL))
-	  (AND ,TOP-LEVEL-P-VAR
-	       (ENTER-COMPILER-WARNINGS-CONTEXT))
-	  (PROG1 (PROGN . ,BODY)
-		 (AND ,TOP-LEVEL-P-VAR
-		      (PRINT-FUNCTIONS-REFERENCED-BUT-NOT-DEFINED)))))))
+	 (UNWIND-PROTECT
+	   (PROG2 (COND (,TOP-LEVEL-P-VAR
+			 (ENTER-COMPILER-WARNINGS-CONTEXT)
+			 (PROCESS-LOCK (LOCF COMPILER-PROCESS-LOCK) NIL "Compiler")))
+		  (PROGN . ,BODY)
+		  (COND (,TOP-LEVEL-P-VAR
+			 (PRINT-FUNCTIONS-REFERENCED-BUT-NOT-DEFINED))))
+	   (COND (,TOP-LEVEL-P-VAR
+		  ;; Don't bomb if user aborts due to lock.
+		  (PROCESS-UNLOCK (LOCF COMPILER-PROCESS-LOCK) NIL NIL))))))))
 
   )
 

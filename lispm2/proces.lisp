@@ -431,9 +431,12 @@ function MUST be called with interrupts inhibited."
 		  LOCATIVE-POINTER)))
 
 ;; Unlock the given lock.  The unlocker must be the same as the locker.
-(DEFUN PROCESS-UNLOCK (LOCATIVE-POINTER &OPTIONAL (LOCK-VALUE CURRENT-PROCESS))
+(DEFUN PROCESS-UNLOCK (LOCATIVE-POINTER &OPTIONAL LOCK-VALUE (ERROR-P T))
+  (OR LOCK-VALUE (SETQ LOCK-VALUE CURRENT-PROCESS))
   (OR (%STORE-CONDITIONAL LOCATIVE-POINTER LOCK-VALUE NIL)
-      (FERROR NIL "Attempt to unlock ~S, which you don't have locked" LOCATIVE-POINTER)))
+      (AND ERROR-P
+	   (FERROR NIL "Attempt to unlock ~S, which you don't have locked"
+		   LOCATIVE-POINTER))))
 
 ;;; The scheduler
 
