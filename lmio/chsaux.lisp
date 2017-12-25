@@ -1667,3 +1667,13 @@
 ;;; By default, lisp machines do not have any file computer flavor.
 ;;; This is added later.
 (SI:COMPILE-HOST-FLAVOR-COMBINATION :LISPM :CHAOS)
+
+;;; File system access ---
+
+(SI:DEFINE-SITE-VARIABLE *TRUSTED-SUBNETS* :TRUSTED-CHAOS-SUBNETS)
+
+(DEFUN HOST-TRUSTED-P (HOST) 
+  (LET ((SUBNET (LDB #O0808 HOST)))
+    (OR (= SUBNET MY-SUBNET)
+	(MEMQ SUBNET *TRUSTED-SUBNETS*))))
+
