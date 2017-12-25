@@ -892,6 +892,8 @@
 ;;;    if NIL, anything after a :ELSE in the list.
 ;;;  eg ("FOOMACS" "(" MODE-NAME ")" (BUFFER-NAMED-P BUFFER-NAME :ELSE "(Null buffer)")
 ;;;      (FILE-NAME-P FILE-NAME))
+;;;  a list starting with the symbol :RIGHT-FLUSH is special:
+;;;    the cadr of the list is a string to be displayed flush against the right margin.
 ;;; As a special hack, if MODE-LINE-LIST is NIL, then the mode line is not changed,
 ;;;  this is appropriate for things that want to typeout on the prompt-line and then
 ;;;  invoke the mini-buffer.
@@ -919,15 +921,16 @@
 		    (SETQ THING (SYMEVAL THING))
 		    (AND (LISTP THING)		;If value is a list, dont check CAR
 			 (SETQ L THING THING NIL)))
-		   ((LISTP THING)		;It's a list,
+		   ((AND (LISTP THING)		;It's a list,
+			 (NEQ (CAR THING) ':RIGHT-FLUSH))
 		    (SETQ L THING)
-		    (POP L THING)		;check its CAR
+		    (POP L THING)
 		    (COND ((NULL (SYMEVAL THING))
 			   (DO ()		;Failing conditional, look for :ELSE
 			       ((NULL L))
-			       (POP L THING)
-			       (AND (EQ THING ':ELSE)
-				    (RETURN NIL)))))
+			     (POP L THING)
+			     (AND (EQ THING ':ELSE)
+				  (RETURN NIL)))))
 		    (SETQ THING NIL)))))	;And get stuff next pass
       (AND (SYMBOLP THING) (SETQ THING (SYMEVAL THING)))
       (COND ((NULL THING))
@@ -945,7 +948,18 @@
 		(TV:SHEET-CLEAR-EOL SELF)
 		(*CATCH 'MODE-LINE-OVERFLOW
 		  (DOLIST (STR PREVIOUS-MODE-LINE)
-		    (FUNCALL-SELF ':STRING-OUT STR))))))))
+		    (AND (STRINGP STR) (FUNCALL-SELF ':STRING-OUT STR))))
+		(DOLIST (ELT PREVIOUS-MODE-LINE)
+		  (AND (LISTP ELT)
+		       (LET* ((STR (CADR ELT))
+			      (LEN (TV:SHEET-STRING-LENGTH SELF STR)))
+			 (TV:SHEET-SET-CURSORPOS SELF
+						 (- (TV:SHEET-INSIDE-RIGHT SELF) LEN 1)
+						 (TV:SHEET-INSIDE-TOP SELF))
+			 (TV:SHEET-CLEAR-EOL SELF)
+			 (*CATCH 'MODE-LINE-OVERFLOW
+			   (FUNCALL-SELF ':STRING-OUT STR))
+			 (RETURN)))))))))
 
 (DEFMETHOD (MODE-LINE-WINDOW-MIXIN :BEFORE :END-OF-LINE-EXCEPTION) ()
   (OR (ZEROP (TV:SHEET-TRUNCATE-LINE-OUT-FLAG))
