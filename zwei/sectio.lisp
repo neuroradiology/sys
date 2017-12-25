@@ -684,6 +684,7 @@ The name of the function is read from the mini-buffer." ()
 		    (COND ((SYMBOLP FL)		;T or NIL
 			   (AND (EQ TYPE ':MAYBE-METHOD)
 				(= (LENGTH SPEC) 2)
+				(SYMBOLP (CAR SPEC)) (SYMBOLP (CADR SPEC))
 				(SETQ SYM (CONS ':PROPERTY SPEC))))
 			  ((SI:FLAVOR-METHOD-EXISTS FL MTYPE MESSAGE)
 			   (SETQ SYM (CONS ':METHOD SPEC)))
@@ -702,11 +703,14 @@ The name of the function is read from the mini-buffer." ()
 			(SYMBOL-FROM-STRING (CAR SYM)))))
 		 ((:PROPERTY :INTERNAL)
 		  (AND (= (LENGTH SPEC) 2)
+		       (SYMBOLP (CAR SPEC)) (SYMBOLP (CADR SPEC))
 		       (SETQ SYM (CONS TYPE SPEC)))))
 	       ;; Something we don't understand, make a bogus symbol to use as a property
 	       ;; list to remember the location of this definition
 	       (SETQ SYM (INTERN STR *UTILITY-PACKAGE*))))
-	 (VALUES SYM STR))))
+	 (IF (NOT (SYS:VALIDATE-FUNCTION-SPEC SYM))
+	     (VALUES NIL NIL T)
+	     (VALUES SYM STR)))))
 
 ;Convert SPEC to a string the way it is likely to be spelled in the source file
 ;i.e. so that it will match what GET-DEFUN-NAME will return.
