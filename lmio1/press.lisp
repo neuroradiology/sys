@@ -592,7 +592,7 @@
 	 (PRESS-SET-CURSOR X0 Y0)
 	 (PRESS-ENTITY-BYTE 201)
 	 (PRESS-ENTITY-WORD X1)
-	 (PRESS-ENTITY-WORD Y1))	 
+	 (PRESS-ENTITY-WORD Y1))
 	((= X0 X1)				;Vertical line
 	 (PRESS-SET-CURSOR (- X0 (// LINE-WIDTH 2)) (MIN Y0 Y1))	;Lower left corner
 	 (PRESS-SHOW-RECT LINE-WIDTH DY))
@@ -617,28 +617,36 @@
 		  (< (AREF NEWVEC-SLOPE-TABLE CH2) SLOPE))
 	      (DO ((X X0 (+ X XINC))
 		   (Y Y0 (+ Y YINC))
-		   (CH) (XINC) (YINC) (STOP NIL)
+		   (CH) (XINC) (YINC) (STOP NIL) (RUN)
 		   (CDX1 (AREF NEWVEC-DX-TABLE CH1))
 		   (CDY1 (AREF NEWVEC-DY-TABLE CH1))
 		   (CDX2 (AREF NEWVEC-DX-TABLE CH2))
-		   (CDY2 (AREF NEWVEC-DY-TABLE CH2)))
-		  ((OR ( X X1) STOP))
-		;; If Y would be below the line, use CH1 else use CH2
-		(IF (< (// (SMALL-FLOAT (- (+ Y CDY2) Y0)) (- (+ X CDX2) X0)) SLOPE)
+		   (CDY2 (AREF NEWVEC-DY-TABLE CH2))
+		   (LENGTH (+ (ABS (- X1 X0)) (ABS (- Y1 Y0)))))
+		  (STOP)
+		;; If Y would be below the line, use CH1 else use CH2.
+		;; Watch out for zero divide possibility.
+		(IF (OR (= (SETQ RUN (- (+ X CDX2) X0)) 0)
+			(< (// (SMALL-FLOAT (- (+ Y CDY2) Y0)) RUN) SLOPE))
 		    (SETQ CH CH1 XINC CDX1 YINC CDY1)
-		    (SETQ CH CH2 XINC CDX2 YINC CDY2))
+		  (SETQ CH CH2 XINC CDX2 YINC CDY2))
 		;; If getting too close to the endpoint, use a shorter line
 		(DO ((STRTL '(0 120 170 214 226) (CDR STRTL))
 		     (I CH)
 		     (D 2 (* D 2)))
-		    ((OR ( (+ X XINC) X1) (SETQ STOP (NULL (CDR STRTL)))))
+		    ;; This test minimizes distance to endpoint by taxi cab
+		    ;; metric without overshooting.
+		    ((OR ( (+ (ABS (- (+ Y YINC) Y0)) (ABS (- (+ X XINC) X0)))
+			    LENGTH)
+			 (SETQ STOP (NULL (CDR STRTL)))))
 		  (SETQ CH (+ (// (- CH (CAR STRTL)) 2) (CADR STRTL))
-			I (* (// I 2) 2)
+			I (* (// I D) D)
 			XINC (// (AREF NEWVEC-DX-TABLE I) D)
 			YINC (// (AREF NEWVEC-DY-TABLE I) D)))
-		(FUNCALL PRESS-EFTP-STREAM ':TYO CH)
-		(SETQ PRESS-N-CHARS (1+ PRESS-N-CHARS))
-		(SETQ PRESS-PENDING-CHARS (1+ PRESS-PENDING-CHARS))))))))
+		(COND ((NOT STOP)
+		       (FUNCALL PRESS-EFTP-STREAM ':TYO CH)
+		       (SETQ PRESS-N-CHARS (1+ PRESS-N-CHARS))
+		       (SETQ PRESS-PENDING-CHARS (1+ PRESS-PENDING-CHARS))))))))))
 
 ;Subroutine for the above
 (DEFUN PRESS-SHOW-RECT (WIDTH HEIGHT)
