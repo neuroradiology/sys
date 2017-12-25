@@ -387,7 +387,7 @@ down a line first (killing the end of the current line)." ()
 			     (BP-LINE BP)
 			     (MIN (BP-INDEX BP) (BP-INDEX POINT))))
 	    (T (MUST-REDISPLAY *WINDOW* DIS-TEXT)))
-      (DELETE-INTERVAL BP POINT)))
+      (FUNCALL (IF *NUMERIC-ARG-P* #'KILL-INTERVAL #'DELETE-INTERVAL) BP POINT)))
   DIS-NONE)
 
 (DEFCOM COM-RUBOUT "Delete one or more characters backward." ()
@@ -399,7 +399,7 @@ down a line first (killing the end of the current line)." ()
 			     (BP-LINE BP)
 			     (MIN (BP-INDEX BP) (BP-INDEX POINT))))
 	    (T (MUST-REDISPLAY *WINDOW* DIS-TEXT)))
-      (DELETE-INTERVAL BP POINT)))
+      (FUNCALL (IF *NUMERIC-ARG-P* #'KILL-INTERVAL #'DELETE-INTERVAL) BP POINT)))
   DIS-NONE)
 
 (DEFCOM COM-KILL-LINE "Kill to end of line, or kill an end of line.

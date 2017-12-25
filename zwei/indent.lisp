@@ -140,7 +140,7 @@ A numeric argument is a repeat count." ()
 	 (MUST-REDISPLAY *WINDOW* DIS-LINE (BP-LINE POINT)
 			 (MIN (BP-INDEX POINT) (BP-INDEX BP))))
 	(T (MUST-REDISPLAY *WINDOW* DIS-TEXT)))
-  (DELETE-INTERVAL POINT BP)
+  (FUNCALL (IF *NUMERIC-ARG-P* #'KILL-INTERVAL #'DELETE-INTERVAL) POINT BP)
   DIS-NONE)
 
 ;; Convert a tab to spaces preserving the font.
