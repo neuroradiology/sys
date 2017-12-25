@@ -659,11 +659,9 @@ The name of the function is read from the mini-buffer." ()
 		  (AND (BOUNDP (CAR SPEC))
 		       (SETQ SYM (FUNCALL (CLASS (SYMEVAL (CAR SPEC)))
 					  ':METHOD-FOR (CADR SPEC)))))
-		 ;; This would be a nice idea, but you cannot record any information on
-		 ;; a :METHOD that isn't a method yet, such as the 'ZMACS-BUFFERS property.
-;		 (:ALWAYS-METHOD
-;		  (SETQ SYM (CONS ':METHOD SPEC)))
-		 ((:METHOD :HANDLER :MAYBE-METHOD :ALWAYS-METHOD)
+		 (:ALWAYS-METHOD
+		  (SETQ SYM (CONS ':METHOD SPEC)))
+		 ((:METHOD :HANDLER :MAYBE-METHOD)
 		  (LET ((FLAVOR (CAR SPEC))
 			(MTYPE (IF (CDDR SPEC) (CADR SPEC)))
 			(MESSAGE (IF (CDDR SPEC) (CADDR SPEC) (CADR SPEC)))
