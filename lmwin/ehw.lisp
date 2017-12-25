@@ -344,7 +344,7 @@
 
 ;;;Entry from the other error handler
 (DEFUN COM-WINDOW-ERROR-HANDLER (SG ETE)
-  (FORMAT T "Window error handler!~%")
+  (FORMAT T "~&Window error handler!~%")
   (WINDOW-COMMAND-LOOP SG ETE))
 
 (COMPILE-FLAVOR-METHODS ERROR-HANDLER-FRAME ERROR-HANDLER-LISP-LISTENER-PANE

@@ -577,11 +577,13 @@ the name of a command, and remaining elements are parameters."
 	   (SETQ BITS (LDB %%KBD-CONTROL-META ARG))
 	   (IF (NOT (ZEROP BITS))
 	       ;; For efficiency, don't send :string-out message just for null string.
-	       (FUNCALL STANDARD-OUTPUT ':STRING-OUT (NTH BITS
-							  '("" "" "" ""
-							    "" "" "" ""
-							    "" "" "" ""
-							    "" "" "" ""))))
+	       (FUNCALL STANDARD-OUTPUT
+			':STRING-OUT
+			(NTH BITS
+			     '("" "C-" "M-" "C-M-"
+			       "S-" "C-S-" "M-S-" "C-M-S-"
+			       "H-" "C-H-" "M-H-" "C-M-H-"
+			       "S-H-" "C-S-H-" "M-S-H-" "C-M-S-H-"))))
 	   (COND ((AND ATSIGN-FLAG
 		       (SETQ CHNAME (FORMAT-GET-CHARACTER-NAME (LDB %%KBD-CHAR ARG))))
 		  (FUNCALL STANDARD-OUTPUT ':TYO #/\)
