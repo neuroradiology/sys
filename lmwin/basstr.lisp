@@ -437,6 +437,8 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 		"Clear and redisplay all windows (Page = Clear Screen)")
 	(#/A KBD-ESC-ARREST
 	     "Arrest process in who-line (minus means unarrest)" :KEYBOARD-PROCESS)
+	(#/B KBD-BURY
+	     "Bury the selected window" :TYPEAHEAD)
 	(#/C KBD-COMPLEMENT
 	     '("Complement video black-on-white state"
 	       "With an argument, complement the who-line documentation window")
@@ -537,6 +539,12 @@ is interrogated.  If there is no selected window, or the window has no buffer, r
 	 (DOLIST (R (FUNCALL P ':ARREST-REASONS))
 	   (FUNCALL P ':REVOKE-ARREST-REASON R)))
 	(T (FUNCALL P ':ARREST-REASON ':USER))))
+
+(DEFUN KBD-BURY (ARG) ;esc B
+  ARG ;unused for now
+  (COND (SELECTED-WINDOW
+	 (FUNCALL (FUNCALL SELECTED-WINDOW ':ALIAS-FOR-SELECTED-WINDOWS) ':BURY)))
+  (SETQ KBD-ESC-TIME NIL))
 
 (DEFUN KBD-OTHER-EXPOSED-WINDOW (IGNORE)
   ;; ESC O selects the least recently-selected window that is exposed.
