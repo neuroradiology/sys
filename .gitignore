@@ -1,3 +1,8 @@
 *.qfasl
 *.qfasl~
 !lmfonts/*.qfasl
+
+*.locs
+*.mcr
+*.sym
+*.tbl
