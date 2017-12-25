@@ -747,3 +747,8 @@ you'll be doing screen management on the same stuff right away."
 	 (PROCESS-WAIT "Grab Mouse" #'(LAMBDA (WOM) (AND (NULL MOUSE-RECONSIDER)
 							 (EQ MOUSE-WINDOW WOM)))
 		       WOM))))
+
+;; Server structure used by WHOLIN and PEEK
+
+(DEFSTRUCT (SERVER-DESC :CONC-NAME (:TYPE :LIST))
+  CONNECTION HOST-NAME CONTACT-NAME PROCESS FUNCTION ARGS)
