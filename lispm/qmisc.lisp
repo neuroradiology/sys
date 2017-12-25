@@ -1283,39 +1283,21 @@ If the argument is negative, it is expanded into a bignum."
 		 FORM))))
 
 ;;; Site stuff
-(DEFVAR SITE-NAME)				;Setup by the cold load generator
-(DEFVAR SITE-OPTION-ALIST NIL)
-
-;;; This function is used to change the site in an already build world load.
-;;; NEW-SITE is the site keyword, such as :MIT.
-;;; SYS-HOST is the host that should be used as SYS: for loading the new site declaration.
-;;; SYS-DIRECTORY is the directory to be used to getting the SITE file if this system
-;;; doesn't follow the same directory naming convention as the original.
-;;; HOST-TABLE-BOOTSTRAP is a filename to be loaded.  This is necessary either
-;;; if SYS: is to point at a host not currently in the host table, or if there
-;;; are file server hosts which are not SYS:.
-(DEFUN SET-SITE (NEW-SITE &OPTIONAL SYS-HOST SYS-DIRECTORY HOST-TABLE-BOOTSTRAP)
-  (SETQ STATUS-FEATURE-LIST (CONS NEW-SITE (DELQ SITE-NAME STATUS-FEATURE-LIST)))
-  (SETQ SITE-NAME NEW-SITE)
-  (AND HOST-TABLE-BOOTSTRAP (LOAD HOST-TABLE-BOOTSTRAP))
-  (COND (SYS-HOST
-	 (FS:CHANGE-LOGICAL-PATHNAME-HOST "SYS" SYS-HOST)
-	 (SETQ SYS-HOST (FS:GET-PATHNAME-HOST SYS-HOST)))
-	(T
-	 (LET ((SYS-LOGICAL-HOST (FS:GET-PATHNAME-HOST "SYS")))
-	   (AND SYS-LOGICAL-HOST (SETQ SYS-HOST (FUNCALL SYS-LOGICAL-HOST ':HOST))))))
-  (AND SYS-HOST (FUNCALL SYS-HOST ':SET-SITE NEW-SITE))
-  (AND SYS-DIRECTORY (FS:CHANGE-LOGICAL-PATHNAME-DIRECTORY "SYS" "SYS" SYS-DIRECTORY))
+(DEFUN UPDATE-SITE-CONFIGURATION-INFO ()
   (MAYBE-MINI-LOAD-FILE-ALIST SITE-FILE-ALIST)
   (INITIALIZATIONS 'SITE-INITIALIZATION-LIST T))
+
+(DEFVAR SITE-NAME)				;Setup by the cold load generator
+(DEFVAR SITE-OPTION-ALIST NIL)
 
 (DEFMACRO DEFSITE (SITE &BODY OPTIONS)
   `(DEFSITE-1 ',SITE ',OPTIONS))
 
-(DEFUN DEFSITE-1 (SITE OPTIONS)
-  (AND (EQ SITE SITE-NAME)
-       (SETQ SITE-OPTION-ALIST (LOOP FOR (KEY EXP) IN OPTIONS
-				     COLLECT `(,KEY . ,(EVAL EXP))))))
+(DEFUN DEFSITE-1 (NEW-SITE OPTIONS)
+  (SETQ STATUS-FEATURE-LIST (CONS NEW-SITE (DELQ SITE-NAME STATUS-FEATURE-LIST)))
+  (SETQ SITE-NAME NEW-SITE)
+  (SETQ SITE-OPTION-ALIST (LOOP FOR (KEY EXP) IN OPTIONS
+				COLLECT `(,KEY . ,(EVAL EXP)))))
 
 (DEFUN GET-SITE-OPTION (KEY)
   (CDR (ASSQ KEY SITE-OPTION-ALIST)))
@@ -1333,6 +1315,31 @@ If the argument is negative, it is expanded into a bignum."
      (ADD-INITIALIZATION ,(FORMAT NIL "SITE:~A" VAR)
 			 `(SETQ ,',VAR (MAPCAR 'PARSE-HOST (GET-SITE-OPTION ',',KEY)))
 			 '(SITE))))
+
+;;; Set by major local network
+;;; A function called with a host (string or host-object), a system-type and a local net
+;;; address.
+(DEFVAR NEW-HOST-VALIDATION-FUNCTION)
+
+(DEFUN SET-SYS-HOST (HOST-NAME &OPTIONAL OPERATING-SYSTEM-TYPE HOST-ADDRESS
+					 SITE-FILE-DIRECTORY
+			       &AUX HOST-OBJECT)
+  (CHECK-ARG HOST-NAME (OR (STRINGP HOST-NAME) (TYPEP HOST-NAME 'HOST)) "a host name")
+  (CHECK-ARG OPERATING-SYSTEM-TYPE (OR (NULL OPERATING-SYSTEM-TYPE)
+				       (GET OPERATING-SYSTEM-TYPE 'SYSTEM-TYPE-FLAVOR))
+	     "an operating system type")
+  (AND (SETQ HOST-OBJECT (OR (FS:GET-PATHNAME-HOST HOST-NAME)
+			     (SI:PARSE-HOST HOST-NAME T T)))
+       OPERATING-SYSTEM-TYPE
+       (NEQ OPERATING-SYSTEM-TYPE (FUNCALL HOST-OBJECT ':SYSTEM-TYPE))
+       (FERROR NIL "~A is ~A, not ~A" HOST-OBJECT
+	       (FUNCALL HOST-OBJECT ':SYSTEM-TYPE) OPERATING-SYSTEM-TYPE))
+  (SETQ HOST-OBJECT (FUNCALL NEW-HOST-VALIDATION-FUNCTION (OR HOST-OBJECT HOST-NAME)
+			     OPERATING-SYSTEM-TYPE HOST-ADDRESS))
+  (FS:CHANGE-LOGICAL-PATHNAME-HOST "SYS" HOST-OBJECT)
+  (AND SITE-FILE-DIRECTORY
+       (FS:CHANGE-LOGICAL-PATHNAME-DIRECTORY "SYS" "SITE" SITE-FILE-DIRECTORY))
+  T)
 
 ;;; This NORMAL is so that it doesn't happen right away before enough is loaded to work.
 (ADD-INITIALIZATION "HOST-TABLE-INITIALIZATION"
