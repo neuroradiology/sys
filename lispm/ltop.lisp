@@ -577,7 +577,7 @@
 	 ;; FS:MAKE-FASLOAD-PATHNAME until it does.
 	 (LET ()
 	      (BIND (FUNCTION-CELL-LOCATION 'FS:MAKE-FASLOAD-PATHNAME) #'LIST)
-	   (SET-SITE SITE-NAME)			;Declare site setup by the cold-load generator
+	   (UPDATE-SITE-CONFIGURATION-INFO)	;Setup site dependent stuff
 	   ;; Now load the network specific code.
 	   (AND (GET-SITE-OPTION ':CHAOS)
 		(MINI-LOAD-FILE-ALIST CHAOS-FILE-ALIST))
