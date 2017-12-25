@@ -597,7 +597,7 @@
 					      ,TEM))))))
 	 (IF (NULL ,BIND-VARS)
 	     RESULT
-	     `((LAMBDA ,,BIND-VARS ,RESULT) . ,,BIND-VALS))))))
+	     `((LAMBDA ,,(NREVERSE BIND-VARS) ,RESULT) . ,,(NREVERSE BIND-VALS)))))))
 
 ;Bind NAME-TO-BIND to a cleanup-list,
 ;and on exit do any cleanup-actions stored in the list.
