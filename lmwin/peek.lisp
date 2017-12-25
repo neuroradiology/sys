@@ -155,7 +155,9 @@ status information."
 (DEFUN PEEK-PROCESSES (IGNORE)
   "Shows state of all active processes."
   (LIST ()
-	(SCROLL-PARSE-ITEM (FORMAT NIL "~30A~A" "Process Name" "State"))
+	(SCROLL-PARSE-ITEM (FORMAT NIL "~30A~25A~10A~9A~14A"
+				   "Process Name" "State" "Priority"
+				   "Quantum" "Quantum Left"))
 	(SCROLL-PARSE-ITEM "")
 	(SCROLL-MAINTAIN-LIST #'(LAMBDA () ALL-PROCESSES)
 			      #'(LAMBDA (PROCESS)
@@ -165,8 +167,10 @@ status information."
 					    :DOCUMENTATION
 					    "Menu of useful things to do to this process.")
 				       :STRING ,(PROCESS-NAME PROCESS) 30.)
-				    `(:FUNCTION ,#'PEEK-WHOSTATE
-						,(NCONS PROCESS))))
+				    `(:FUNCTION ,#'PEEK-WHOSTATE ,(NCONS PROCESS) 25.)
+				    `(:FUNCTION ,PROCESS (:PRIORITY) 10. ("~D."))
+				    `(:FUNCTION ,PROCESS (:QUANTUM) 9. ("~D."))
+				    `(:FUNCTION ,PROCESS (:QUANTUM-REMAINING) 14. ("~D."))))
 			      NIL
 			      #'(LAMBDA (STATE)
 				  (PROG ()
