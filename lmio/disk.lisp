@@ -320,14 +320,7 @@
   (DISK-RUN RQB UNIT ADDRESS SECTORS-PER-TRACK HEADS-PER-CYLINDER
 	    (LOGIOR %DISK-COMMAND-READ
 		    (IF MICROCODE-ERROR-RECOVERY %DISK-COMMAND-DONE-INTERRUPT-ENABLE 0))
-	    "read")
-  (LET ((BFR (ARRAY-LEADER RQB %DISK-RQ-LEADER-BUFFER)))
-    (COND ((AND (ZEROP ADDRESS)
-		(= (AREF BFR 0) (+ (LSH #/A 8) #/L))
-		(= (AREF BFR 1) (+ (LSH #/L 8) #/B)))
-	   (ASET (AREF BFR 6) DISK-HEADS-PER-CYLINDER-ARRAY UNIT)
-	   (ASET (AREF BFR 10) DISK-SECTORS-PER-TRACK-ARRAY UNIT))))
-  NIL)
+	    "read"))
 
 (DEFUN DISK-WRITE-WIRED (RQB UNIT ADDRESS
 		   &OPTIONAL (MICROCODE-ERROR-RECOVERY LET-MICROCODE-HANDLE-DISK-ERRORS)
@@ -782,8 +775,17 @@
 
 ;;; These are internal
 
+;Read the label from specified unit into an RQB, and set up the
+;disk configuration table if it is a local unit.
 (DEFUN READ-DISK-LABEL (RQB UNIT)
-  (DISK-READ RQB UNIT 0))
+  (DISK-READ RQB UNIT 0)
+  (IF (NUMBERP UNIT)
+      (LET ((BFR (RQB-BUFFER RQB)))
+	(COND ((AND (= (AREF BFR 0) (+ (LSH #/A 8) #/L))
+		    (= (AREF BFR 1) (+ (LSH #/L 8) #/B))
+		    (= (AREF BFR 2) 1))
+	       (ASET (AREF BFR 6) DISK-HEADS-PER-CYLINDER-ARRAY UNIT)
+	       (ASET (AREF BFR 10) DISK-SECTORS-PER-TRACK-ARRAY UNIT))))))
 
 (DEFUN WRITE-DISK-LABEL (RQB UNIT)
   (OR (STRING-EQUAL (GET-DISK-STRING RQB 0 4) "LABL")
@@ -1606,10 +1608,7 @@
 	       (COND ((PLUSP CCWX)	;We have something to do, run the I/O op
 		      (ASET (LOGAND (AREF PAGE-RQB (- CCWP 2)) -2) ;Turn off chain bit
 			    PAGE-RQB (- CCWP 2))
-		      (DISK-RUN PAGE-RQB 0 (+ (LSH BASE-ADDR -8) PAGE-OFFSET)
-				(AREF DISK-SECTORS-PER-TRACK-ARRAY 0)
-				(AREF DISK-HEADS-PER-CYLINDER-ARRAY 0)
-				%DISK-COMMAND-WRITE "write")
+		      (DISK-WRITE-WIRED PAGE-RQB 0 (+ (LSH BASE-ADDR -8) PAGE-OFFSET))
 		      ;Make these pages not modified, flushable, and not wired
 		      (DO ((I 0 (1+ I))
 			   (ADDRESS BASE-ADDR (%24-BIT-PLUS ADDRESS PAGE-SIZE)))
@@ -1663,10 +1662,7 @@
 	       (COND ((PLUSP CCWX)	;We have something to do, run the I/O op
 		      (ASET (LOGAND (AREF PAGE-RQB (- CCWP 2)) -2) ;Turn off chain bit
 			    PAGE-RQB (- CCWP 2))
-		      (DISK-RUN PAGE-RQB 0 (+ (LSH BASE-ADDR -8) PAGE-OFFSET)
-				(AREF DISK-SECTORS-PER-TRACK-ARRAY 0)
-				(AREF DISK-HEADS-PER-CYLINDER-ARRAY 0)
-				%DISK-COMMAND-READ "read")
+		      (DISK-READ-WIRED PAGE-RQB 0 (+ (LSH BASE-ADDR -8) PAGE-OFFSET))
 		      ;Make these pages in
 		      (DO ((I 0 (1+ I))
 			   (CCWP %DISK-RQ-CCW-LIST (+ 2 CCWP))

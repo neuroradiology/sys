@@ -316,6 +316,18 @@
 ; defining any necessary functions.  This function interprets combination-type-arg,
 ; which for many combination-types is either :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST.
 
+;This is an a-list from method type to function to write the code to go
+;in the combined method.  Users can add to this.
+(DEFVAR *SPECIALLY-COMBINED-METHOD-TYPES*
+	'((:WRAPPER PUT-WRAPPER-INTO-COMBINED-METHOD)))
+
+;This associates from function-specs to METHs for methods that exist,
+;because they have been putprop'ed or because someone has a pointer to
+;their function cell, but which are not known by the flavor system, i.e.
+;are not to be called when a message is sent.
+(DEFVAR *UNDEFINED-METHOD-HASH-TABLE*
+	(MAKE-EQUAL-HASH-TABLE))
+
 ;Definitions of a meth (the datum which stands for a method)
 
 (DEFSTRUCT (METH :LIST :CONC-NAME (:CONSTRUCTOR NIL))
@@ -696,10 +708,13 @@
 (DEFUN FLAVOR-NOTICE-METHOD (FUNCTION-SPEC)
   (AND (BOUNDP 'COMPILER:FUNCTIONS-DEFINED)
        (PUSH FUNCTION-SPEC COMPILER:FUNCTIONS-DEFINED))
-  (FLAVOR-METHOD-ENTRY FUNCTION-SPEC))
+  (FLAVOR-METHOD-ENTRY FUNCTION-SPEC NIL))
 
 ;Find or create a method-table entry for the specified method.
-(DEFUN FLAVOR-METHOD-ENTRY (FUNCTION-SPEC &OPTIONAL DONT-CREATE)
+;DONT-CREATE is NIL if method is to be fully known if not already.
+;		T not to create at all.
+;		HASH to create in the hash table if not known.
+(DEFUN FLAVOR-METHOD-ENTRY (FUNCTION-SPEC DONT-CREATE)
   (LET ((FLAVOR-NAME (SECOND FUNCTION-SPEC))
 	(TYPE (THIRD FUNCTION-SPEC))
 	(MESSAGE (FOURTH FUNCTION-SPEC)))
@@ -708,18 +723,28 @@
 	    (NOT (SYMBOLP FLAVOR-NAME)) (NOT (SYMBOLP TYPE)) (NOT (SYMBOLP MESSAGE)))
 	(FERROR NIL "~S is not a valid function-spec" FUNCTION-SPEC))
     (LET* ((FL (GET FLAVOR-NAME 'FLAVOR))
-	   (MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))))
-      (OR MTE DONT-CREATE
-	  ;; Message not previously known about, put into table
-	  (PUSH (SETQ MTE (LIST* MESSAGE NIL NIL NIL)) (FLAVOR-METHOD-TABLE FL)))
+	   (MTE (AND FL (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))))
+	   METH)
+      (COND ((AND (NULL MTE) (NOT DONT-CREATE))
+	     ;; Message not previously known about, put into table
+	     (AND FL
+		  (PUSH (SETQ MTE (LIST* MESSAGE NIL NIL NIL)) (FLAVOR-METHOD-TABLE FL)))))
       ;; Message known, search for the type entry
-      (OR (METH-LOOKUP TYPE (CDDDR MTE))
-	  (AND (NOT DONT-CREATE)
-	       ;; Type not known, create a new meth with an unbound definition cell
-	       (LET ((METH (LIST-IN-AREA PERMANENT-STORAGE-AREA FUNCTION-SPEC NIL NIL)))
-		 (NULLIFY-METHOD-DEFINITION METH)
-		 (PUSH METH (CDDDR MTE))
-		 (VALUES METH T)))))))
+      (COND ((METH-LOOKUP TYPE (CDDDR MTE)))	;Known by flavor
+	    ((SETQ METH (GETHASH-EQUAL FUNCTION-SPEC *UNDEFINED-METHOD-HASH-TABLE*))
+	     (COND ((AND (NULL DONT-CREATE) FL)	;Move from hash table to flavor
+		    (PUSH METH (CDDDR MTE))
+		    (REMHASH-EQUAL FUNCTION-SPEC *UNDEFINED-METHOD-HASH-TABLE*)))
+	     METH)
+	    ((EQ DONT-CREATE T) NIL)		;Not to be created
+	    ((AND (NOT DONT-CREATE) (NULL FL)) NIL)	;Create, but no flavor defined
+	    (T ;; Type not known, create a new meth with an unbound definition cell
+	     (LET ((METH (LIST-IN-AREA PERMANENT-STORAGE-AREA FUNCTION-SPEC NIL NIL)))
+	       (NULLIFY-METHOD-DEFINITION METH)
+	       (IF DONT-CREATE			;Put in hash table or flavor as desired
+		   (PUTHASH-EQUAL FUNCTION-SPEC METH *UNDEFINED-METHOD-HASH-TABLE*)
+		   (PUSH METH (CDDDR MTE)))
+	       METH))))))
 
 ;;; See if a certain method exists in a flavor
 (DEFUN FLAVOR-METHOD-EXISTS (FL TYPE OPERATION &AUX MTE)
@@ -743,18 +768,32 @@
 	(MESSAGE (FOURTH FUNCTION-SPEC)))
     (IF (NULL (CDDDR FUNCTION-SPEC))
 	(SETQ MESSAGE (THIRD FUNCTION-SPEC) METHOD-TYPE NIL))
-    (COND ((AND (SYMBOLP FLAVOR) (GET FLAVOR 'FLAVOR))
+    (COND ((NOT (SYMBOLP FLAVOR))
+	   (FERROR NIL "In the function spec ~S, the flavor name ~S is not a symbol."
+		       FUNCTION-SPEC FLAVOR))
+	  ((OR (GET FLAVOR 'FLAVOR) (NOT (CLASS-SYMBOLP FLAVOR)))
 	   (IF (EQ FUNCTION 'VALIDATE-FUNCTION-SPEC)
 	       (AND (SYMBOLP METHOD-TYPE) (SYMBOLP MESSAGE) ( 3 (LENGTH FUNCTION-SPEC) 4))
 	       (LET ((FL (GET FLAVOR 'FLAVOR))
 		     (METH (FLAVOR-METHOD-ENTRY FUNCTION-SPEC 
-						(NOT (MEMQ FUNCTION '(FDEFINE PUTPROP))))))
+						(SELECTQ FUNCTION
+						  (FDEFINE NIL)		;Create in flavor
+						  (PUTPROP 'HASH)	;Create in hash table
+						  (OTHERWISE T)))))	;Don't create
 		 (OR (NOT (NULL METH))
 		     (MEMQ FUNCTION '(FDEFINEDP COMPILER-FDEFINEDP GET FUNCTION-PARENT))
-		     (FERROR NIL "~S is not a defined method; it is not possible to ~S it"
-			         FUNCTION-SPEC FUNCTION))
+		     (IF FL
+			 (FERROR NIL "~S is not a defined method; it is not possible to ~S it"
+			         FUNCTION-SPEC FUNCTION)
+		         (FERROR NIL "~S is neither the name of a flavor nor the name ~
+				      of a class;~% it is not possible to ~S ~S."
+				 FLAVOR FUNCTION FUNCTION-SPEC)))
 		 (SELECTQ FUNCTION
 		   (FDEFINE
+		     (OR FL
+			 (FERROR NIL "~S is neither the name of a flavor nor the name ~
+				      of a class;~% it is not possible to ~S ~S."
+				 FLAVOR FUNCTION FUNCTION-SPEC))
 		     (LET ((NEW-DEFINITION (NOT (METH-DEFINEDP METH))))
 		       (SETF (METH-DEFINITION METH) ARG1)
 		       ;; Incrementally recompile the flavor if this is a new method, unless
@@ -768,6 +807,7 @@
 		   (FDEFINITION-LOCATION (LOCF (METH-DEFINITION METH)))
 		   (FUNDEFINE
 		     (LET ((MTE (ASSQ MESSAGE (FLAVOR-METHOD-TABLE FL))) TEM)
+		       (PUTHASH-EQUAL FUNCTION-SPEC METH *UNDEFINED-METHOD-HASH-TABLE*)
 		       (SETF (CDDDR MTE) (DELQ METH (CDDDR MTE)))	;Remove this method
 		       (IF (OR (NULL (CDDDR MTE))	;No methods left for this operation?
 							;or just a worthless combined method?
@@ -791,11 +831,8 @@
 		   (PUTPROP (PUTPROP (LOCF (METH-PLIST METH)) ARG1 ARG2))
 		   (OTHERWISE
 		     (FUNCTION-SPEC-DEFAULT-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2))))))
-	  ((AND (SYMBOLP FLAVOR) (CLASS-SYMBOLP FLAVOR))
-	   (CLASS-METHOD-FUNCTION-SPEC-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2))
-	  (T (FERROR NIL "In the function spec ~S,
-    ~S is neither the name of a flavor nor the name of a class"
-		     	 FUNCTION-SPEC FLAVOR)))))
+	  (T
+	   (CLASS-METHOD-FUNCTION-SPEC-HANDLER FUNCTION FUNCTION-SPEC ARG1 ARG2)))))
 
 ;Make an object of a particular flavor, taking the init-plist options
 ;as a rest argument and sending the :INIT message if the flavor
@@ -1334,7 +1371,7 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
 					     ':BASE-FLAVOR-LAST))
 	(AFTER-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY ':AFTER T T
 					    ':BASE-FLAVOR-FIRST))
-	(WRAPPERS-P (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY))))
+	(WRAPPERS-P (SPECIALLY-COMBINED-METHODS-PRESENT MAGIC-LIST-ENTRY)))
     ;; Remove shadowed primary methods from the magic-list-entry so that it won't look like
     ;; we depend on them (which could cause extraneous combined-method recompilation).
     (LET ((MLE (ASSQ NIL (CDDDR MAGIC-LIST-ENTRY))))
@@ -1373,7 +1410,7 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
 					     ':BASE-FLAVOR-LAST))
 	(AFTER-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY ':AFTER T T
 					    ':BASE-FLAVOR-FIRST))
-	(WRAPPERS-P (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY)))
+	(WRAPPERS-P (SPECIALLY-COMBINED-METHODS-PRESENT MAGIC-LIST-ENTRY))
 	(OVERRIDE-METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY
 					       ':OVERRIDE T T ':BASE-FLAVOR-LAST)))
     ;; Remove shadowed primary methods from the magic-list-entry so that it won't look like
@@ -1444,7 +1481,7 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
 
 (DEFUN SIMPLE-METHOD-COMBINATION (FL MAGIC-LIST-ENTRY)
   (LET ((METHODS (GET-CERTAIN-METHODS MAGIC-LIST-ENTRY NIL NIL NIL NIL))
-	(WRAPPERS-P (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY))))
+	(WRAPPERS-P (SPECIALLY-COMBINED-METHODS-PRESENT MAGIC-LIST-ENTRY)))
     (OR (AND (NOT WRAPPERS-P) (NULL (CDR METHODS)) (CAR METHODS))
 	(HAVE-COMBINED-METHOD FL MAGIC-LIST-ENTRY)
 	(MAKE-COMBINED-METHOD FL MAGIC-LIST-ENTRY
@@ -1505,7 +1542,7 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
   ;; Find the methods of the desired type, and barf at any extraneous methods
   (DOLIST (X (CDDDR MAGIC-LIST-ENTRY))
     (COND ((EQ (CAR X) METHOD-TYPE) (SETQ METHODS (CDR X)))
-	  ((EQ (CAR X) ':WRAPPER) )		;Wrappers ignored at this level
+	  ((ASSQ (CAR X) *SPECIALLY-COMBINED-METHOD-TYPES*) ) ;Wrappers ignored at this level
 	  ((OR (EQ OTHER-METHODS-ALLOWED T) (MEMQ (CAR X) OTHER-METHODS-ALLOWED)) )
 	  (T (FERROR NIL "~S ~S method(s) illegal when using :~A method-combination"
 		         (CAR X) (CAR MAGIC-LIST-ENTRY) (CADR MAGIC-LIST-ENTRY)))))
@@ -1521,6 +1558,10 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
  must be :BASE-FLAVOR-FIRST or :BASE-FLAVOR-LAST"
 		           ORDERING-DECLARATION)))
   METHODS)
+
+(DEFUN SPECIALLY-COMBINED-METHODS-PRESENT (MLE)
+  (LOOP FOR (TYPE) IN (CDDDR MLE)
+	THEREIS (ASSQ TYPE *SPECIALLY-COMBINED-METHOD-TYPES*)))
 
 ;; It is up to the caller to decide that a combined-method is called for at all.
 ;; If one is, this function decides whether it already exists OK or needs
@@ -1591,17 +1632,9 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
   ;; Get the function spec which will name the combined-method
   (SETQ FSPEC `(:METHOD ,(FLAVOR-NAME FL) :COMBINED ,(CAR MAGIC-LIST-ENTRY)))
   ;; Put the wrappers around the form.  The base-flavor wrapper goes on the inside.
-  ;; Here we just put the macro-names.  The macros will be expanded by the compiler.
-  (DO ((WRAPPERS (CDR (ASSQ ':WRAPPER (CDDDR MAGIC-LIST-ENTRY))) (CDR WRAPPERS)))
-      ((NULL WRAPPERS))
-    (OR (AND (FDEFINEDP (CAR WRAPPERS))
-	     (LET ((DEF (FDEFINITION (CAR WRAPPERS))))
-	       (OR (AND (LISTP DEF) (EQ (CAR DEF) 'MACRO))
-		   ;--- temporary code so I can test things in the kludge environment
-		   (AND (SYMBOLP DEF)
-			(EQ (CAR (FSYMEVAL DEF)) 'MACRO)))))
-	(FERROR NIL "~S supposed to be a wrapper macro, but missing!" (CAR WRAPPERS)))
-    (SETQ FORM `(MACROCALL #',(CAR WRAPPERS) .DAEMON-CALLER-ARGS. ,FORM)))
+  (DOLIST (METHOD (GET-SPECIALLY-COMBINED-METHODS MAGIC-LIST-ENTRY FL))
+    (SETQ FORM (FUNCALL (CADR (ASSQ (CADDR METHOD) *SPECIALLY-COMBINED-METHOD-TYPES*))
+			METHOD FORM)))
   ;; Remember that it's going to be there, for HAVE-COMBINED-METHOD
   (FLAVOR-NOTICE-METHOD FSPEC)
   (IF *JUST-COMPILING*
@@ -1620,6 +1653,25 @@ The rest of the message was ~S~%" SELF (CAR MESSAGE) (CDR MESSAGE))))
 				',MAGIC-LIST-ENTRY
 				'COMBINED-METHOD-DERIVATION)))
   FSPEC)
+
+(LOCAL-DECLARE ((SPECIAL *FL*))
+(DEFUN GET-SPECIALLY-COMBINED-METHODS (MLE *FL*)
+  (SORT (LOOP FOR (TYPE . FSPECS) IN (CDDDR MLE)
+	      WHEN (ASSQ TYPE *SPECIALLY-COMBINED-METHOD-TYPES*)
+	        APPEND FSPECS)
+	#'(LAMBDA (FS1 FS2)
+	    (LOOP WITH FL1 = (CADR FS1) AND FL2 = (CADR FS2)
+		  FOR SUP IN (FLAVOR-DEPENDS-ON-ALL *FL*)
+		  WHEN (EQ SUP FL2) RETURN T	;Base flavor earlier in list
+		  WHEN (EQ SUP FL1) RETURN NIL)))))
+
+(DEFUN PUT-WRAPPER-INTO-COMBINED-METHOD (WRAPPER-NAME FORM)
+  ;; Here we just put the wrapper in as a macro.  It will be expanded by the compiler.
+  (OR (AND (FDEFINEDP WRAPPER-NAME)
+	   (LET ((DEF (FDEFINITION WRAPPER-NAME)))
+	     (AND (LISTP DEF) (EQ (CAR DEF) 'MACRO))))
+      (FERROR NIL "~S supposed to be a wrapper macro, but missing!" WRAPPER-NAME))
+  `(MACROCALL #',WRAPPER-NAME .DAEMON-CALLER-ARGS. ,FORM))
 
 ;Sort of a macro version of funcall, for wrappers
 (DEFMACRO MACROCALL (&REST X)
