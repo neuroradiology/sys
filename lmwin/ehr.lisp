@@ -127,7 +127,7 @@
 
 (DEFUN (ARGTYP HELP-MESSAGE) (IGNORE ETE)
   (AND (FIFTH ETE)
-       (FORMAT T "C asks for a replacement argument and continues.")))
+       (FORMAT T "C-C asks for a replacement argument and continues.")))
 
 ;; This routine should be called by the PROCEED routines for
 ;; microcode (non-FERROR) errors.  A restart micro pc is pushed onto
@@ -179,7 +179,7 @@
   (AND (EQ (THIRD ETE) 'PUSH)
        (SG-REGPDL-PUSH SG NUM)))
 
-(DEFPROP FIXNUM-OVERFLOW "C asks for a fixnum to use as the result." HELP-MESSAGE)
+(DEFPROP FIXNUM-OVERFLOW "C-C asks for a fixnum to use as the result." HELP-MESSAGE)
 (DEFPROP FIXNUM-OVERFLOW :FIXNUM-OVERFLOW CONDITION)
 (DEFPROP FIXNUM-OVERFLOW SIGNAL-WITH-CONTENTS SIGNAL)
 
@@ -204,7 +204,7 @@ representable as a ~:[~;small~] flonum.~%"
       (*THROW 'QUIT NIL))
   (SG-PROCEED-MICRO-PC SG NIL))
 
-(DEFPROP FLOATING-EXPONENT-UNDERFLOW "C proceeds using 0.0 as the result." HELP-MESSAGE)
+(DEFPROP FLOATING-EXPONENT-UNDERFLOW "C-C proceeds using 0.0 as the result." HELP-MESSAGE)
 
 ;; FLOATING-EXPONENT-OVERFLOW
 ;; Result is to be placed in M-T and pushed on the pdl.
@@ -236,7 +236,7 @@ representable as a ~:[~;small~] flonum.~%"
        (SG-REGPDL-POP SG))
   (SG-REGPDL-PUSH NUM SG))
 
-(DEFPROP FLOATING-EXPONENT-OVERFLOW "C asks for a flonum to use as the result." HELP-MESSAGE)
+(DEFPROP FLOATING-EXPONENT-OVERFLOW "C-C asks for a flonum to use as the result." HELP-MESSAGE)
 
 ;; DIVIDE-BY-ZERO
 ;; You cannot recover.
@@ -317,7 +317,7 @@ representable as a ~:[~;small~] flonum.~%"
 
 (DEFUN (SUBSCRIPT-OOB HELP-MESSAGE) (IGNORE ETE)
   (IF (FOURTH ETE)
-      (FORMAT T "C asks for a replacement subscript and proceeds.")))
+      (FORMAT T "C-C asks for a replacement subscript and proceeds.")))
 
 ;; BAD-ARRAY-TYPE
 ;; First arg is where array header is. Note that it may well have a data type of DTP-TRAP.
@@ -348,7 +348,7 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (ARRAY-HAS-NO-LEADER PROCEED) (SG IGNORE)
   (SG-STORE (READ-OBJECT "Form to evaluate and return instead:") SG 'M-T))
 
-(DEFPROP ARRAY-HAS-NO-LEADER "C asks for a value to use as the result and proceeds."
+(DEFPROP ARRAY-HAS-NO-LEADER "C-C asks for a value to use as the result and proceeds."
 	 HELP-MESSAGE)
 
 ;; FILL-POINTER-NOT-FIXNUM
@@ -366,7 +366,7 @@ representable as a ~:[~;small~] flonum.~%"
 (DEFUN (FILL-POINTER-NOT-FIXNUM PROCEED) (SG IGNORE)
   (SG-STORE (READ-OBJECT "Form to evaluate and return instead:") SG 'M-T))
 
-(DEFPROP FILL-POINTER-NOT-FIXNUM "C asks for a value to use as the result and proceeds."
+(DEFPROP FILL-POINTER-NOT-FIXNUM "C-C asks for a value to use as the result and proceeds."
 	 HELP-MESSAGE)
 
 ;; More random losses.
@@ -486,7 +486,7 @@ representable as a ~:[~;small~] flonum.~%"
   (SG-MAYBE-GROW-PDLS SG)		;Make very sure that there is enough room
   (SG-PROCEED-MICRO-PC SG NIL))		;Then continue after microcode check for room
 
-(DEFPROP PDL-OVERFLOW "C grows the pdl and proceeds." HELP-MESSAGE)
+(DEFPROP PDL-OVERFLOW "C-C grows the pdl and proceeds." HELP-MESSAGE)
 
 
 ;; ILLEGAL-INSTRUCTION
@@ -568,7 +568,7 @@ cannot be RPLACD'ed.  The list is ~S~%"
 				   (RPLACA VMA MD)))
 			     (SG-SAVED-VMA SG) (SG-REGPDL-POP SG))))))
 
-(DEFPROP MAR-BREAK "C proceeds." HELP-MESSAGE)
+(DEFPROP MAR-BREAK "C-C proceeds." HELP-MESSAGE)
 
 
 ;; TRANS-TRAP
@@ -720,8 +720,8 @@ N to do nothing special and enter the normal error handler.
   (SG-PROCEED-MICRO-PC SG NIL)) ;Drop through, will do transport again
 
 (DEFUN (TRANS-TRAP HELP-MESSAGE) (SG IGNORE)
-  (FORMAT T "C continues, using a specified value instead of the undefined ~A.~@
-	    C defines the ~:*~A to a specified value, then continues."
+  (FORMAT T "C-C continues, using a specified value instead of the undefined ~A.~@
+	    M-C defines the ~:*~A to a specified value, then continues."
 	  (MULTIPLE-VALUE-BIND (SYMBOL CELL-TYPE) (DECODE-NULL-POINTER (SG-SAVED-VMA SG))
 	    (OR (AND (SYMBOLP SYMBOL)
 		     (SELECTQ CELL-TYPE
@@ -788,7 +788,7 @@ N to do nothing special and enter the normal error handler.
       (STACK-GROUP-RESUME SG NIL))))
 
 (DEFUN (FUNCTION-ENTRY HELP-MESSAGE) (SG IGNORE)
-  (FORMAT T "C offers to try again")
+  (FORMAT T "C-C offers to try again")
   (SELECTQ (FUNCTION-ENTRY-ERROR SG)
     (< (FORMAT T ", asking you for additional arguments."))
     (> (FORMAT T ", dropping the extra arguments."))))
@@ -844,16 +844,16 @@ N to do nothing special and enter the normal error handler.
 (DEFUN BREAK-PROCEED (IGNORE IGNORE)
   (FORMAT T "Continue from break.~%"))
 
-(DEFPROP :BREAK "C proceeds." HELP-MESSAGE)
-(DEFPROP CALL-TRAP "C proceeds." HELP-MESSAGE)
-(DEFPROP EXIT-TRAP "C proceeds." HELP-MESSAGE)
-(DEFPROP THROW-EXIT-TRAP "C proceeds." HELP-MESSAGE)
+(DEFPROP :BREAK "C-C proceeds." HELP-MESSAGE)
+(DEFPROP CALL-TRAP "C-C proceeds." HELP-MESSAGE)
+(DEFPROP EXIT-TRAP "C-C proceeds." HELP-MESSAGE)
+(DEFPROP THROW-EXIT-TRAP "C-C proceeds." HELP-MESSAGE)
 
 (DEFUN (:WRONG-TYPE-ARGUMENT PROCEED) (IGNORE ETE)
   (READ-OBJECT
     (FORMAT NIL "Form to be evaluated and used as replacement value for ~A" (NTH 7 ETE))))
 
-(DEFPROP :WRONG-TYPE-ARGUMENT "C asks for a replacement argument and proceeds." HELP-MESSAGE)
+(DEFPROP :WRONG-TYPE-ARGUMENT "C-C asks for a replacement argument and proceeds." HELP-MESSAGE)
 
 (DEFUN (TURD-ALERT INFORM) (SG ETE)
   (FORMAT T "There was an attempt to draw on the sheet ~S without preparing it first.~%"
@@ -862,7 +862,7 @@ N to do nothing special and enter the normal error handler.
 (DEFUN (TURD-ALERT PROCEED) (SG IGNORE)	;Might as well allow loser to proceed
   (SG-PROCEED-MICRO-PC SG NIL))
 
-(DEFPROP TURD-ALERT "C proceeds, perhaps writing garbage on the screen." HELP-MESSAGE)
+(DEFPROP TURD-ALERT "C-C proceeds, perhaps writing garbage on the screen." HELP-MESSAGE)
 
 ;;; List problems with currently-loaded error table
 (DEFUN LIST-PROBLEMS ()

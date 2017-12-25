@@ -32,7 +32,8 @@
 	    ;; If it's a character, execute the definition or complain.
 	    (COND ((NUMBERP FUNCTION)
 		   (SETQ NUMERIC-ARG
-			 (IF (NULL NUMERIC-ARG) FUNCTION (+ FUNCTION (* 10. NUMERIC-ARG)))))
+			 (IF (NULL NUMERIC-ARG) FUNCTION (+ FUNCTION (* 10. NUMERIC-ARG))))
+		   (TYO #\SPACE))
 		  (FUNCTION
 		   (PRINC " ")	;Print a space after the echo in case it prints something
 		   (RETURN (IF (NOT NUMERIC-ARG)
